@@ -161,8 +161,7 @@ impl Nic{
             }
         }Err("DNS A lookup failed")
     }
-    pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{
-        let (host,port,path)=parse_url(url).ok_or("Use http://host:port/path")?;
+    pub fn connect(&mut self,host:&[u8],port:u16)->Result<Tcp<'_>,&'static str>{
         self.configure()?;
         let ip=match numeric(host){Some(ip)=>ip,None=>self.resolve(host)?};
         if !valid(ip)||ip==self.ip{return Err("Unsupported destination");}
@@ -177,32 +176,57 @@ impl Nic{
         if !connected{return Err("TCP connect timeout");}
         self.seq=self.seq.wrapping_add(1);if !self.packet(mac,ip,port,self.seq,remote,0x10,&[]){return Err("ACK failed");}
         serial::line("H5K: NET_TCP_OK");
+        Ok(Tcp{nic:self,mac,ip,port,remote,closed:false})
+    }
+    pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{
+        let (host,port,path)=parse_url(url).ok_or("Use http://host:port/path")?;
         let mut req=[0u8;256];let mut k=0;
         for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
-        if !self.packet(mac,ip,port,self.seq,remote,0x18,&req[..k]){return Err("Request failed");}self.seq=self.seq.wrapping_add(k as u32);
-        let overall=p::ticks()+12000;let mut end=p::ticks()+1000;let mut used=0;let mut next_log=65536;
-        while before(end)&&before(overall){
-            let n=self.recv(&mut rx);if n==0{p::wait_tick();continue;}self.answer_arp(&rx[..n]);
-            if let Some((s,a,f,data))=self.segment(&rx[..n],ip,port){
-                if f&0x10==0||a!=self.seq{continue;}if f&4!=0{return Err("TCP reset");}
-                if s!=remote{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);continue;}
-                if used+data.len()>response.len(){return Err("Response exceeds preview limit");}
-                response[used..used+data.len()].copy_from_slice(data);used+=data.len();remote=remote.wrapping_add(data.len()as u32);
-                if !data.is_empty(){end=p::ticks()+1000;if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}}
-                if f&1!=0{remote=remote.wrapping_add(1);serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
-                if !data.is_empty()||f&1!=0{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);}
-                match crate::http::complete(response,used,f&1!=0)?{
-                    Some((len,mode))=>{
-                        let _=self.packet(mac,ip,port,self.seq,remote,0x14,&[]);
-                        serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
-                        serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(len);
-                    },None=>{}
-                }
-                if f&1!=0{return Err("Incomplete HTTP body");}
+        let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;
+        let overall=p::ticks()+12000;let mut used=0;let mut next_log=65536;
+        let mut buf=[0u8;B];
+        loop{
+            let (n,fin)=tcp.read(&mut buf,overall)?;
+            if used+n>response.len(){return Err("Response exceeds preview limit");}
+            response[used..used+n].copy_from_slice(&buf[..n]);used+=n;
+            if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}
+            if fin{serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
+            if let Some((len,mode))=crate::http::complete(response,used,fin)?{
+                serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
+                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(len);
             }
-        }Err("HTTP timeout")
+            if fin{return Err("Incomplete HTTP body");}
+        }
     }
 }
+/// Bounded, single-outstanding-write transport. Not yet a general TCP socket:
+/// no congestion control, write retransmission, partial ACKs or reassembly.
+pub struct Tcp<'a>{nic:&'a mut Nic,mac:[u8;6],ip:[u8;4],port:u16,remote:u32,closed:bool}
+impl Tcp<'_>{
+    pub fn write_request(&mut self,data:&[u8])->Result<(),&'static str>{
+        if self.closed||data.is_empty()||data.len()>1000{return Err("TCP write bounds");}
+        if !self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x18,data){return Err("Request failed");}
+        self.nic.seq=self.nic.seq.wrapping_add(data.len()as u32);Ok(())
+    }
+    pub fn read(&mut self,out:&mut[u8;B],overall:u64)->Result<(usize,bool),&'static str>{
+        if self.closed{return Ok((0,true));}
+        let end=p::ticks()+1000;let mut rx=[0;B];
+        while before(end)&&before(overall){
+            let n=self.nic.recv(&mut rx);if n==0{p::wait_tick();continue;}self.nic.answer_arp(&rx[..n]);
+            if let Some((s,a,f,data))=self.nic.segment(&rx[..n],self.ip,self.port){
+                if f&0x10==0||a!=self.nic.seq{continue;}if f&4!=0{return Err("TCP reset");}
+                if s!=self.remote{let _=self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x10,&[]);continue;}
+                let fin=f&1!=0;if data.is_empty()&&!fin{continue;}
+                out[..data.len()].copy_from_slice(data);self.remote=self.remote.wrapping_add(data.len()as u32);
+                if fin{self.remote=self.remote.wrapping_add(1);}
+                if !self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x10,&[]){return Err("TCP ACK failed");}
+                return Ok((data.len(),fin));
+            }
+        }Err("TCP read timeout")
+    }
+}
+impl Drop for Tcp<'_>{fn drop(&mut self){if !self.closed{let _=self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x14,&[]);self.closed=true;}}}
+
 #[derive(Clone,Copy)]struct Lease{ip:[u8;4],mask:[u8;4],gateway:[u8;4],dns:[u8;4],server:[u8;4],seconds:u32}
 fn valid(ip:[u8;4])->bool{ip[0]!=0&&ip[0]!=127&&ip[0]<224}
 fn numeric(s:&[u8])->Option<[u8;4]>{let mut it=s.split(|b|*b==b'.');let mut ip=[0;4];for x in &mut ip{*x=decimal(it.next()?,255)? as u8;}if it.next().is_some(){return None;}Some(ip)}

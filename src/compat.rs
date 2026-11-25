@@ -38,3 +38,46 @@ pub fn self_test()->bool{
     b.fill(0);b[..8].copy_from_slice(&[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]);put16(&mut b,26,3);put16(&mut b,28,0xfffe);put16(&mut b,30,9);put16(&mut b,32,6);
     classify(&b)==Kind::Compound&&classify(&b[..8])==Kind::Unknown
 }
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct Image{pub entry:usize,pub size:usize,pub preferred_base:u64}
+fn u64at(b:&[u8],i:usize)->Option<u64>{Some(u64::from_le_bytes(b.get(i..i.checked_add(8)?)?.try_into().ok()?))}
+pub fn stage_pe64(b:&[u8],out:&mut[u8])->Result<Image,&'static str>{
+    if classify(b)!=Kind::Pe64{return Err("Not a validated PE64 candidate");}
+    let pe=u32at(b,60).unwrap()as usize;let opt=pe+24;
+    let flags=u16at(b,pe+22).unwrap();if flags&0x2000!=0{return Err("DLL unsupported");}
+    let sections=u16at(b,pe+6).unwrap()as usize;let opts=u16at(b,pe+20).unwrap()as usize;
+    let size=u32at(b,opt+56).unwrap()as usize;let headers=u32at(b,opt+60).unwrap()as usize;
+    let entry=u32at(b,opt+16).unwrap()as usize;let base=u64at(b,opt+24).unwrap();
+    let sa=u32at(b,opt+32).unwrap()as usize;let fa=u32at(b,opt+36).unwrap()as usize;
+    if size>out.len()||size>1024*1024||size%4096!=0||sa!=4096||!fa.is_power_of_two()||!(512..=4096).contains(&fa)||headers%fa!=0||headers>size||base==0||base%65536!=0{return Err("Unsupported image layout");}
+    if u16at(b,opt+68)!=Some(3){return Err("Only console PE64 fixtures supported");}
+    let dirs=u32at(b,opt+108).unwrap()as usize;
+    if dirs>16||112+dirs*8>opts{return Err("Invalid data directory table");}
+    for i in 0..dirs{if u32at(b,opt+112+i*8)!=Some(0)||u32at(b,opt+116+i*8)!=Some(0){return Err("Imports, relocations or other directories unsupported");}}
+    let mut ranges=[(0usize,0usize);96];let mut exec=false;
+    for i in 0..sections{
+        let s=opt+opts+i*40;let vs=u32at(b,s+8).unwrap()as usize;let va=u32at(b,s+12).unwrap()as usize;
+        let raw=u32at(b,s+16).unwrap()as usize;let rp=u32at(b,s+20).unwrap()as usize;let attr=u32at(b,s+36).unwrap();
+        let span=vs.max(raw);let end=va.checked_add(span).ok_or("Section overflow")?;
+        let rounded=end.checked_add(4095).ok_or("Section overflow")?&!4095;
+        if span==0||va%4096!=0||va<headers||rounded>size||raw!=0&&(rp<headers||rp%fa!=0||raw%fa!=0)||attr&0xa0000000==0xa0000000{return Err("Invalid or W+X section");}
+        if ranges[..i].iter().any(|&(lo,hi)|va<hi&&lo<rounded){return Err("Overlapping sections");}ranges[i]=(va,rounded);
+        if attr&0x20000000!=0&&entry>=va&&entry<va+raw.min(vs){exec=true;}
+    }
+    if !exec{return Err("Entry point not in executable file-backed section");}
+    // Only after validation: copy headers/sections and zero the rest. Never jump to entry.
+    out[..size].fill(0);out[..headers].copy_from_slice(&b[..headers]);
+    for i in 0..sections{let s=opt+opts+i*40;let va=u32at(b,s+12).unwrap()as usize;let raw=u32at(b,s+16).unwrap()as usize;let rp=u32at(b,s+20).unwrap()as usize;if raw!=0{out[va..va+raw].copy_from_slice(&b[rp..rp+raw]);}}
+    Ok(Image{entry,size,preferred_base:base})
+}
+pub fn stage_test()->bool{
+    let mut b=[0u8;1024];b[..2].copy_from_slice(b"MZ");put32(&mut b,60,64);b[64..68].copy_from_slice(b"PE\0\0");
+    put16(&mut b,68,0x8664);put16(&mut b,70,1);put16(&mut b,84,112);put16(&mut b,86,2);put16(&mut b,88,0x20b);
+    put32(&mut b,104,4096);put32(&mut b,112,0x400000);put32(&mut b,120,4096);put32(&mut b,124,512);put32(&mut b,144,8192);put32(&mut b,148,512);put16(&mut b,156,3);
+    put32(&mut b,208,512);put32(&mut b,212,4096);put32(&mut b,216,512);put32(&mut b,220,512);put32(&mut b,236,0x60000020);b[512]=0xc3;
+    let mut out=[0xa5u8;8192];
+    if stage_pe64(&b,&mut out)!=Ok(Image{entry:4096,size:8192,preferred_base:0x400000})||out[4096]!=0xc3||out[512]!=0||out[8191]!=0{return false;}
+    put32(&mut b,236,0xe0000020);if stage_pe64(&b,&mut out).is_ok(){return false;}
+    put32(&mut b,236,0x60000020);put32(&mut b,104,512);stage_pe64(&b,&mut out).is_err()
+}

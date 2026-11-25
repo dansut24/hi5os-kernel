@@ -48,7 +48,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.1.6-vm-evidence
+          name: hi5os-v0.1.7-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14

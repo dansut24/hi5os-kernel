@@ -27,6 +27,8 @@ impl Sheet{
             let mut sum=0i64;for row in a/4..=z/4{for col in a%4..=z%4{sum=sum.checked_add(self.eval(row*4+col,seen)?)?;}}Some(sum)
         }}
     }
+    pub fn cell_name(i:usize)->[u8;2]{[b'a'+(i%4)as u8,b'1'+(i/4)as u8]}
+    pub fn value(&self,i:usize)->Option<i64>{if i>=16||matches!(self.cells[i],Cell::Empty){None}else{self.eval(i,0)}}
     pub fn get(&self,cell:&[u8])->Option<i64>{self.eval(index(cell)?,0)}
     pub fn command(&mut self,cmd:&[u8])->Option<i64>{
         let mut p=cmd.split(|b|*b==b' ');let op=p.next()?;let cell=p.next()?;

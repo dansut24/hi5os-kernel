@@ -1,12 +1,12 @@
-//! Hi5Desktop v0.1.6 — native software GUI; single foreground window.
+//! Hi5Desktop v0.1.7 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
 const BLUE:Color=[34,112,195];const WHITE:Color=[255,255,255];const GOLD:Color=[234,178,66];
 #[derive(Clone,Copy)]struct Palette{wall:Color,wall2:Color,bar:Color,panel:Color,sub:Color,ink:Color,muted:Color,edge:Color,green:Color}
 fn palette(dark:bool)->Palette{if dark{Palette{wall:[19,39,61],wall2:[32,65,92],bar:[27,42,58],panel:[34,50,67],sub:[45,63,81],ink:[231,240,247],muted:[169,189,207],edge:[58,80,102],green:[113,221,166]}}else{Palette{wall:[211,229,244],wall2:[175,205,232],bar:[244,248,252],panel:[255,255,255],sub:[238,244,249],ink:[27,43,61],muted:[83,105,127],edge:[204,218,230],green:[23,128,83]}}}
-#[derive(Clone,Copy,PartialEq)]enum App{System,Files,Network,Terminal,Notepad,Browser}
-impl App{fn title(self)->&'static str{match self{Self::System=>"Settings",Self::Files=>"File Explorer",Self::Network=>"Network",Self::Terminal=>"Terminal",Self::Notepad=>"Notepad",Self::Browser=>"Hi5Browser"}}}
+#[derive(Clone,Copy,PartialEq)]enum App{System,Files,Network,Terminal,Notepad,Browser,Sheet}
+impl App{fn title(self)->&'static str{match self{Self::System=>"Settings",Self::Files=>"File Explorer",Self::Network=>"Network",Self::Terminal=>"Terminal",Self::Notepad=>"Notepad",Self::Browser=>"Hi5Browser",Self::Sheet=>"Hi5Sheet"}}}
 const APPS:[App;6]=[App::System,App::Files,App::Network,App::Terminal,App::Notepad,App::Browser];
 #[derive(Clone,Copy)]struct Rect{x:usize,y:usize,w:usize,h:usize}
 impl Rect{fn hit(self,x:usize,y:usize)->bool{x>=self.x&&x<self.x+self.w&&y>=self.y&&y<self.y+self.h}}
@@ -16,7 +16,7 @@ impl Terminal{fn new()->Self{Self{buf:[0;48],len:0,last:[0;48],last_len:0,result
 const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
 // The large response buffer is image-owned static memory, not the 64 KiB kernel stack.
 static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
-struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
+struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
 impl Ui{
     fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{unsafe{ptr::write_volatile((self.c.fb.base as *mut u32).add((self.my+y)*self.c.fb.stride+self.mx+x),self.saved[y*16+x]);}}}}self.saved_valid=false;}
     fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{self.saved[y*16+x]=unsafe{ptr::read_volatile((self.c.fb.base as *const u32).add((self.my+y)*self.c.fb.stride+self.mx+x))};if x<=y/2&&y<14{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}}}self.saved_valid=true;}
@@ -41,7 +41,7 @@ impl Ui{
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
         c.text(w.saturating_sub(202),54,concat!("Developer preview ",env!("CARGO_PKG_VERSION")),q.muted);
-        for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser"};c.text(18,y+35,label,q.ink);}
+        for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser",App::Sheet=>"Sheet"};c.text(18,y+35,label,q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
         self.button(Rect{x:8,y:by+8,w:78,h:36},"Start",BLUE,WHITE);
@@ -126,6 +126,22 @@ impl Ui{
                 }
                 c.text_limit(x,r.y+r.h-33,"F6 / Ctrl+S save - F7 next file - Esc close",q.muted,false,right);
             }
+            App::Sheet=>{
+                c.title(x,y,"Hi5Sheet - workbook",q.ink);
+                let name=crate::sheet::Sheet::cell_name(self.sheet_cell);let label=core::str::from_utf8(&name).unwrap_or("a1");
+                c.text(x,y+36,label,q.ink);c.round(x+44,y+32,r.w-88,30,4,q.sub);
+                if let Ok(t)=core::str::from_utf8(&self.sheet_edit[..self.sheet_len]){c.text_limit(x+50,y+36,t,q.ink,false,right);}
+                let cw=(r.w-76)/4;
+                for col in 0..4{let b=[b'A'+col as u8];c.text(x+30+col*cw+8,y+67,core::str::from_utf8(&b).unwrap_or(""),q.muted);}
+                for row in 0..4{let b=[b'1'+row as u8];c.text(x,y+90+row*30,core::str::from_utf8(&b).unwrap_or(""),q.muted);
+                    for col in 0..4{let i=row*4+col;let xx=x+30+col*cw;let yy=y+87+row*30;
+                        c.rect(xx,yy,cw-2,28,if i==self.sheet_cell{q.edge}else{q.sub});
+                        if let Some(v)=self.sheet.value(i){let mut num=[0u8;20];let mut j=num.len();let mut n=v.unsigned_abs();loop{j-=1;num[j]=b'0'+(n%10)as u8;n/=10;if n==0{break;}}if v<0{j-=1;num[j]=b'-';}
+                            if let Ok(t)=core::str::from_utf8(&num[j..]){c.text_limit(xx+4,yy+2,t,q.ink,false,xx+cw-3);}}
+                    }}
+                c.text_limit(x,y+212,self.sheet_msg,q.muted,false,right);
+                c.text_limit(x,y+238,"Tab: next cell   Enter: apply   F11: open",q.muted,false,right);
+            }
             App::Terminal=>{
                 c.rect(r.x+8,r.y+49,r.w-16,r.h-57,[22,32,43]);let fg=[220,234,247];let green=[112,220,164];
                 c.text_limit(x,y,"Hi5Shell - native diagnostic console",fg,false,right);
@@ -139,7 +155,7 @@ impl Ui{
                     5=>c.text(x,y+91,"Appearance changed",fg),
                     6=>c.text(x,y+91,"Unknown command",fg),7=>c.text_limit(x,y+91,"PE32/PE64 + OLE probe only; no execution",fg,false,right),
                     8=>{c.text_limit(x,y+91,crate::security::status_text(),fg,false,right);if let Some(t)=crate::security::now(){c.text(x,y+111,"UTC epoch:",fg);c.num(x+105,y+111,t,green);}else{c.text(x,y+111,"Clock unavailable",fg);}},
-                    9=>{c.text_limit(x,y+91,"Hi5Sheet: set a1 12 / get a1 / SUM",fg,false,right);c.text_limit(x,y+111,"4x4 cells - RAM only",fg,false,right);},
+                    9=>{c.text_limit(x,y+91,"Hi5Sheet: set a1 12 / get a1 / SUM",fg,false,right);c.text_limit(x,y+111,"F11: graphical sheet - RAM only",fg,false,right);},
                     10=>{c.text(x,y+91,"Cell value:",fg);let v=self.sheet_result;if v<0{c.text(x+105,y+91,"-",green);}c.num(x+119,y+91,v.unsigned_abs(),green);},
                     11=>c.text_limit(x,y+91,"Invalid cell, formula, cycle or overflow",fg,false,right),_=>{}
                 }
@@ -149,7 +165,7 @@ impl Ui{
             }
         }
     }
-    fn select(&mut self,a:App){if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN",App::Browser=>"H5K: GUI_BROWSER_OPEN"});self.draw();}
+    fn select(&mut self,a:App){if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN",App::Browser=>"H5K: GUI_BROWSER_OPEN",App::Sheet=>"H5K: GUI_SHEET_OPEN"});self.draw();}
     fn theme(&mut self){self.dark=!self.dark;serial::line(if self.dark{"H5K: GUI_THEME_DARK"}else{"H5K: GUI_THEME_LIGHT"});self.draw();}
     fn cache_current(&mut self){let s=&mut self.cache[self.file];s.data=self.files.data;s.len=self.files.len;s.present=self.files.present;}
     fn switch_file(&mut self,i:usize){
@@ -209,13 +225,26 @@ impl Ui{
         if key==0x0e{self.url_len=self.url_len.saturating_sub(1);self.draw();return;}
         if let Some(b)=ascii(key,self.term.shift){if self.url_len<self.url.len(){self.url[self.url_len]=b;self.url_len+=1;self.draw();}}
     }
+    fn sheet_key(&mut self,key:u8){
+        match key{
+            0x0f=>{self.sheet_cell=(self.sheet_cell+1)%16;self.sheet_len=0;},
+            0x1c=>{let name=crate::sheet::Sheet::cell_name(self.sheet_cell);
+                if self.sheet.set(&name,&self.sheet_edit[..self.sheet_len]){
+                    self.sheet_msg="Cell updated";serial::line("H5K: GUI_SHEET_CELL_OK");serial::metric("H5K: GUI_SHEET_VALUE=",self.sheet.get(&name).unwrap_or(0)as u64);self.sheet_len=0;
+                }else{self.sheet_msg="Invalid formula or value";serial::line("H5K: GUI_SHEET_REJECTED");}},
+            0x0e=>self.sheet_len=self.sheet_len.saturating_sub(1),
+            _=>{if let Some(b)=ascii(key,self.term.shift){if self.sheet_len<self.sheet_edit.len(){self.sheet_edit[self.sheet_len]=b;self.sheet_len+=1;}}}
+        }self.draw();
+    }
     fn key(&mut self,key:u8){
         match key{0x1d=>{self.ctrl=true;return;},0x9d=>{self.ctrl=false;return;},0x2a|0x36=>{self.term.shift=true;return;},0xaa|0xb6=>{self.term.shift=false;return;},_=>{}}
         if key&0x80!=0{return;}
         if key==0x01{if self.menu{self.menu=false;self.draw();}else{self.close();}return;}
         if key==0x41&&(self.app==Some(App::Files)||self.app==Some(App::Notepad)){self.switch_file((self.file+1)%FILE_COUNT);return;}
+        if key==0x57{self.select(App::Sheet);return;}
         if key==0x42{self.select(App::Browser);return;}
         if key>=0x3b&&key<=0x3f{self.select(APPS[(key-0x3b)as usize]);return;}
+        if self.app==Some(App::Sheet)&&!self.menu&&!self.minimized{self.sheet_key(key);return;}
         if self.app==Some(App::Browser)&&!self.menu&&!self.minimized{self.browser_key(key);return;}
         if self.app==Some(App::Notepad)&&!self.menu&&!self.minimized{self.notepad_key(key);return;}
         if self.app==Some(App::Terminal)&&!self.menu&&!self.minimized{self.terminal_key(key);return;}
@@ -232,6 +261,7 @@ impl Ui{
         if let Some(a)=self.app{let r=self.win;if !self.minimized&&r.hit(x,y){
             if y<r.y+42{if x>=r.x+r.w-38{self.close();}else if x>=r.x+r.w-73{self.maximize();}else if x>=r.x+r.w-108{self.minimized=true;self.draw();}else if !self.maximized{self.drag=Some((x-r.x,y-r.y));}return;}
             let bx=r.x+22;let yy=r.y+58;
+            if a==App::Sheet&&x>=bx+30&&y>=yy+87&&y<yy+207{let cw=(r.w-76)/4;let col=(x-bx-30)/cw;let row=(y-yy-87)/30;if col<4{self.sheet_cell=row*4+col;self.sheet_len=0;self.draw();}return;}
             if a==App::Network&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+190{self.connect_net();return;}
             if a==App::Browser&&y>=yy+42&&y<yy+76&&x>=r.x+r.w-95{self.fetch_web();return;}
             if a==App::Browser&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+180{self.save_web();return;}
@@ -273,7 +303,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
     let _=store.load(0);
     let mut url=[0;128];let default=b"http://10.0.2.100:8080/hello.exe";url[..default.len()].copy_from_slice(default);
-    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
+    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");
