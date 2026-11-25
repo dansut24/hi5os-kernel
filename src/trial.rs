@@ -49,7 +49,12 @@ static mut DETAIL:[u8;192]=[0;192];
 static mut DETAIL_LEN:usize=0;
 static mut ONEXIT:[u64;64]=[0;64];
 static mut ONEXIT_LEN:usize=0;
-const MODULES:[&str;5]=["kernel32.dll","msvcrt.dll","advapi32.dll","oleaut32.dll","user32.dll"];
+#[derive(Clone,Copy)]struct Lock{at:u64,depth:u32,spin:u64}
+const EMPTY_LOCK:Lock=Lock{at:0,depth:0,spin:0};
+static mut LOCKS:[Lock;128]=[EMPTY_LOCK;128];
+static mut CONSOLE_MODE:u32=3;
+static mut CTRL_HANDLER:u64=0;
+const MODULES:[&str;6]=["kernel32.dll","msvcrt.dll","advapi32.dll","oleaut32.dll","user32.dll","ntdll.dll"];
 const MOD_BASE:u64=0x60000000;
 #[repr(C)]struct Frame{rax:u64,rcx:u64,rdx:u64,r8:u64,r9:u64,rip:u64,cs:u64,flags:u64,rsp:u64,ss:u64}
 global_asm!(r#"
@@ -216,6 +221,46 @@ unsafe fn detail(d:&[u8],n:&[u8]){
     let p=ptr::addr_of_mut!(DETAIL).cast::<u8>();let a=d.len().min(48);let b=n.len().min(128);
     ptr::copy_nonoverlapping(d.as_ptr(),p,a);p.add(a).write(b'!');ptr::copy_nonoverlapping(n.as_ptr(),p.add(a+1),b);DETAIL_LEN=a+1+b;
 }
+// Windows processor-feature IDs; only advertise features enabled in this trial.
+fn processor_feature(id:u32)->bool{unsafe{
+    let a=__cpuid(1);
+    let ext=__cpuid(0x80000000).eax;
+    let cr4:u64;asm!("mov {},cr4",out(reg)cr4,options(nostack,preserves_flags));
+    let sse=cr4&(1<<9)!=0;
+    match id{
+        2=>a.edx&(1<<8)!=0,3=>a.edx&(1<<23)!=0,6=>sse&&a.edx&(1<<25)!=0,
+        7=>ext>=0x80000001&&__cpuid(0x80000001).edx&(1<<31)!=0,
+        8=>a.edx&(1<<4)!=0,9=>true,10=>sse&&a.edx&(1<<26)!=0,
+        12=>nx_available(),13=>sse&&a.ecx&1!=0,14=>a.ecx&(1<<13)!=0,
+        36=>sse&&a.ecx&(1<<9)!=0,37=>sse&&a.ecx&(1<<19)!=0,38=>sse&&a.ecx&(1<<20)!=0,
+        // XSAVE/AVX, FSGSBASE, fast-fail ABI, ARM, unknown IDs: not enabled/supported.
+        _=>false
+    }
+}}
+unsafe fn lock_sync(v:Lock)->bool{
+    let Some(p)=phys(v.at,40,true)else{return false;};
+    ptr::write_bytes(p,0,40);
+    ptr::write_unaligned(p.add(8).cast::<i32>(),v.depth as i32-1);
+    ptr::write_unaligned(p.add(12).cast::<u32>(),v.depth);
+    ptr::write_unaligned(p.add(16).cast::<u64>(),if v.depth!=0{1}else{0});
+    ptr::write_unaligned(p.add(32).cast::<u64>(),v.spin);true
+}
+unsafe fn lock_op(v:u64,op:u8,spin:u64)->bool{
+    if v==0||v%8!=0||phys(v,40,true).is_none(){return false;}
+    let ls=&mut *ptr::addr_of_mut!(LOCKS);
+    if op==0{
+        if ls.iter().any(|l|l.at==v){return false;}
+        let Some(l)=ls.iter_mut().find(|l|l.at==0)else{return false;};
+        *l=Lock{at:v,depth:0,spin};return lock_sync(*l);
+    }
+    let Some(l)=ls.iter_mut().find(|l|l.at==v)else{return false;};
+    match op{
+        1=>{if l.depth>=0x7ffffffe{return false;}l.depth+=1;lock_sync(*l)},
+        2=>{if l.depth==0{return false;}l.depth-=1;lock_sync(*l)},
+        3=>{if l.depth!=0{return false;}let p=phys(v,40,true).unwrap();ptr::write_bytes(p,0,40);*l=EMPTY_LOCK;true},
+        _=>false
+    }
+}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -300,8 +345,8 @@ unsafe fn capture(v:u64,n:usize)->bool{
         38=>{if x!=0&&x!=ENV+0x700+48&&x!=ENV+0x700+96{abort_import(id);}},
         39=>f.rax=0, // GetLargePageMinimum: large pages not supported
         40=>f.rax=437, // narrow OEM code page
-        41=>{if !matches!(x,1|2)||!write32(y,0){LAST=87;}else{f.rax=1;}},
-        42=>{if matches!(x,1|2)&&y==0{f.rax=1;}else{LAST=87;}},
+        41=>{if !matches!(x,1|2)||!write32(y,CONSOLE_MODE){LAST=87;}else{f.rax=1;}},
+        42=>{if matches!(x,1|2)&&y<=3{CONSOLE_MODE=y as u32;f.rax=1;}else{LAST=87;}},
         43=>{if x==0{LAST=87;}else{f.rax=module_handle(x,true);}}, // built-in namespace only
         44=>{if !write64(x,100){LAST=87;}else{f.rax=1;}},
         45=>{if !write64(x,platform::ticks()){LAST=87;}else{f.rax=1;}},
@@ -320,6 +365,21 @@ unsafe fn capture(v:u64,n:usize)->bool{
         57=>{if ONEXIT_LEN==0{}else{abort_import(id);}}, // no skipped registered destructors
         58=>{if x==0&&y!=0&&(z as u32&!0x3000)==0&&z as u32&0x1000!=0&&w==4{let n=(y as usize).checked_add(4095).map(|v|v&!4095);if let Some(n)=n{f.rax=allocate_aligned(n,4096);if f.rax!=0{ptr::write_bytes(phys(f.rax,n,true).unwrap(),0,n);}}}if f.rax==0{LAST=8;}},
         59=>{if y==0&&z==0x8000&&x%4096==0&&release(x){f.rax=1;}else{LAST=87;}},
+        60=>{f.rax=processor_feature(x as u32)as u64;serial::metric("H5K: TRIAL_CPU_FEATURE=",x as u32 as u64);serial::metric("H5K: TRIAL_CPU_FEATURE_VALUE=",f.rax);},
+        61|62|63|64=>{if !lock_op(x,a.kind-61,0){abort_import(id);}},
+        65=>{if lock_op(x,0,y as u32 as u64){f.rax=1;}else{LAST=87;}},
+        66=>{f.rax=lock_op(x,1,0)as u64;},
+        67=>{if z==0&&lock_op(x,0,y as u32 as u64){f.rax=1;}else{LAST=87;}},
+        68=>{if !matches!(x,1|2){LAST=6;return;}let Some(p)=phys(y,22,true)else{LAST=87;return;};
+            // Virtual text console, 80x25, cursor from captured printable output.
+            let bytes=core::slice::from_raw_parts(ptr::addr_of!(OUT).cast::<u8>(),OUT_LEN);
+            let mut row=0u16;let mut col=0u16;for c in bytes{match *c{10=>{row=row.saturating_add(1);col=0;},13=>col=0,32..=126=>{col+=1;if col==80{row=row.saturating_add(1);col=0;}},_=>{}}}
+            let fields=[80u16,25,col,row.min(24),7,0,0,79,24,80,25];
+            for(i,v)in fields.iter().enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),*v);}f.rax=1;},
+        69=>{if y==1&&(x==0||executable(x)){CTRL_HANDLER=x;f.rax=1;}else if y==0&&x==CTRL_HANDLER{CTRL_HANDLER=0;f.rax=1;}else{LAST=87;}},
+        70=>{if let (Some(nx),Some(ny))=(c_len(x,true),c_len(y,true)){if ny==0{f.rax=x;}else if ny<=nx{for i in 0..=nx-ny{let at=x+2*i as u64;let n=ny*2;if let(Some(a),Some(b))=(phys(at,n,false),phys(y,n,false)){if core::slice::from_raw_parts(a,n)==core::slice::from_raw_parts(b,n){f.rax=at;break;}}}}}else{abort_import(id);}},
+        71=>{if x==0{f.rax=0;}else if matches!(x,1|2){f.rax=2;}}, // FILE_TYPE_CHAR for virtual output, unknown otherwise
+        72=>{if x==u64::MAX&&y==1{f.rax=1;}else{LAST=87;}}, // single process affinity only
         _=>abort_import(id)
     }
 }
@@ -353,8 +413,8 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
     }None
 }
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,_=>0}}else{0}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,_=>0}}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
@@ -373,7 +433,7 @@ unsafe fn init_env(){
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    fs().reset();MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    fs().reset();MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
@@ -425,6 +485,17 @@ pub fn self_test()->bool{unsafe{
     if h!=MOD_BASE||proc_address(h,ENV+0x820)!=AUX||proc_address(h,ENV+0x840)!=0||LAST!=127{return false;}
     serial::line("H5K: TRIAL_DLL_RESOLVER_OK");
     reset();
+    // CPU feature behavior and recursive lock ownership/underflow validation.
+    if !processor_feature(9)||processor_feature(39)||processor_feature(22)||processor_feature(0xffffffff){return false;}
+    let a=__cpuid(1);if processor_feature(2)!=(a.edx&(1<<8)!=0){return false;}
+    serial::line("H5K: TRIAL_CPU_FEATURES_OK");
+    let v=ENV+0x900;
+    if !lock_op(v,0,0)||lock_op(v,0,0)||!lock_op(v,1,0)||!lock_op(v,1,0)||lock_op(v,3,0){return false;}
+    let Some(p)=phys(v,40,false)else{return false;};
+    if ptr::read_unaligned(p.add(12).cast::<u32>())!=2||ptr::read_unaligned(p.add(16).cast::<u64>())!=1{return false;}
+    if !lock_op(v,2,0)||!lock_op(v,2,0)||lock_op(v,2,0)||!lock_op(v,3,0)||lock_op(v,1,0){return false;}
+    serial::line("H5K: TRIAL_CRITICAL_SECTION_OK");
+    reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
     ptr::copy_nonoverlapping(code.as_ptr(),d,code.len());
@@ -464,7 +535,7 @@ pub fn run(b:&[u8])->Result<u64,&'static str>{unsafe{
     })?;
     if !ok||report.functions!=145||report.delayed{return Err("Pinned import layout mismatch");}
     serial::metric("H5K: TRIAL_SUPPORTED_STATIC=",implemented);serial::line("H5K: TRIAL_ENTER_7ZIP");
-    let status=enter(BASE+entry,300);
+    let status=enter(BASE+entry,500);
     serial::metric("H5K: TRIAL_RESULT=",status);serial::metric("H5K: TRIAL_EXIT=",EXIT as u64);
     serial::metric("H5K: TRIAL_FAULT_ADDRESS=",H5_TRIAL_FAULT);serial::metric("H5K: TRIAL_FAULT_RIP=",H5_TRIAL_RIP);
     serial::metric("H5K: TRIAL_API_CALLS=",CALLS);

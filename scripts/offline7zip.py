@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """UTM-equivalent offline package installation and actual trial launch."""
-import pathlib,tempfile,shutil,subprocess,time,socket,json,struct,zlib,hashlib
+import pathlib,tempfile,shutil,subprocess,time,socket,json,struct,zlib,hashlib,sys
+CPU=sys.argv[1] if len(sys.argv)>1 else "qemu64"
+assert CPU in ("qemu64","max")
 from smoke import ROOT,firmware,validate
 code,var=firmware()
 with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
     tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
-    log=ROOT/"dist"/"7zip-offline.log";log.unlink(missing_ok=True)
+    log=ROOT/"dist"/f"7zip-offline-{CPU}.log";log.unlink(missing_ok=True)
     qmp=tmp/"qmp.sock";vars=tmp/"vars.fd";shutil.copyfile(var,vars)
-    cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1",
+    cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu",CPU,"-m","512","-smp","1",
          "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
          "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.3.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
          "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
@@ -38,8 +40,8 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             key("ret");wait(b"SHELL_INSTALL7ZIP_OK",120)
             for ch in "7za -h":key({" ":"spc","-":"minus"}.get(ch,ch))
             key("ret");wait(b"APP_7ZIP_LOADED",120);wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
-            wait(b"TRIAL_DLL_RESOLVER_OK",2)
-            call("screendump",{"filename":str(ROOT/"dist"/"7zip-offline-512m.ppm")});call("quit")
+            wait(b"TRIAL_DLL_RESOLVER_OK",2);wait(b"TRIAL_CPU_FEATURES_OK",2);wait(b"TRIAL_CRITICAL_SECTION_OK",2)
+            call("screendump",{"filename":str(ROOT/"dist"/f"7zip-offline-{CPU}-512m.ppm")});call("quit")
         proc.wait(timeout=10)
         assert proc.returncode==0
         with data.open("rb") as fh:
@@ -47,7 +49,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
         assert h[:8]==b"H5APP001" and struct.unpack_from("<I",h,12)[0]==len(body)
         assert hashlib.sha256(body).hexdigest()=="dd3757f31c97e33776f2590317d4fb12f2da075db3dbb1e3f94d0f2a01d84ffa"
         assert b"HTTP_DOWNLOAD_OK" not in log.read_bytes()
-        print("PASS: offline original portable 7-Zip installation and controlled startup probe")
+        print(f"PASS: offline original portable 7-Zip installation and controlled startup probe on {CPU}")
         if b"SEVENZIP_HELP_OK" not in log.read_bytes():print("::warning::Offline trial returned, help not qualified")
     finally:
         if proc.poll() is None:
