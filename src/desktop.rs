@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.1.3 — native software GUI; single foreground window.
+//! Hi5Desktop v0.1.4 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
@@ -38,7 +38,7 @@ impl Ui{
         // Quiet, low-cost gradient and a native desktop with standard controls.
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
-        c.text(w.saturating_sub(202),54,"Developer preview 0.1.3",q.muted);
+        c.text(w.saturating_sub(202),54,"Developer preview 0.1.4",q.muted);
         for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser"};c.text(18,y+35,label,q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
@@ -66,7 +66,7 @@ impl Ui{
                 c.title(x,y,"About this PC",q.ink);c.round(x,y+42,r.w-44,76,9,q.sub);
                 c.text(x+14,y+50,"Hi5OS Developer Preview",q.ink);c.text(x+14,y+77,"Independent x86-64 kernel",q.muted);
                 c.text(x,y+135,"Managed memory (MiB)",q.muted);c.num(x+200,y+135,self.ram,q.ink);
-                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.3",q.ink);
+                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.4",q.ink);
                 c.text(x,y+191,"PE and compound-file probes passed",q.green);
                 self.button(Rect{x,y:y+223,w:180,h:34},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
             }
@@ -90,7 +90,7 @@ impl Ui{
                 self.button(Rect{x,y:y+229,w:190,h:34},"Connect / DHCP (C)",BLUE,WHITE);
             }
             App::Browser=>{
-                c.title(x,y,"Hi5Browser - HTTP preview",q.ink);
+                c.title(x,y,"Hi5Browser - Web preview",q.ink);
                 c.round(x,y+42,r.w-132,34,5,q.sub);
                 if let Ok(t)=core::str::from_utf8(&self.url[..self.url_len]){c.text_limit(x+6,y+48,t,q.ink,false,right-90);}
                 self.button(Rect{x:r.x+r.w-95,y:y+42,w:72,h:34},"Go",BLUE,WHITE);
@@ -99,11 +99,12 @@ impl Ui{
                     c.text(x,y+112,"Received bytes:",q.ink);c.num(x+132,y+112,self.web_len as u64,q.ink);
                     let kind=match crate::compat::classify(&self.web[..self.web_len]){crate::compat::Kind::Pe64=>"PE64 executable candidate",crate::compat::Kind::Pe32=>"PE32 executable candidate",crate::compat::Kind::Compound=>"OLE compound-file candidate",_=>"Text or unknown binary"};
                     c.text_limit(x,y+137,kind,q.ink,false,right);
-                    if self.web[..self.web_len].iter().all(|b|*b==10||*b==13||(32..127).contains(b)){
-                        let mut yy=y+163;for line in self.web[..self.web_len].split(|b|*b==10).take(3){if let Ok(t)=core::str::from_utf8(line){c.text_limit(x,yy,t,q.ink,false,right);}yy+=20;}
+                    if self.web[..self.web_len].iter().all(|b|*b==9||*b==10||*b==13||*b>=32)&&core::str::from_utf8(&self.web[..self.web_len]).is_ok(){
+                        let mut preview=[0u8;768];let len=crate::http::preview(&self.web[..self.web_len],&mut preview);
+                        let mut yy=y+163;for line in preview[..len].split(|b|*b==10){for part in line.chunks(45){if yy>=y+223{break;}if let Ok(t)=core::str::from_utf8(part){c.text_limit(x,yy,t,q.ink,false,right);}yy+=20;}if yy>=y+223{break;}}
                     }else{c.text(x,y+165,"Binary preview - execution disabled",q.muted);}
                     self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);
-                }else{c.text_limit(x,y+120,"HTTP only - no TLS. Max 4096 bytes.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
+                }else{c.text_limit(x,y+120,"Plain HTTP - no TLS. Max 4096 bytes.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
             }
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
@@ -126,7 +127,7 @@ impl Ui{
                 match self.term.result{
                     1=>{c.text_limit(x,y+91,"help mem ver ls clear theme compat",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
-                    3=>c.text(x,y+91,"Hi5OS 0.1.3",fg),
+                    3=>c.text(x,y+91,"Hi5OS 0.1.4",fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
                     5=>c.text(x,y+91,"Appearance changed",fg),
                     6=>c.text(x,y+91,"Unknown command",fg),7=>c.text_limit(x,y+91,"PE32/PE64 + OLE probe only; no execution",fg,false,right),_=>{}

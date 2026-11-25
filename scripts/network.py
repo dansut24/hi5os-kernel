@@ -2,7 +2,7 @@
 """Actual guest Ethernet/ARP/TCP/HTTP download over restricted QEMU SLIRP.
 Host fixture is loopback only. No public internet or executable execution.
 """
-import pathlib, tempfile, shutil, subprocess, time, socket, json, zlib, threading, http.server, struct
+import pathlib, tempfile, shutil, subprocess, time, socket, json, zlib, threading, http.server, struct, sys
 from smoke import ROOT, firmware, validate
 def fixture():
     b=bytearray(1024)
@@ -12,17 +12,29 @@ def fixture():
     b[512]=0xc3
     return bytes(b)
 PAYLOAD=fixture()
+MODE=sys.argv[1] if len(sys.argv)>1 else "length"
+assert MODE in ("length","close","chunked")
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path!="/hello.exe":self.send_error(404);return
-        self.send_response(200);self.send_header("Content-Type","application/octet-stream");self.send_header("Content-Length",str(len(PAYLOAD)));self.end_headers();self.wfile.write(PAYLOAD)
+        self.send_response(200);self.send_header("Content-Type","application/octet-stream")
+        if MODE=="length":self.send_header("Content-Length",str(len(PAYLOAD)))
+        elif MODE=="chunked":self.send_header("Transfer-Encoding","chunked")
+        self.send_header("Connection","close");self.end_headers()
+        if MODE=="chunked":
+            for i in range(0,len(PAYLOAD),137):
+                chunk=PAYLOAD[i:i+137]
+                self.wfile.write(("%x\r\n"%len(chunk)).encode()+chunk+b"\r\n");self.wfile.flush()
+            self.wfile.write(b"0\r\nX-Test: yes\r\n\r\n")
+        else:self.wfile.write(PAYLOAD)
+        self.close_connection=True
 def main():
     code,var=firmware()
     with http.server.HTTPServer(("127.0.0.1",0),Handler) as server,tempfile.TemporaryDirectory(prefix="hi5os-net-") as td:
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
-        vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/"network-lab.log";log.unlink(missing_ok=True)
-        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.3.img"
+        vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/f"network-{MODE}.log";log.unlink(missing_ok=True)
+        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.4.img"
         cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1",
         "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
         "-drive",f"if=none,id=os,format=raw,readonly=on,file={system}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
@@ -52,17 +64,18 @@ def main():
                 def key(k):call("human-monitor-command",{"command-line":"sendkey "+k});time.sleep(.3)
                 key("6");wait(b"GUI_BROWSER_OPEN",5);key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",20)
                 wait(b"HTTP_DOWNLOAD_BYTES=0x0000000000000400",2)
+                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK"}[MODE],2)
                 key("f9");wait(b"DOWNLOAD_SAVED",10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
                 key("f10");wait(b"GUI_DOWNLOAD_REOPENED",5)
-                call("screendump",{"filename":str(ROOT/"dist"/"browser-512m.ppm")});call("quit")
+                call("screendump",{"filename":str(ROOT/"dist"/f"browser-{MODE}-512m.ppm")});call("quit")
             proc.wait(timeout=10)
             with data.open("rb") as fh:
                 fh.seek(16*512);h=fh.read(512);body=fh.read(4096)
             assert h[:8]==b"H5DL0001" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
             assert body[:len(PAYLOAD)]==PAYLOAD
             assert struct.unpack_from("<I",h,508)[0]==zlib.crc32(h[:508])
-            print("PASS: guest HTTP downloaded binary and saved byte-exact fixture to dedicated data image")
+            print(f"PASS: {MODE} HTTP downloaded binary and saved byte-exact fixture to dedicated data image")
         finally:
             if proc.poll() is None:
                 proc.terminate()

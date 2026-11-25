@@ -190,11 +190,13 @@ impl Nic{
                 response[used..used+data.len()].copy_from_slice(data);used+=data.len();remote=remote.wrapping_add(data.len()as u32);
                 if f&1!=0{remote=remote.wrapping_add(1);}
                 if !data.is_empty()||f&1!=0{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);}
-                if let Some((start,len))=http_body(&response[..used])?{if used>=start+len{
-                    if used!=start+len{return Err("Unexpected HTTP trailing bytes");}
-                    let _=self.packet(mac,ip,port,self.seq,remote,0x14,&[]);
-                    response.copy_within(start..start+len,0);serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(len);
-                }}
+                match crate::http::complete(response,used,f&1!=0)?{
+                    Some((len,mode))=>{
+                        let _=self.packet(mac,ip,port,self.seq,remote,0x14,&[]);
+                        serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
+                        serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(len);
+                    },None=>{}
+                }
                 if f&1!=0{return Err("Incomplete HTTP body");}
             }
         }Err("HTTP timeout")
@@ -250,19 +252,9 @@ fn dns_answer(b:&[u8],q:&[u8])->Option<[u8;4]>{
     }None
 }
 fn decimal(b:&[u8],max:usize)->Option<usize>{if b.is_empty(){return None;}let mut n=0usize;for x in b{if !x.is_ascii_digit(){return None;}n=n.checked_mul(10)?.checked_add((x-b'0')as usize)?;if n>max{return None;}}Some(n)}
-fn http_body(b:&[u8])->Result<Option<(usize,usize)>,&'static str>{
-    let Some(i)=b.windows(4).position(|w|w==b"\r\n\r\n")else{if b.len()>2048{return Err("HTTP header too large");}return Ok(None);};
-    if i>2048{return Err("HTTP header too large");}
-    let mut lines=b[..i].split(|x|*x==10);let status=lines.next().ok_or("Missing HTTP status")?;
-    if !(status.starts_with(b"HTTP/1.0 200 ")||status.starts_with(b"HTTP/1.1 200 ")){return Err("HTTP status not 200");}
-    let mut len=None;for line in lines{let line=line.strip_suffix(b"\r").unwrap_or(line);let Some(col)=line.iter().position(|b|*b==b':')else{return Err("Invalid HTTP header");};let name=&line[..col];let value=&line[col+1..];let value=value.strip_prefix(b" ").unwrap_or(value);
-        if name.eq_ignore_ascii_case(b"transfer-encoding"){return Err("Chunked HTTP not supported");}
-        if name.eq_ignore_ascii_case(b"content-length"){if len.is_some(){return Err("Duplicate length");}len=Some(decimal(value,MAX_BODY).ok_or("File exceeds 4096 bytes")?);}
-    }Ok(Some((i+4,len.ok_or("Content-Length required")?)))
-}
 pub fn self_test()->bool{
     if parse_url(b"http://10.0.2.100:8080/a")!=Some((b"10.0.2.100".as_slice(),8080,b"/a".as_slice()))||parse_url(b"https://example.com/").is_some()||parse_url(b"http://127.0.0.1/").is_some()||parse_url(b"http://example.com/").is_none(){return false;}
-    if http_body(b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nabc")!=Ok(Some((b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\n".len(),3)))||!http_body(b"HTTP/1.0 200 OK\r\nContent-Length: 99999\r\n\r\n").is_err(){return false;}
+    if !crate::http::self_test(){return false;}
     let q=b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03lab\x04test\x00\x00\x01\x00\x01";
     let mut r=[0;64];r[..q.len()].copy_from_slice(q);r[2]=0x81;r[3]=0x80;r[7]=1;let o=q.len();let ans=[0xc0,12,0,1,0,1,0,0,0,60,0,4,192,0,2,77];r[o..o+ans.len()].copy_from_slice(&ans);
     dns_answer(&r[..o+ans.len()],q)==Some([192,0,2,77])&&dns_answer(&r[..o+5],q).is_none()
