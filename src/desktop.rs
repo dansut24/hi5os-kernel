@@ -181,7 +181,7 @@ impl Ui{
     fn fetch_web(&mut self){
         self.web_ok=false;self.web_len=0;self.web_msg="Connecting via DHCP / HTTP...";self.draw();
         if self.nic.is_none(){self.nic=Nic::open();}
-        if let Some(nic)=&mut self.nic{match nic.get(&self.url[..self.url_len],&mut self.web){Ok(n)=>{self.web_len=n;self.web_ok=true;self.web_msg="Download complete - not authenticated";},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");}}}else{self.web_msg="No supported E1000 network adapter";}
+        if let Some(nic)=&mut self.nic{match nic.get(&self.url[..self.url_len],&mut self.web){Ok(n)=>{self.web_len=n;self.web_ok=true;self.web_msg="Download complete - not authenticated";},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}else{self.web_msg="No supported E1000 network adapter";}
         self.draw();
     }
     fn save_web(&mut self){if self.web_ok{self.web_msg=if self.store.save_download(&self.web[..self.web_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}

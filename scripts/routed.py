@@ -65,7 +65,7 @@ def peer(listener,seen,errors):
                     flags=r[off+13];b=r[off+(r[off+12]>>4)*4:14+struct.unpack_from("!H",r,16)[0]]
                     if flags&2:send(tcp(dp,sp,1000,seq+1,0x12));seen.add("routed-syn")
                     elif b:
-                        assert b.startswith(b"GET / HTTP/1.0\r\nHost: lab.test\r\n")
+                        assert b.startswith(b"GET / HTTP/1.1\r\nHost: lab.test\r\n")
                         body=b"Hi5 routed HTTP";a=b"HTTP/1.0 200 OK\r\nContent-Length: 15\r\n\r\n"+body
                         send(tcp(dp,sp,1001,seq+len(b),0x18,a));seen.add("routed-http")
     except EOFError:pass

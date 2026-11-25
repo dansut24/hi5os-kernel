@@ -178,7 +178,7 @@ impl Nic{
         self.seq=self.seq.wrapping_add(1);if !self.packet(mac,ip,port,self.seq,remote,0x10,&[]){return Err("ACK failed");}
         serial::line("H5K: NET_TCP_OK");
         let mut req=[0u8;256];let mut k=0;
-        for part in [b"GET ".as_slice(),path,b" HTTP/1.0\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
+        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
         if !self.packet(mac,ip,port,self.seq,remote,0x18,&req[..k]){return Err("Request failed");}self.seq=self.seq.wrapping_add(k as u32);
         let end=p::ticks()+500;let mut used=0;
         while before(end){
@@ -188,7 +188,7 @@ impl Nic{
                 if s!=remote{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);continue;}
                 if used+data.len()>response.len(){return Err("Response exceeds preview limit");}
                 response[used..used+data.len()].copy_from_slice(data);used+=data.len();remote=remote.wrapping_add(data.len()as u32);
-                if f&1!=0{remote=remote.wrapping_add(1);}
+                if f&1!=0{remote=remote.wrapping_add(1);serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
                 if !data.is_empty()||f&1!=0{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);}
                 match crate::http::complete(response,used,f&1!=0)?{
                     Some((len,mode))=>{
