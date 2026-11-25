@@ -15,6 +15,9 @@ mod disk;
 mod compat;
 mod net;
 mod http;
+mod heap;
+mod security;
+mod sheet;
 
 use core::panic::PanicInfo;
 

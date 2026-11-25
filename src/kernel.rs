@@ -35,6 +35,11 @@ pub fn on_stack(info:BootInfo)->! {
     serial::metric("H5K: CPUID_MAX=",leaf.eax as u64);
     let ram=allocator.total/256;
     if let Err(e)=platform::init(&info){fail(&mut screen,e);}
+    if !crate::heap::self_test(){fail(&mut screen,"HEAP_TEST");}
+    serial::line("H5K: HEAP_ALLOC_FREE_OK");
+    if !crate::security::init(info.clock){fail(&mut screen,"SECURITY_FOUNDATIONS_TEST");}
+    if !crate::sheet::self_test(){fail(&mut screen,"SHEET_TEST");}
+    serial::line("H5K: SHEET_FORMULAS_OK");
     let mut tasks=services::Tasks::new();
     if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
     serial::line("H5K: COOPERATIVE_SCHEDULER_OK");

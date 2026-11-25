@@ -10,7 +10,7 @@ import socket
 import json
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-REQUIRED = [b'H5K: BOOT v0.1.5', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: COMPAT_FORMAT_PROBE_OK', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: NET_FORMAT_TEST_OK', b'H5K: KERNEL_READY']
+REQUIRED = [b'H5K: BOOT v0.1.6', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: HEAP_ALLOC_FREE_OK', b'H5K: SECURITY_FOUNDATIONS_OK', b'H5K: SHEET_FORMULAS_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: COMPAT_FORMAT_PROBE_OK', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: NET_FORMAT_TEST_OK', b'H5K: KERNEL_READY']
 
 def validate(data):
     pos = 0
@@ -33,18 +33,21 @@ def main():
     parser.add_argument('--memory', type=int, default=256)
     parser.add_argument('--timeout', type=int, default=60)
     parser.add_argument('--interactive', action='store_true')
+    parser.add_argument('--cpu', default='qemu64')
+    parser.add_argument('--security-test', choices=['available','unavailable'])
     args = parser.parse_args()
     if args.memory < 128 or args.timeout < 1:
         parser.error('memory must be >=128 MiB and timeout positive')
     code, var = firmware()
-    img = ROOT/'dist/hi5os-v0.1.5.img'
+    img = ROOT/'dist/hi5os-v0.1.6.img'
     if not img.is_file(): raise SystemExit('Run scripts/build.sh first')
     log = ROOT / 'dist' / f'boot-{args.memory}m.log'
     log.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix='hi5os-vm-') as tmp:
         variables = pathlib.Path(tmp)/'vars.fd'
         shutil.copyfile(var, variables)
-        cmd = ['qemu-system-x86_64','-machine','q35,accel=tcg','-cpu','qemu64','-m',str(args.memory),'-smp','1', '-drive',f'if=pflash,format=raw,readonly=on,file={code}', '-drive',f'if=pflash,format=raw,file={variables}', '-drive',f'if=none,id=os,format=raw,readonly=on,file={img}', '-device','qemu-xhci','-device','usb-storage,drive=os,bootindex=1','-vga','std','-nic','none','-monitor','none','-no-reboot','-serial',f'file:{log}']
+        cmd = ['qemu-system-x86_64','-machine','q35,accel=tcg','-cpu',args.cpu,'-m',str(args.memory),'-smp','1', '-drive',f'if=pflash,format=raw,readonly=on,file={code}', '-drive',f'if=pflash,format=raw,file={variables}', '-drive',f'if=none,id=os,format=raw,readonly=on,file={img}', '-device','qemu-xhci','-device','usb-storage,drive=os,bootindex=1','-vga','std','-nic','none','-monitor','none','-no-reboot','-serial',f'file:{log}']
+        if args.security_test: cmd += ['-rtc','base=2026-01-02T03:04:05,clock=vm']
         if args.interactive:
             return subprocess.call(cmd)
         qmp = str(pathlib.Path(tmp)/'qmp.sock')
@@ -55,6 +58,13 @@ def main():
                 data = log.read_bytes() if log.exists() else b''
                 if b'H5K: KERNEL_READY' in data:
                     validate(data)
+                    if args.security_test:
+                        import re, datetime
+                        m=re.search(rb'H5K: CLOCK_EPOCH=0x([0-9a-fA-F]+)',data)
+                        expected=int(datetime.datetime(2026,1,2,3,4,5,tzinfo=datetime.timezone.utc).timestamp())
+                        if not m or not expected<=int(m.group(1),16)<=expected+30:raise RuntimeError(f'Unexpected VM clock: {m}')
+                        if args.security_test=='available' and not any(k in data for k in [b'H5K: ENTROPY_RDSEED',b'H5K: ENTROPY_RDRAND']):raise RuntimeError('Hardware entropy expected')
+                        if args.security_test=='unavailable' and b'H5K: ENTROPY_UNAVAILABLE' not in data:raise RuntimeError('Entropy should fail closed')
                     # Exercise real keyboard input and RAM workspace through QMP.
                     with socket.socket(socket.AF_UNIX) as sock:
                         sock.settimeout(5)
@@ -81,6 +91,20 @@ def main():
                         while b'SHELL_HELP_OK' not in log.read_bytes() and time.monotonic()<deadline:time.sleep(.1)
                         if b'SHELL_HELP_OK' not in log.read_bytes():raise RuntimeError('Shell command failed')
                         call('screendump',{'filename':str(ROOT/'dist'/f'terminal-{args.memory}m.ppm')})
+                        if args.security_test=='available':
+                            def type_command(cmd):
+                                for ch in cmd:
+                                    key={' ':'spc','=':'equal','(':'shift-9',')':'shift-0',':':'shift-semicolon'}.get(ch,ch)
+                                    call('human-monitor-command',{'command-line':'sendkey '+key});time.sleep(.18)
+                                call('human-monitor-command',{'command-line':'sendkey ret'});time.sleep(.3)
+                            type_command('security')
+                            type_command('set a1 12')
+                            type_command('set a2 30')
+                            type_command('set b1 =sum(a1:a2)')
+                            deadline=time.monotonic()+5
+                            while b'SHEET_RESULT=0x000000000000002a' not in log.read_bytes() and time.monotonic()<deadline:time.sleep(.1)
+                            if b'SHEET_RESULT=0x000000000000002a' not in log.read_bytes():raise RuntimeError('Hi5Sheet interactive SUM failed')
+                            call('screendump',{'filename':str(ROOT/'dist'/'sheet-512m.ppm')})
                         call('human-monitor-command',{'command-line':'sendkey esc'})
                         time.sleep(.25)
                         call('human-monitor-command',{'command-line':'sendkey 1'})

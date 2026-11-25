@@ -65,6 +65,7 @@ pub struct BootInfo {
     pub descriptor_size: usize,
     pub descriptor_version: u32,
     pub framebuffer: Option<Framebuffer>,
+    pub clock: Option<crate::security::Clock>,
 }
 
 // Compile-time ABI guards for the only supported architecture.
@@ -88,6 +89,16 @@ unsafe fn graphics(bs: *const BootServices) -> Option<Framebuffer> {
     if fb.base == 0 || fb.base % 4 != 0 || fb.width == 0 || fb.height == 0 || fb.stride < fb.width || fb.format > 1 || needed > fb.size || fb.base.checked_add(needed).is_none() { return None; }
     Some(fb)
 }
+// Only before ExitBootServices; no runtime pointer retained.
+type GetTime=unsafe extern "efiapi" fn(*mut crate::security::EfiTime,*mut c_void)->usize;
+#[repr(C)]struct RuntimeTime{header:Header,get_time:GetTime}
+unsafe fn read_clock(table:*const SystemTable)->Option<crate::security::Clock>{
+    let rt=(*table).runtime_services as *const RuntimeTime;
+    if rt.is_null()||(*rt).header.signature!=0x56524553544e5552||((*rt).header.size as usize)<core::mem::size_of::<RuntimeTime>(){return None;}
+    let mut time=crate::security::EfiTime::empty();
+    if ((*rt).get_time)(&mut time,ptr::null_mut())!=0{return None;}
+    crate::security::convert(time)
+}
 fn fail(reason: &str, status: usize) -> ! {
     serial::line(reason);
     serial::metric("H5K: EFI_STATUS=", status as u64);
@@ -98,6 +109,7 @@ pub unsafe fn start(image: usize, table: *mut SystemTable) -> ! {
     if table.is_null() || (*table).header.signature != SYSTEM_SIGNATURE || ((*table).header.size as usize) < core::mem::size_of::<SystemTable>() { fail("H5K: BAD_SYSTEM_TABLE", 0); }
     let bs = (*table).boot_services;
     if bs.is_null() || (*bs).header.signature != BOOT_SIGNATURE || ((*bs).header.size as usize) < core::mem::size_of::<BootServices>() { fail("H5K: BAD_BOOT_SERVICES", 0); }
+    let clock=read_clock(table);
     let framebuffer = graphics(bs);
     if framebuffer.is_some() { serial::line("H5K: GOP_FOUND"); } else { serial::line("H5K: GOP_UNAVAILABLE"); }
     let map = ptr::addr_of_mut!(MAP.0).cast::<u8>();
@@ -115,7 +127,7 @@ pub unsafe fn start(image: usize, table: *mut SystemTable) -> ! {
         if status == 0 {
             // No firmware boot-service pointers are passed to the kernel.
             core::arch::asm!("cli", options(nomem, nostack));
-            kernel::enter(BootInfo { map, map_size: size, descriptor_size: stride, descriptor_version: version, framebuffer });
+            kernel::enter(BootInfo { map, map_size: size, descriptor_size: stride, descriptor_version: version, framebuffer, clock });
         }
         if status != INVALID_PARAMETER { fail("H5K: EXIT_FAILED", status); }
     }

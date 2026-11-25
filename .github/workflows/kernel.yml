@@ -28,6 +28,10 @@ jobs:
         run: python3 scripts/smoke.py --memory 512
       - name: Qualify 1024 MiB VM
         run: python3 scripts/smoke.py --memory 1024
+      - name: Clock and fail-closed entropy on CPU without RNG
+        run: python3 scripts/smoke.py --memory 512 --cpu qemu64,-rdrand,-rdseed --security-test unavailable
+      - name: Clock, hardware entropy and interactive Hi5Sheet
+        run: python3 scripts/smoke.py --memory 512 --cpu max,+rdrand --security-test available
       - name: Persistent document cold boot test
         run: python3 scripts/persistence.py
       - name: Restricted native HTTP binary download test
@@ -44,7 +48,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.1.5-vm-evidence
+          name: hi5os-v0.1.6-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
