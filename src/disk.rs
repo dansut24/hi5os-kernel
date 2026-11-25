@@ -33,7 +33,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if lba>2||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{return false;}
+        if lba>2||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -48,7 +48,7 @@ impl Port{
             if !flush{ct.add(12).write(1);ptr::write_unaligned(ct.add(128).cast::<u32>(),db as u32);ptr::write_unaligned(ct.add(140).cast::<u32>(),511);}
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             wr(a+0x10,u32::MAX);wr(a+0x38,1);
-            if !wait(a+0x38,1,0)||rd(a+0x10)&(1<<30)!=0||rd(a+0x20)&1!=0{return false;}
+            if !wait(a+0x38,1,0)||rd(a+0x10)&(1<<30)!=0||rd(a+0x20)&1!=0{serial::metric("H5K: AHCI_CMD_ERROR_IS=",rd(a+0x10)as u64);serial::metric("H5K: AHCI_CMD_ERROR_TFD=",rd(a+0x20)as u64);serial::metric("H5K: AHCI_CMD_ERROR_CI=",rd(a+0x38)as u64);return false;}
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             if !write&&!flush{ptr::copy_nonoverlapping(db,buf.as_mut_ptr(),512);}
         }true
@@ -62,18 +62,25 @@ fn find()->Option<Port>{
     for dev in 0..32u32{for fun in 0..8u32{
         let b=0x80000000|(dev<<11)|(fun<<8);
         if pci_read(b,0)&0xffff==0xffff||pci_read(b,8)>>8!=0x010601{continue;}
-        let bar=pci_read(b,0x24);
+        serial::metric("H5K: AHCI_PCI_BDF=",b as u64);
+        let bar=pci_read(b,0x24);serial::metric("H5K: AHCI_BAR=",bar as u64);
         if bar&7!=0||bar==0||bar==u32::MAX{continue;}
         let base=(bar&!15)as usize;if base<0x8000_0000||base>0xffff_e000{continue;}
         let cmd=pci_read(b,4);pci_write(b,4,(cmd&0xffff)|6);
         wr(base+4,(rd(base+4)|(1<<31))&!2);
-        let pi=rd(base+0x0c);
+        let pi=rd(base+0x0c);serial::metric("H5K: AHCI_PORTS=",pi as u64);
         for i in 0..32usize{if pi&(1u32<<i)==0{continue;}
             let port=Port{base:base+0x100+i*0x80};
-            if rd(port.base+0x28)&0x10f!=0x103||rd(port.base+0x24)!=0x101{continue;}
-            if !port.setup(){return None;}
+            let ssts=rd(port.base+0x28);let sig=rd(port.base+0x24);
+            serial::metric("H5K: AHCI_PORT=",i as u64);serial::metric("H5K: AHCI_SSTS=",ssts as u64);serial::metric("H5K: AHCI_SIG_BEFORE=",sig as u64);
+            // Signature can remain uninitialised before the receive engine sees a D2H FIS.
+            // Require an established physical link, not a pre-populated ATA signature.
+            if ssts&15!=3{continue;}
+            if sig==0xeb140101||sig==0x96690101||sig==0xc33c0101{continue;}
+            if !port.setup(){serial::line("H5K: AHCI_SETUP_FAILED");return None;}
+            serial::metric("H5K: AHCI_SIG_AFTER=",rd(port.base+0x24)as u64);
             let mut h=[0;512];
-            if port.read(0,&mut h)&&header_ok(&h){return Some(port);}
+            if port.read(0,&mut h){if header_ok(&h){serial::line("H5K: AHCI_DATA_HEADER_OK");return Some(port);}serial::line("H5K: AHCI_HEADER_NOT_HI5OS");}else{serial::line("H5K: AHCI_HEADER_READ_FAILED");}
             if !port.stop()||rd(port.base+0x38)!=0{return None;}
         }
     }}None

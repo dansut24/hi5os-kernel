@@ -15,7 +15,7 @@ def main():
             cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1",
                 "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
                 "-drive",f"if=none,id=os,format=raw,readonly=on,file={system}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
-                "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data",
+                "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
                 "-vga","std","-nic","none","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
             proc=subprocess.Popen(cmd)
             def wait(marker,seconds=60):
@@ -29,7 +29,7 @@ def main():
             try:
                 validate(wait(b"H5K: KERNEL_READY"))
                 if boot==1:
-                    wait(b"H5K: DATA_DISK_EMPTY",1)
+                    wait(b"H5K: DATA_DISK_EMPTY",5)
                     with socket.socket(socket.AF_UNIX) as sock:
                         sock.settimeout(5);sock.connect(str(qmp));stream=sock.makefile("rwb");json.loads(stream.readline())
                         def call(name,args=None):

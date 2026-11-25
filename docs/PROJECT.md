@@ -1,2 +1,4 @@
 # Hi5OS handoff
 v0.0.9 qualified in QEMU and user reports working great in UTM. Baseline branch preserved. User approved v0.1.0. Candidate: native AHCI limited to dedicated signature-identified data image, two checksummed records and typed Notepad, cold restart CI. No general filesystem, IP stack, USB HID, process isolation or multiple windows yet. Next qualify persistent save/reboot, then FAT32 directories, networking and independently loaded processes. Keep UTM PS/2 config, separate system/data images; no production/EU changes.
+
+Storage CI first candidate dae18c6: all three regular VM tests passed, persistence failed with DATA_DISK_MISSING. Follow-up removes premature ATA signature requirement for connected SATA ports, adds AHCI PCI/port/command diagnostics, explicitly lists data disk as secondary firmware boot candidate. Full persistence test remains mandatory. Exact underlying cause pending new logs.
