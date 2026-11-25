@@ -352,38 +352,88 @@ unsafe fn version_info(v:u64,wide:bool)->bool{
     if len==basic+8{p.add(basic+6).write(1);} // workstation, no claimed service pack
     true
 }
+const CP437:[u16;128]=[0xc7,0xfc,0xe9,0xe2,0xe4,0xe0,0xe5,0xe7,0xea,0xeb,0xe8,0xef,0xee,0xec,0xc4,0xc5,0xc9,0xe6,0xc6,0xf4,0xf6,0xf2,0xfb,0xf9,0xff,0xd6,0xdc,0xa2,0xa3,0xa5,0x20a7,0x192,0xe1,0xed,0xf3,0xfa,0xf1,0xd1,0xaa,0xba,0xbf,0x2310,0xac,0xbd,0xbc,0xa1,0xab,0xbb,0x2591,0x2592,0x2593,0x2502,0x2524,0x2561,0x2562,0x2556,0x2555,0x2563,0x2551,0x2557,0x255d,0x255c,0x255b,0x2510,0x2514,0x2534,0x252c,0x251c,0x2500,0x253c,0x255e,0x255f,0x255a,0x2554,0x2569,0x2566,0x2560,0x2550,0x256c,0x2567,0x2568,0x2564,0x2565,0x2559,0x2558,0x2552,0x2553,0x256b,0x256a,0x2518,0x250c,0x2588,0x2584,0x258c,0x2590,0x2580,0x3b1,0xdf,0x393,0x3c0,0x3a3,0x3c3,0xb5,0x3c4,0x3a6,0x398,0x3a9,0x3b4,0x221e,0x3c6,0x3b5,0x2229,0x2261,0xb1,0x2265,0x2264,0x2320,0x2321,0xf7,0x2248,0xb0,0x2219,0xb7,0x221a,0x207f,0xb2,0x25a0,0xa0];
+const CP1252:[u16;32]=[0x20ac,0x81,0x201a,0x192,0x201e,0x2026,0x2020,0x2021,0x2c6,0x2030,0x160,0x2039,0x152,0x8d,0x17d,0x8f,0x90,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,0x2dc,0x2122,0x161,0x203a,0x153,0x9d,0x17e,0x178];
+fn codepage(cp:u32)->Option<u32>{match cp{0|3|1252=>Some(1252),1|437=>Some(437),65001=>Some(65001),_=>None}}
+fn legacy_decode(cp:u32,v:u8)->u16{
+    if cp==437&&v>=128{CP437[(v-128)as usize]}else if cp==1252&&(128..160).contains(&v){CP1252[(v-128)as usize]}else{v as u16}
+}
+fn legacy_encode(cp:u32,c:char)->Option<u8>{
+    let v=c as u32;if v<128{return Some(v as u8);}
+    if cp==437{CP437.iter().position(|n|*n as u32==v).map(|i|(128+i)as u8)}
+    else if (160..=255).contains(&v){Some(v as u8)}else{CP1252.iter().position(|n|*n as u32==v).map(|i|(128+i)as u8)}
+}
+fn nls_failure(name:&str,cp:u32,flags:u32,error:u32){
+    unsafe{LAST=error;}
+    serial::write("H5K: TRIAL_NLS_FAILURE|");serial::line(name);
+    serial::metric("H5K: TRIAL_NLS_CP=",cp as u64);serial::metric("H5K: TRIAL_NLS_FLAGS=",flags as u64);serial::metric("H5K: TRIAL_NLS_ERROR=",error as u64);
+}
 unsafe fn mb_to_wide(f:&mut Frame,x:u64,y:u64,z:u64,w:u64){
-    let cp=x as u32;let flags=y as u32;
-    // ASCII subset of ACP/OEM and full UTF-8; reject unsupported legacy non-ASCII rather than corrupt text.
-    if !matches!(cp,0|1|437|1252|65001)||flags&!8!=0{LAST=87;return;}
+    let flags=y as u32;let fail=|e|nls_failure("MultiByteToWideChar",x as u32,flags,e);
+    let Some(cp)=codepage(x as u32)else{fail(87);return;};if flags&!8!=0{fail(1004);return;}
     let count=w as u32 as i32;
-    let n=if count==-1{match c_len(z,false){Some(n)=>n+1,None=>{LAST=87;return;}}}else if count>0{count as usize}else{LAST=87;return;};
-    if n>65536{LAST=87;return;}let Some(p)=phys(z,n,false)else{LAST=87;return;};let bytes=core::slice::from_raw_parts(p,n);
-    if cp!=65001&&!bytes.is_ascii(){LAST=1113;return;}
-    let Ok(s)=core::str::from_utf8(bytes)else{LAST=1113;return;};
-    let need=s.encode_utf16().count();
-    let Some(dst)=arg(f,40)else{LAST=87;return;};let Some(cap)=arg(f,48).map(|v|v as u32 as i32)else{LAST=87;return;};
-    if cap==0{f.rax=need as u64;return;}if cap<0||(cap as usize)<need{LAST=122;return;}
-    let Some(q)=phys(dst,need*2,true)else{LAST=87;return;};
-    // Reject overlapping user buffers, avoiding aliasing a Rust source slice.
-    if dst<z+n as u64&&z<dst+(need*2)as u64{LAST=87;return;}
-    for(i,c)in s.encode_utf16().enumerate(){ptr::write_unaligned(q.add(i*2).cast::<u16>(),c);}f.rax=need as u64;
+    let n=if count==-1{match c_len(z,false){Some(n)=>n+1,None=>{fail(87);return;}}}else if count>0{count as usize}else{fail(87);return;};
+    if n>65536{fail(87);return;}let Some(p)=phys(z,n,false)else{fail(87);return;};
+    let bytes=core::slice::from_raw_parts(p,n);
+    let utf=if cp==65001{match core::str::from_utf8(bytes){Ok(s)=>Some(s),Err(_)=>{fail(1113);return;}}}else{None};
+    let need=if let Some(s)=utf{s.encode_utf16().count()}else{n};
+    let Some(dst)=arg(f,40)else{fail(87);return;};let Some(cap)=arg(f,48).map(|v|v as u32 as i32)else{fail(87);return;};
+    if cap==0{f.rax=need as u64;return;}if cap<0{fail(87);return;}if (cap as usize)<need{fail(122);return;}
+    let Some(q)=phys(dst,need*2,true)else{fail(87);return;};
+    if dst<z+n as u64&&z<dst+(need*2)as u64{fail(87);return;}
+    if let Some(s)=utf{for(i,c)in s.encode_utf16().enumerate(){ptr::write_unaligned(q.add(i*2).cast::<u16>(),c);}}
+    else{for(i,c)in bytes.iter().enumerate(){ptr::write_unaligned(q.add(i*2).cast::<u16>(),legacy_decode(cp,*c));}}
+    f.rax=need as u64;
 }
 unsafe fn wide_to_mb(f:&mut Frame,x:u64,y:u64,z:u64,w:u64){
-    let cp=x as u32;let flags=y as u32;if !matches!(cp,0|1|437|1252|65001)||flags&!0x480!=0{LAST=87;return;}
-    let count=w as u32 as i32;let n=if count==-1{match c_len(z,true){Some(n)=>n+1,None=>{LAST=87;return;}}}else if count>0{count as usize}else{LAST=87;return;};
-    if n>65536{LAST=87;return;}let Some(p)=phys(z,n*2,false)else{LAST=87;return;};
+    let flags=y as u32;let fail=|e|nls_failure("WideCharToMultiByte",x as u32,flags,e);
+    let Some(cp)=codepage(x as u32)else{fail(87);return;};
+    if cp==65001&&flags&!0x80!=0||cp!=65001&&flags&!0x400!=0{fail(1004);return;}
+    let count=w as u32 as i32;let n=if count==-1{match c_len(z,true){Some(n)=>n+1,None=>{fail(87);return;}}}else if count>0{count as usize}else{fail(87);return;};
+    if n>65536{fail(87);return;}let Some(p)=phys(z,n*2,false)else{fail(87);return;};
+    let (Some(dst),Some(cap),Some(default),Some(used))=(arg(f,40),arg(f,48).map(|v|v as u32 as i32),arg(f,56),arg(f,64))else{fail(87);return;};
+    if cp==65001&&(default!=0||used!=0)||cap<0{fail(87);return;}
+    let fallback=if default==0{b'?'}else{let Some(q)=phys(default,1,false)else{fail(87);return;};*q};
+    if used!=0&&phys(used,4,true).is_none(){fail(87);return;}
     let src=||core::char::decode_utf16((0..n).map(|i|ptr::read_unaligned(p.add(i*2).cast::<u16>())));
-    let mut need=0usize;for c in src(){let Ok(c)=c else{LAST=1113;return;};if cp!=65001&&!c.is_ascii(){LAST=1113;return;}need+=c.len_utf8();}
-    let Some(dst)=arg(f,40)else{LAST=87;return;};let Some(cap)=arg(f,48).map(|v|v as u32 as i32)else{LAST=87;return;};
-    let default=arg(f,56);let used=arg(f,64);
-    if default!=Some(0)||used.is_none()||cp==65001&&used!=Some(0){LAST=87;return;}
-    if let Some(u)=used{if u!=0&&phys(u,4,true).is_none(){LAST=87;return;}}
-    if cap==0{f.rax=need as u64;return;}if cap<0||(cap as usize)<need{LAST=122;return;}
-    let Some(q)=phys(dst,need,true)else{LAST=87;return;};
-    if dst<z+(n*2)as u64&&z<dst+need as u64{LAST=87;return;}
-    let mut i=0;for c in src(){let mut b=[0u8;4];let s=c.unwrap().encode_utf8(&mut b);ptr::copy_nonoverlapping(s.as_ptr(),q.add(i),s.len());i+=s.len();}
-    if let Some(u)=used{if u!=0{write32(u,0);}}f.rax=need as u64;
+    let mut need=0usize;let mut substituted=false;
+    for item in src(){
+        let c=match item{Ok(c)=>c,Err(_)=>{if cp==65001&&flags&0x80!=0{fail(1113);return;}core::char::REPLACEMENT_CHARACTER}};
+        if cp==65001{need+=c.len_utf8();}else{need+=1;if legacy_encode(cp,c).is_none(){substituted=true;}}
+    }
+    if cap==0{if used!=0{write32(used,substituted as u32);}f.rax=need as u64;return;}
+    if (cap as usize)<need{fail(122);return;}
+    let Some(q)=phys(dst,need,true)else{fail(87);return;};
+    if dst<z+(n*2)as u64&&z<dst+need as u64||used!=0&&used<dst+need as u64&&dst<used+4{fail(87);return;}
+    let mut i=0;
+    for item in src(){
+        let c=item.unwrap_or(core::char::REPLACEMENT_CHARACTER);
+        if cp==65001{let mut b=[0u8;4];let s=c.encode_utf8(&mut b);ptr::copy_nonoverlapping(s.as_ptr(),q.add(i),s.len());i+=s.len();}
+        else{q.add(i).write(legacy_encode(cp,c).unwrap_or(fallback));i+=1;}
+    }
+    if used!=0{write32(used,substituted as u32);}f.rax=need as u64;
+}
+unsafe fn nls_test()->bool{
+    let src=ENV+0x800;let dst=ENV+0x840;let fallback=ENV+0x880;let used=ENV+0x884;let stack=STACK+0x100;
+    let Some(p)=phys(src,8,true)else{return false;};for(i,c)in [0x41u16,0x00e9,0x20ac,0].iter().enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),*c);}
+    let Some(q)=phys(fallback,1,true)else{return false;};q.write(b'!');
+    let mut frame=Frame{rax:0,rcx:0,rdx:0,r8:0,r9:0,rip:0,cs:0,flags:0,rsp:stack,ss:0};
+    // Exact two-pass pattern used by upstream 7-Zip: null/default args on sizing,
+    // caller-provided default character and BOOL on the legacy output pass.
+    if !write64(stack+40,0)||!write64(stack+48,0)||!write64(stack+56,0)||!write64(stack+64,0){return false;}
+    wide_to_mb(&mut frame,437,0,src,3);if frame.rax!=3{return false;}
+    if !write64(stack+40,dst)||!write64(stack+48,3)||!write64(stack+56,fallback)||!write64(stack+64,used){return false;}
+    frame.rax=0;wide_to_mb(&mut frame,437,0,src,3);
+    let Some(q)=phys(dst,3,false)else{return false;};let Some(u)=phys(used,4,false)else{return false;};
+    if frame.rax!=3||core::slice::from_raw_parts(q,3)!=[0x41,0x82,b'!']||ptr::read_unaligned(u.cast::<u32>())!=1{return false;}
+    frame.rax=0;wide_to_mb(&mut frame,1252,0,src,3);
+    if frame.rax!=3||core::slice::from_raw_parts(q,3)!=[0x41,0xe9,0x80]||ptr::read_unaligned(u.cast::<u32>())!=0{return false;}
+    if !write64(stack+40,src)||!write64(stack+48,4){return false;}
+    frame.rax=0;mb_to_wide(&mut frame,1252,0,dst,3);
+    if frame.rax!=3||ptr::read_unaligned(p.add(2).cast::<u16>())!=0xe9||ptr::read_unaligned(p.add(4).cast::<u16>())!=0x20ac{return false;}
+    if !write64(stack+40,dst)||!write64(stack+48,8)||!write64(stack+56,0)||!write64(stack+64,0){return false;}
+    frame.rax=0;wide_to_mb(&mut frame,65001,0,src,3);if frame.rax!=6||core::slice::from_raw_parts(q,6)!=b"A\xc3\xa9\xe2\x82\xac"{return false;}
+    true
 }
 unsafe fn token_access(h:u64)->Option<u32>{
     if h==0{return None;}
@@ -826,6 +876,7 @@ pub fn self_test()->bool{unsafe{
     let small_a=allocate(128);let small_b=allocate(256);if small_a!=a||small_b!=a+128||!release(small_a)||!release(small_b)||!release(b)||NEXT!=HEAP{return false;}
     let a=allocate_aligned(4096,4096);if a!=HEAP||!release(a)||NEXT!=HEAP{return false;}
     serial::line("H5K: TRIAL_HEAP_REUSE_OK");
+    reset();if !nls_test(){return false;}serial::line("H5K: TRIAL_NLS_CONVERSION_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];

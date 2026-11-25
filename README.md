@@ -3,3 +3,5 @@ Stable v0.2.6 bc1357f build49 qualified real 7-Zip 26.06 x64 help and exit0 in C
 Additional foundations: native bounded CFB directory and regular/mini stream CRC reader exercised against the original official MSI over guest HTTP, independent olefile comparison; class/window/message queue lifecycle self-test. No Win32 callback dispatch, rendering, MSI table/action execution, or genuine graphical launch yet.
 
 Build52 correction: boot marker order matches kernel. Build51 diagnostic showed real format output and input scanning, not successful archive creation. Enhanced allocator split/coalesce, bounded system error formatting and detailed trace to distinguish root causes. C++ exception unwinding remains unsupported.
+
+Build54 diagnostics narrowed the shared archive blocker to the second WideCharToMultiByte call. Corrected legacy default-character handling and CP437/1252 mapping; direct two-pass, substitution flag and UTF8 tests required. General Windows NLS/best-fit and malformed-input behavior are not fully implemented. No C++ exception bypass.
