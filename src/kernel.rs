@@ -1,4 +1,4 @@
-//! v0.0.8 first memory milestone; firmware mappings retained deliberately.
+//! Bootstrap and qualified kernel self-tests before native desktop launch.
 use crate::{boot::BootInfo,cpu,display::Screen,memory,serial,platform,services,desktop};
 use core::arch::asm;
 
