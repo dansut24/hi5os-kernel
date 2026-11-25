@@ -80,6 +80,7 @@ def main():
                     key("esc");key("4");wait(b"GUI_TERMINAL_OPEN",5)
                     for ch in "peinfo":key(ch)
                     key("ret");wait(b"SHELL_PEINFO_OK",30)
+                    wait(f"PE_FILE_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
                     call("screendump",{"filename":str(ROOT/"dist"/"7zip-imports-512m.ppm")});call("quit")
                     proc.wait(timeout=10)
                     print("PASS: original 7-Zip PE downloaded to RAM and import inventory generated; execution disabled")

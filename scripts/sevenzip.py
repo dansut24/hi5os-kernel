@@ -26,8 +26,12 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     for entry in pe.DIRECTORY_ENTRY_IMPORT:
         dll=entry.dll.decode("ascii")
         for symbol in entry.imports:
-            imports.append((dll.lower(),symbol.name.decode("ascii") if symbol.name else "#"+str(symbol.ordinal)))
+            # pefile can annotate ordinal imports with known names. Compare the actual thunk kind.
+            key="#"+str(symbol.ordinal) if symbol.import_by_ordinal else symbol.name.decode("ascii")
+            imports.append((dll.lower(),key))
     assert imports,"7za.exe has no imports"
+    assert {s for d,s in imports if d=="oleaut32.dll"}=={"#2","#4","#6","#7","#9","#10"},"Pinned ordinal inventory changed"
+    print("Static dependency counts:",dict(collections.Counter(d for d,s in imports)),flush=True)
     report={"version":VERSION,"source":URL,"archive_sha256":SHA,"exe_sha256":hashlib.sha256(raw).hexdigest(),"bytes":len(raw),"machine":"AMD64","imports":[{"dll":d,"symbol":s} for d,s in imports],"delay_imports":bool(getattr(pe,"DIRECTORY_ENTRY_DELAY_IMPORT",[])),"relocations":bool(getattr(pe,"DIRECTORY_ENTRY_BASERELOC",[])),"execution":"not attempted"}
     (ROOT/"dist"/"7zip-imports.json").write_text(json.dumps(report,indent=2)+"\n")
     print(f"7-Zip {VERSION}: {len(raw)} bytes, {len(set(d for d,s in imports))} DLLs, {len(imports)} static imports",flush=True)
@@ -36,5 +40,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     guest=[]
     for d,s in re.findall(r"H5K: PE_DEP\|([^|\r\n]+)\|([^\r\n]+)",log):
         guest.append((d.lower(),"#"+str(int(s[1:],16)) if s.startswith("#0x") else s))
+    assert len(guest)==len(imports)==145,"Pinned 7-Zip import count changed"
+    assert len(set(d for d,s in guest))==5,"Pinned DLL count changed"
     assert collections.Counter(guest)==collections.Counter(imports),f"Import mismatch: missing {collections.Counter(imports)-collections.Counter(guest)}, extra {collections.Counter(guest)-collections.Counter(imports)}"
     print(f"PASS: native PE inventory exactly matches host pefile for all {len(imports)} imports")

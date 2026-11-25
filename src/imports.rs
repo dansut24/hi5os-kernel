@@ -77,6 +77,9 @@ pub fn inspect(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>))->Result<Report,&'st
 }
 pub fn log(b:&[u8])->Result<Report,&'static str>{
     serial::line("H5K: PE_INSPECT_BEGIN");
+    // Verify full downloaded payload in addition to the import inventory (not authentication).
+    let mut crc=0xffff_ffffu32;for byte in b{crc^=*byte as u32;for _ in 0..8{crc=(crc>>1)^if crc&1!=0{0xedb88320}else{0};}}
+    serial::metric("H5K: PE_FILE_CRC=",(!crc) as u64);
     let r=inspect(b,|dll,s|{serial::write("H5K: PE_DEP|");serial::write(dll);serial::write("|");match s{Symbol::Name(n)=>serial::line(n),Symbol::Ordinal(n)=>{serial::write("#");serial::hex(n as u64);serial::line("");}}})?;
     serial::metric("H5K: PE_DLL_COUNT=",r.dlls as u64);serial::metric("H5K: PE_FUNCTION_COUNT=",r.functions as u64);
     serial::metric("H5K: PE_FIXTURE_API_COUNT=",r.fixture_apis as u64);serial::metric("H5K: PE_DELAY_IMPORTS=",r.delayed as u64);serial::metric("H5K: PE_RELOCATIONS=",r.reloc as u64);
