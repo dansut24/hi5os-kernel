@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             assert b"SEVENZIP_HELP_OK" in log.read_bytes()
             assert b"TRIAL_HEAP_REUSE_OK" in log.read_bytes()
             assert b"TRIAL_NLS_CONVERSION_OK" in log.read_bytes()
+            assert b"TRIAL_FILE_ABI_OK" in log.read_bytes()
             def command(s,marker=b"SHELL_7ZIP_RETURNED"):
                 prior=len(log.read_bytes())
                 for ch in s:key({" ":"spc","-":"minus",".":"dot","=":"equal","/":"slash"}.get(ch,ch))
@@ -63,6 +64,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 if op=="7za i":ok=ok and b"SEVENZIP_FORMATS_OK" in tail
                 results[op]=ok
                 print("ARCHIVE OP:",op,"PASS" if ok else "NOT QUALIFIED",flush=True)
+            assert results["7za i"],"Regression: genuine supported-format output no longer qualified"
             results["arcverify"]=b"SHELL_ARCHIVE_VERIFY_OK" in command("arcverify",b"SHELL_ARCHIVE_VERIFY_OK")
             call("screendump",{"filename":str(ROOT/"dist"/f"7zip-archive-{CPU}-512m.ppm")});call("quit")
         proc.wait(timeout=10)

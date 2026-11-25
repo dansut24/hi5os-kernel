@@ -5,3 +5,5 @@ Additional foundations: native bounded CFB directory and regular/mini stream CRC
 Build52 correction: boot marker order matches kernel. Build51 diagnostic showed real format output and input scanning, not successful archive creation. Enhanced allocator split/coalesce, bounded system error formatting and detailed trace to distinguish root causes. C++ exception unwinding remains unsupported.
 
 Build54 diagnostics narrowed the shared archive blocker to the second WideCharToMultiByte call. Corrected legacy default-character handling and CP437/1252 mapping; direct two-pass, substitution flag and UTF8 tests required. General Windows NLS/best-fit and malformed-input behavior are not fully implemented. No C++ exception bypass.
+
+Build55: genuine supported-format listing qualified and now mandatory. Archive creation stops at file-open parameter error; next patch corrects 32-bit stack argument decoding and extends bounded private-file flags, adds direct file ABI test and actual open diagnostics. ZIP/7z round trip still outstanding.

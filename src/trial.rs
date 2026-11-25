@@ -549,6 +549,43 @@ unsafe fn format_message(f:&mut Frame,x:u64,y:u64,z:u64,w:u64){
     let Some(p)=phys(dest,(n+1)*2,true)else{LAST=87;return;};
     for(i,c)in msg.bytes().enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),c as u16);}ptr::write_unaligned(p.add(n*2).cast::<u16>(),0);f.rax=n as u64;
 }
+unsafe fn create_file(f:&mut Frame,x:u64,y:u64,z:u64,w:u64){
+    // DWORD stack arguments occupy only the low 32 bits of their 8-byte ABI slots.
+    // Upper padding may contain arbitrary caller data; pointer arguments remain full width.
+    let mode=arg(f,40).map(|v|v as u32);let flags=arg(f,48).map(|v|v as u32);let template=arg(f,56);
+    f.rax=u64::MAX;
+    let mut name=[0u8;128];
+    if let Some(n)=read_ascii(x,true,&mut name){serial::write("H5K: TRIAL_CREATE_FILE|");serial::line(core::str::from_utf8(&name[..n]).unwrap_or("?"));}
+    serial::metric("H5K: TRIAL_FILE_ACCESS=",y as u32 as u64);serial::metric("H5K: TRIAL_FILE_SHARE=",z as u32 as u64);
+    serial::metric("H5K: TRIAL_FILE_MODE=",mode.unwrap_or(u32::MAX)as u64);serial::metric("H5K: TRIAL_FILE_FLAGS=",flags.unwrap_or(u32::MAX)as u64);
+    let result=(||{
+        let mode=mode.ok_or(87u32)?;let flags=flags.ok_or(87u32)?;
+        // Regular private files only: allow normal archive attributes and cache hints.
+        // Backup/reparse flags do not confer extra access; this namespace has no reparse points.
+        // Reject overlapped, delete-on-close, no-buffering and unknown flags.
+        const ALLOWED:u32=0x08000000|0x04000000|0x02000000|0x00200000|0xa7;
+        if w!=0||template!=Some(0)||flags&!ALLOWED!=0{return Err(87);}
+        let p=path(x).ok_or(123u32)?;
+        // Read-attributes and synchronize are metadata-only rights in this private namespace.
+        let access=y as u32;if access&!0xc0100080!=0{return Err(87);}
+        let (h,e)=fs().open(p,access&0xc0000000,z as u32,mode)?;
+        Ok((h,e))
+    })();
+    match result{Ok((h,e))=>{f.rax=h;LAST=e;},Err(e)=>{LAST=e;serial::metric("H5K: TRIAL_FILE_OPEN_ERROR=",e as u64);}}
+}
+unsafe fn file_abi_test()->bool{
+    let name=ENV+0x800;let st=STACK+0x100;
+    let Some(p)=phys(name,32,true)else{return false;};for(i,c)in "abi-test.zip".encode_utf16().chain(core::iter::once(0)).enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),c);}
+    let mut frame=Frame{rax:0,rcx:0,rdx:0,r8:0,r9:0,rip:0,cs:0,flags:0,rsp:st,ss:0};
+    // CREATE_NEW and FILE_ATTRIBUTE_NORMAL passed with deliberately nonzero padding.
+    if !write64(st+40,0xdeadbeef00000001)||!write64(st+48,0xa5a5a5a500000080)||!write64(st+56,0){return false;}
+    create_file(&mut frame,name,0x40000000,1,0);let h=frame.rax;if h==u64::MAX||fs().write(h,b"abi")!=Ok(3)||fs().close(h).is_err(){return false;}
+    if !write64(st+40,0x1234567800000003)||!write64(st+48,0xa5a5a5a508000080){return false;}
+    create_file(&mut frame,name,0x80000000,1,0);let h=frame.rax;let mut b=[0u8;3];
+    if h==u64::MAX||fs().read(h,&mut b)!=Ok(3)||&b!=b"abi"||fs().close(h).is_err(){return false;}
+    if !write64(st+48,0x40000080){return false;}create_file(&mut frame,name,0x80000000,1,0);
+    frame.rax==u64::MAX&&LAST==87
+}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -618,10 +655,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         22=>{if x==0||phys(x,1,false).is_some(){MATH_HANDLER=x;}else{abort_import(id);}},
         23=>f.rax=if x as u32<=2{1}else{0},
         24=>f.rax=match x as u32{1=>1,2=>2,_=>u64::MAX},
-        25=>{let mode=arg(f,40);let flags=arg(f,48);let template=arg(f,56);
-            if w!=0||template!=Some(0)||!matches!(flags,Some(0|0x80|0x08000080|0x08000000|0x04000080|0x04000000))||mode.is_none(){LAST=87;f.rax=u64::MAX;return;}
-            let Some(p)=path(x)else{LAST=123;f.rax=u64::MAX;return;};
-            match fs().open(p,y as u32,z as u32,mode.unwrap()as u32){Ok((h,e))=>{f.rax=h;LAST=e},Err(e)=>{LAST=e;f.rax=u64::MAX;}}},
+        25=>create_file(f,x,y,z,w),
         26=>read_write(f,false,x,y,z,w),
         27=>{if token_close(x){f.rax=1;}else{let r=fs().close(x);bool_result(f,r);}},
         28=>{if y!=0&&!write32(y,0){LAST=87;f.rax=u32::MAX as u64;return;}match fs().size(x){Ok(v)=>f.rax=v as u64,Err(e)=>{LAST=e;f.rax=u32::MAX as u64;}}},
@@ -738,7 +772,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         116=>{if write32(y,fs().size(x).unwrap_or(0)){if fs().size(x).is_ok()&&write32(y+4,0){f.rax=1;}else{LAST=6;}}else{LAST=87;}},
         117=>{let r=path(x).ok_or(123u32).and_then(|p|fs().info(p).ok_or(2u32));match r{Ok(e)=>{if y!=0{LAST=87;return;}let Some(p)=phys(z,36,true)else{LAST=87;return;};ptr::write_bytes(p,0,36);ptr::write_unaligned(p.cast::<u32>(),e.attrs);for j in 0..3{ptr::write_unaligned(p.add(4+j*8).cast::<u64>(),e.times[j]);}ptr::write_unaligned(p.add(32).cast::<u32>(),e.size);f.rax=1;},Err(e)=>LAST=e}},
         118=>format_message(f,x,y,z,w),
-        _=>abort_import(id)
+        _=>{if &a.name[..a.nn]==b"_CxxThrowException"{serial::metric("H5K: TRIAL_CXX_OBJECT=",x);serial::metric("H5K: TRIAL_CXX_THROWINFO=",y);serial::metric("H5K: TRIAL_CXX_LAST_ERROR=",LAST as u64);if let Some(p)=phys(f.rsp,8,false){serial::metric("H5K: TRIAL_CXX_RETURN=",ptr::read_unaligned(p.cast::<u64>()));}}abort_import(id)}
     }
 }
 unsafe fn fs()->&'static mut crate::trialfs::Fs{if WORK_ACTIVE{&mut *ptr::addr_of_mut!(WORK)}else{&mut *ptr::addr_of_mut!(FS)}}
@@ -877,6 +911,7 @@ pub fn self_test()->bool{unsafe{
     let a=allocate_aligned(4096,4096);if a!=HEAP||!release(a)||NEXT!=HEAP{return false;}
     serial::line("H5K: TRIAL_HEAP_REUSE_OK");
     reset();if !nls_test(){return false;}serial::line("H5K: TRIAL_NLS_CONVERSION_OK");
+    reset();if !file_abi_test(){return false;}serial::line("H5K: TRIAL_FILE_ABI_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
