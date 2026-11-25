@@ -15,6 +15,10 @@ const USER_VA:u64=0x1_0000_0000;
 #[repr(C,align(4096))]struct PeImage([u8;12288]);
 static mut PE_IMAGE:PeImage=PeImage([0;12288]);
 static mut PE_SHIM:Table=Table([0;512]);
+static mut PE_ENV:Table=Table([0;512]);
+const ENV_VA:u64=USER_VA+0x13000;
+#[no_mangle] static mut H5_PE_OUTPUT:[u8;128]=[0;128];
+#[no_mangle] static mut H5_PE_OUTPUT_LEN:u64=0;
 #[no_mangle] static mut H5_PE_ACTIVE:u64=0;
 #[no_mangle] static mut H5_PE_EXIT:u64=u64::MAX;
 #[no_mangle] static mut H5_PE_LAST_ERROR:u32=0;
@@ -95,6 +99,12 @@ h5_syscall:
     je h5_set_error
     cmp eax, 0x483553
     je h5_get_error
+    cmp eax, 0x483554
+    je h5_command_line
+    cmp eax, 0x483555
+    je h5_std_handle
+    cmp eax, 0x483556
+    je h5_write_file
     cmp eax, 0x483550
     jne h5_bad
     mov eax, ecx
@@ -110,6 +120,86 @@ h5_set_error:
     iretq
 h5_get_error:
     mov eax, dword ptr [rip + H5_PE_LAST_ERROR]
+    iretq
+h5_command_line:
+    mov rax, 0x100013400
+    iretq
+h5_std_handle:
+    cmp ecx, -11
+    jne h5_io_fail
+    mov eax, 1
+    iretq
+h5_write_file:
+    # Synchronous stdout only. Read-only image source, stack-only count pointer.
+    # RCX handle, RDX buffer, R8D length, R9 count pointer.
+    cmp rcx, 1
+    jne h5_io_fail
+    test r8d, r8d
+    jz h5_io_fail
+    cmp r8d, 128
+    ja h5_io_fail
+    mov r10, 0x100002000
+    cmp rdx, r10
+    jb h5_io_fail
+    mov r10, 0x100003000
+    cmp rdx, r10
+    jae h5_io_fail
+    mov r11d, r8d
+    add r11, rdx
+    cmp r11, r10
+    ja h5_io_fail
+    mov r10, 0x100011000
+    cmp r9, r10
+    jb h5_io_fail
+    mov r10, 0x100011ffc
+    cmp r9, r10
+    ja h5_io_fail
+    # Validate saved user stack and fifth (overlapped) argument.
+    mov r10, qword ptr [rsp + 24]
+    mov r11, 0x100011000
+    cmp r10, r11
+    jb h5_io_fail
+    mov r11, 0x100011fd0
+    cmp r10, r11
+    ja h5_io_fail
+    cmp qword ptr [r10 + 40], 0
+    jne h5_io_fail
+    mov r10, qword ptr [rip + H5_PE_OUTPUT_LEN]
+    mov r11d, r8d
+    add r11, r10
+    cmp r11, 128
+    ja h5_io_fail
+    # Accept visible ASCII in this first console fixture, not arbitrary binary.
+    xor eax, eax
+h5_check_output:
+    cmp eax, r8d
+    jae h5_copy_output_start
+    cmp byte ptr [rdx + rax], 32
+    jb h5_io_fail
+    cmp byte ptr [rdx + rax], 126
+    ja h5_io_fail
+    inc eax
+    jmp h5_check_output
+h5_copy_output_start:
+    lea r11, [rip + H5_PE_OUTPUT]
+    add r11, r10
+    xor eax, eax
+h5_copy_output:
+    cmp eax, r8d
+    jae h5_write_done
+    mov cl, byte ptr [rdx + rax]
+    mov byte ptr [r11 + rax], cl
+    inc eax
+    jmp h5_copy_output
+h5_write_done:
+    add r10, rax
+    mov qword ptr [rip + H5_PE_OUTPUT_LEN], r10
+    mov dword ptr [r9], eax
+    mov eax, 1
+    iretq
+h5_io_fail:
+    mov dword ptr [rip + H5_PE_LAST_ERROR], 87
+    xor eax, eax
     iretq
 h5_old_probe:
     cmp eax, 0x48354b
@@ -233,20 +323,29 @@ pub fn wait_tick(){unsafe{asm!("hlt",options(nomem,nostack));}}
 
 /// Execute only the embedded, independently assembled PE test. Fixed pages, no arbitrary apps.
 /// Existing kernel mappings are supervisor-only. No process isolation/fault recovery claim.
-pub fn run_pe_fixture()->bool{run_fixture(false)}
-pub fn run_runtime_fixture()->bool{run_fixture(true)}
-fn run_fixture(runtime:bool)->bool{
+pub fn run_pe_fixture()->bool{run_fixture(0)}
+pub fn run_runtime_fixture()->bool{run_fixture(1)}
+pub fn run_console_fixture()->bool{run_fixture(2)}
+pub fn console_output(out:&mut[u8])->usize{unsafe{
+    let n=(ptr::read_volatile(ptr::addr_of!(H5_PE_OUTPUT_LEN))as usize).min(128).min(out.len());
+    ptr::copy_nonoverlapping(ptr::addr_of!(H5_PE_OUTPUT).cast::<u8>(),out.as_mut_ptr(),n);n
+}}
+unsafe fn gs_read()->u64{let lo:u32;let hi:u32;asm!("rdmsr",in("ecx")0xc0000101u32,out("eax")lo,out("edx")hi,options(nostack));(hi as u64)<<32|lo as u64}
+unsafe fn gs_write(v:u64){asm!("wrmsr",in("ecx")0xc0000101u32,in("eax")v as u32,in("edx")(v>>32)as u32,options(nostack));}
+fn run_fixture(mode:u8)->bool{
+    let runtime=mode==1;let console=mode==2;
     unsafe{
         let img=ptr::addr_of_mut!(PE_IMAGE.0);let shim=ptr::addr_of_mut!(PE_SHIM.0).cast::<u8>();
         let base=img as u64;
         if base+12288>1<<32||shim as u64+4096>1<<32||!(0..3).all(|i|cpu::writable_identity(base+i*4096))||!cpu::writable_identity(shim as u64){return false;}
+        if console{let e=addr(ptr::addr_of!(PE_ENV));if e+4096>1<<32||!cpu::writable_identity(e){return false;}}
         let shim_va=USER_VA+0x10000;
-        let result=if runtime{crate::compat::stage_runtime(&mut *img,shim_va)}else{crate::compat::stage_hello(&mut *img,shim_va)};
+        let result=if console{crate::compat::stage_console(&mut *img,shim_va)}else if runtime{crate::compat::stage_runtime(&mut *img,shim_va)}else{crate::compat::stage_hello(&mut *img,shim_va)};
         let image=match result{Ok(v)=>v,Err(e)=>{serial::line(e);return false;}};
-        serial::line(if runtime{"H5K: PE_RUNTIME_FOUR_IMPORTS_RESOLVED"}else{"H5K: PE_IMPORT_KERNEL32_EXITPROCESS_RESOLVED"});
+        serial::line(if console{"H5K: PE_CONSOLE_IMPORTS_RESOLVED"}else if runtime{"H5K: PE_RUNTIME_FOUR_IMPORTS_RESOLVED"}else{"H5K: PE_IMPORT_KERNEL32_EXITPROCESS_RESOLVED"});
         let code=[0xb8u8,0x50,0x35,0x48,0,0xcd,0x80,0x0f,0x0b];
         ptr::write_bytes(shim,0,4096);ptr::copy_nonoverlapping(code.as_ptr(),shim,code.len());
-        if runtime{for i in 1..4usize{let stub=[0xb8,0x50+i as u8,0x35,0x48,0,0xcd,0x80,0xc3];ptr::copy_nonoverlapping(stub.as_ptr(),shim.add(i*16),stub.len());}}
+        if runtime||console{for i in 1..7usize{let stub=[0xb8,0x50+i as u8,0x35,0x48,0,0xcd,0x80,0xc3];ptr::copy_nonoverlapping(stub.as_ptr(),shim.add(i*16),stub.len());}}
         ptr::write_volatile(ptr::addr_of_mut!(H5_PE_LAST_ERROR),0);
         let pt=ptr::addr_of_mut!(USER_PT.0).cast::<u64>();
         let old0=pt.read();let old1=pt.add(1).read();
@@ -254,16 +353,36 @@ fn run_fixture(runtime:bool)->bool{
         for i in 0..3usize{pt.add(i).write((base+i as u64*4096)|5);}
         pt.add(16).write(shim as u64|5);
         pt.add(17).write(addr(ptr::addr_of!(USER_STACK))|7);
+        let env=ptr::addr_of_mut!(PE_ENV.0).cast::<u8>();
+        let old_gs=if console{gs_read()}else{0};
+        if console{
+            // Minimal read-only x64 TEB/PEB fixture fields, not full Windows structures.
+            ptr::write_bytes(env,0,4096);
+            ptr::write_unaligned(env.add(0x08).cast::<u64>(),USER_VA+0x12000);
+            ptr::write_unaligned(env.add(0x10).cast::<u64>(),USER_VA+0x11000);
+            ptr::write_unaligned(env.add(0x30).cast::<u64>(),ENV_VA);
+            ptr::write_unaligned(env.add(0x40).cast::<u64>(),1);
+            ptr::write_unaligned(env.add(0x48).cast::<u64>(),1);
+            ptr::write_unaligned(env.add(0x60).cast::<u64>(),ENV_VA+0x200);
+            ptr::write_unaligned(env.add(0x210).cast::<u64>(),USER_VA);
+            for (i,w) in "hi5-winconsole.exe -h".encode_utf16().enumerate(){ptr::write_unaligned(env.add(0x400+i*2).cast::<u16>(),w);}
+            pt.add(19).write(env as u64|5);
+            ptr::write_bytes(ptr::addr_of_mut!(H5_PE_OUTPUT).cast::<u8>(),0,128);
+            ptr::write_volatile(ptr::addr_of_mut!(H5_PE_OUTPUT_LEN),0);
+            gs_write(ENV_VA);
+        }
         // Flush stale translations before entering the trusted fixture.
         let cr3=cpu::cr3();asm!("mov cr3, {}",in(reg)cr3,options(nostack,preserves_flags));
         ptr::write_volatile(ptr::addr_of_mut!(H5_PE_ACTIVE),1);ptr::write_volatile(ptr::addr_of_mut!(H5_PE_EXIT),u64::MAX);
         h5_run_user(USER_VA+image.entry as u64,USER_VA+0x12000-8);
+        if console{gs_write(old_gs);pt.add(19).write(0);ptr::write_bytes(env,0,4096);}
         let exit=ptr::read_volatile(ptr::addr_of!(H5_PE_EXIT));
         ptr::write_volatile(ptr::addr_of_mut!(H5_PE_ACTIVE),0);
         pt.write(old0);pt.add(1).write(old1);pt.add(2).write(0);pt.add(16).write(0);pt.add(17).write(0);
         asm!("mov cr3, {}",in(reg)cr3,options(nostack,preserves_flags));
         ptr::write_bytes(img.cast::<u8>(),0,12288);ptr::write_bytes(shim,0,4096);
-        serial::metric(if runtime{"H5K: PE_RUNTIME_EXIT="}else{"H5K: PE_EXIT_CODE="},exit);
+        serial::metric(if console{"H5K: PE_CONSOLE_EXIT="}else if runtime{"H5K: PE_RUNTIME_EXIT="}else{"H5K: PE_EXIT_CODE="},exit);
+        if console{let mut text=[0u8;128];let n=console_output(&mut text);if exit!=42||&text[..n]!=b"Hello from Windows console!"{return false;}serial::write("H5K: PE_CONSOLE_OUTPUT=");serial::line(core::str::from_utf8(&text[..n]).unwrap_or(""));serial::line("H5K: PE_CONSOLE_EXECUTED");return true;}
         if exit==42{serial::line(if runtime{"H5K: PE_RUNTIME_EXECUTED"}else{"H5K: PE_WINDOWS_FIXTURE_EXECUTED"});true}else{false}
     }
 }

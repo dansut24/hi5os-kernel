@@ -120,3 +120,19 @@ pub fn stage_runtime(out:&mut[u8],shim:u64)->Result<Image,&'static str>{
     })?;
     if !valid||mask!=15||r.dlls!=1||r.functions!=4{return Err("Unexpected runtime imports");}Ok(image)
 }
+
+const CONSOLE:&[u8]=include_bytes!("../target/hi5-fixture/console.exe");
+pub fn stage_console(out:&mut[u8],shim:u64)->Result<Image,&'static str>{
+    let image=stage(CONSOLE,out,true)?;
+    if image.preferred_base!=0x1_0000_0000||image.size!=0x3000||image.entry!=0x1000{return Err("Unexpected console fixture layout");}
+    let mut mask=0u8;let mut valid=true;
+    let r=crate::imports::inspect_slots(CONSOLE,|dll,s,slot|{
+        if !dll.eq_ignore_ascii_case("kernel32.dll"){valid=false;return;}
+        let id=match s{crate::imports::Symbol::Name("ExitProcess")=>0,
+            crate::imports::Symbol::Name("GetCommandLineW")=>4,crate::imports::Symbol::Name("GetStdHandle")=>5,
+            crate::imports::Symbol::Name("WriteFile")=>6,_=>{valid=false;return;}};
+        let slot=slot as usize;if mask&(1<<id)!=0||!(0x2000..=0x2ff8).contains(&slot)||slot%8!=0{valid=false;return;}
+        mask|=1<<id;out[slot..slot+8].copy_from_slice(&(shim+id*16).to_le_bytes());
+    })?;
+    if !valid||mask!=0x71||r.dlls!=1||r.functions!=4{return Err("Unexpected console imports");}Ok(image)
+}

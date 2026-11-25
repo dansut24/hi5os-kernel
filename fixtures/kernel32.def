@@ -4,3 +4,6 @@ EXPORTS
  GetCurrentProcessId
  SetLastError
  GetLastError
+ GetCommandLineW
+ GetStdHandle
+ WriteFile

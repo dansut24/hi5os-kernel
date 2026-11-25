@@ -7,7 +7,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hi5os-data-") as td:
         tmp=pathlib.Path(td);data=tmp/"data.img"
         shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
-        system=ROOT/"dist/hi5os-v0.1.9.img"
+        system=ROOT/"dist/hi5os-v0.2.0.img"
         for boot in (1,2):
             vars=tmp/f"vars{boot}.fd";shutil.copyfile(var,vars)
             log=ROOT/"dist"/f"persistence-{boot}.log";log.unlink(missing_ok=True)

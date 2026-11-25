@@ -10,7 +10,7 @@ import socket
 import json
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-REQUIRED = [b'H5K: BOOT v0.1.9', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: HEAP_ALLOC_FREE_OK', b'H5K: SECURITY_FOUNDATIONS_OK', b'H5K: SHEET_FORMULAS_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: COMPAT_FORMAT_PROBE_OK', b'H5K: PE_STAGE_OK', b'H5K: PE_IMPORT_KERNEL32_EXITPROCESS_RESOLVED', b'H5K: PE_EXIT_CODE=0x000000000000002a', b'H5K: PE_WINDOWS_FIXTURE_EXECUTED', b'H5K: PE_IMPORT_INVENTORY_OK', b'H5K: PE_RELOC_SELFTEST_OK', b'H5K: PE_RUNTIME_FOUR_IMPORTS_RESOLVED', b'H5K: PE_RUNTIME_EXIT=0x000000000000002a', b'H5K: PE_RUNTIME_EXECUTED', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: NET_FORMAT_TEST_OK', b'H5K: KERNEL_READY']
+REQUIRED = [b'H5K: BOOT v0.2.0', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: HEAP_ALLOC_FREE_OK', b'H5K: SECURITY_FOUNDATIONS_OK', b'H5K: SHEET_FORMULAS_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: COMPAT_FORMAT_PROBE_OK', b'H5K: PE_STAGE_OK', b'H5K: PE_IMPORT_KERNEL32_EXITPROCESS_RESOLVED', b'H5K: PE_EXIT_CODE=0x000000000000002a', b'H5K: PE_WINDOWS_FIXTURE_EXECUTED', b'H5K: PE_IMPORT_INVENTORY_OK', b'H5K: PE_RELOC_SELFTEST_OK', b'H5K: PE_RUNTIME_FOUR_IMPORTS_RESOLVED', b'H5K: PE_RUNTIME_EXIT=0x000000000000002a', b'H5K: PE_RUNTIME_EXECUTED', b'H5K: PE_CONSOLE_IMPORTS_RESOLVED', b'H5K: PE_CONSOLE_EXIT=0x000000000000002a', b'H5K: PE_CONSOLE_OUTPUT=Hello from Windows console!', b'H5K: PE_CONSOLE_EXECUTED', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: NET_FORMAT_TEST_OK', b'H5K: KERNEL_READY']
 
 def validate(data):
     pos = 0
@@ -39,7 +39,7 @@ def main():
     if args.memory < 128 or args.timeout < 1:
         parser.error('memory must be >=128 MiB and timeout positive')
     code, var = firmware()
-    img = ROOT/'dist/hi5os-v0.1.9.img'
+    img = ROOT/'dist/hi5os-v0.2.0.img'
     if not img.is_file(): raise SystemExit('Run scripts/build.sh first')
     log = ROOT / 'dist' / f'boot-{args.memory}m.log'
     log.unlink(missing_ok=True)
@@ -100,6 +100,8 @@ def main():
                             type_command('security')
                             type_command('pehello')
                             if b'SHELL_PEINFO_OK' not in log.read_bytes():raise RuntimeError('PE inventory shell failed')
+                            type_command('winconsole')
+                            if b'SHELL_WINCONSOLE_OK' not in log.read_bytes():raise RuntimeError('Windows console interactive execution failed')
                             type_command('winruntime')
                             if b'SHELL_WINRUNTIME_OK' not in log.read_bytes():raise RuntimeError('Windows runtime interactive execution failed')
                             type_command('winhello')
