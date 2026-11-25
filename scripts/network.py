@@ -36,7 +36,7 @@ def main():
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
         vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/f"network-{MODE}.log";log.unlink(missing_ok=True)
-        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.2.0.img"
+        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.2.1.img"
         # Close-delimited test uses real SLIRP host-loopback TCP, in CI network namespace.
         net="user,id=n0" if MODE=="close" else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:8080-tcp:127.0.0.1:{server.server_port}"
         capture=ROOT/"dist"/f"network-{MODE}.pcap"
@@ -84,9 +84,14 @@ def main():
                     call("screendump",{"filename":str(ROOT/"dist"/"7zip-imports-512m.ppm")})
                     for ch in "pereloc":key(ch)
                     key("ret");wait(b"SHELL_PERELOC_OK",60)
-                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-relocated-512m.ppm")});call("quit")
+                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-relocated-512m.ppm")})
+                    for ch in "winfault":key(ch)
+                    key("ret");wait(b"SHELL_WINFAULT_OK",30)
+                    for ch in "7za -h":key({" ":"spc","-":"minus"}.get(ch,ch))
+                    key("ret");wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
+                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-trial-512m.ppm")});call("quit")
                     proc.wait(timeout=10)
-                    print("PASS: original 7-Zip PE downloaded to RAM and import inventory generated; execution disabled")
+                    print("PASS: original 7-Zip PE downloaded, inspected, relocated and startup probe returned (help qualification separate)")
                     return
                 key("f9");wait(b"DOWNLOAD_SAVED",90 if MODE=="large" else 10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)

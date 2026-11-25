@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pinned official 7-Zip x64 binary, read-only import comparison against pefile.
-Never executes or republishes the third-party executable. CI isolated guest HTTP only.
+Experimental original PE startup probe in isolated guest; never redistributes the executable.
 """
 import collections, hashlib, json, pathlib, subprocess, sys, tempfile, re, struct, zlib
 import pefile
@@ -68,4 +68,14 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     report["rebase"]={"image_bytes":size,"base":hex(base),"dir64_count":count,"crc32":hex(zlib.crc32(image))}
     (ROOT/"dist"/"7zip-imports.json").write_text(json.dumps(report,indent=2)+"\n")
     print(f"PASS: real 7-Zip inert image at {base:#x}, {count} relocations, exact mapped-image CRC32 matched reference")
+    assert "H5K: TRIAL_FAULT_RECOVERED" in log and "H5K: TRIAL_TIMEOUT_RECOVERED" in log
+    assert "H5K: TRIAL_ENTER_7ZIP" in log and "H5K: TRIAL_RETURNED" in log
+    report["execution"]="help-qualified" if "H5K: SEVENZIP_HELP_OK" in log else "startup attempted; help not qualified"
+    report["trial_status"]=re.findall(r"TRIAL_RESULT=(0x[0-9a-f]+)",log)
+    report["unsupported"]=re.findall(r"TRIAL_UNSUPPORTED\|([^\r\n]+)",log)
+    (ROOT/"dist"/"7zip-imports.json").write_text(json.dumps(report,indent=2)+"\n")
+    print("7-Zip execution result:",report["execution"],report["trial_status"],report["unsupported"])
+    if report["execution"]!="help-qualified":
+        print("::warning::7-Zip startup probe returned, but application help is NOT qualified. This is a diagnostic test, not a launch pass.")
+
 

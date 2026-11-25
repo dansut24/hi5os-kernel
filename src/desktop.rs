@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.2.0 — native software GUI; single foreground window.
+//! Hi5Desktop v0.2.1 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
@@ -150,7 +150,7 @@ impl Ui{
                 c.text_limit(x,y+29,"Type help for available commands.",fg,false,right);
                 if self.term.last_len>0{c.text(x,y+63,">",green);if let Ok(t)=core::str::from_utf8(&self.term.last[..self.term.last_len]){c.text_limit(x+16,y+63,t,fg,false,right);}}
                 match self.term.result{
-                    1=>{c.text_limit(x,y+91,"winconsole winruntime winhello peinfo pereloc",fg,false,right);}
+                    1=>{c.text_limit(x,y+91,"winfault winconsole winruntime 7za -h",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
                     3=>c.text(x,y+91,concat!("Hi5OS ",env!("CARGO_PKG_VERSION")),fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
@@ -169,7 +169,10 @@ impl Ui{
                     18=>{c.text(x,y+91,"DIR64 relocations:",fg);c.num(x+185,y+91,self.rebase.count as u64,green);c.text_limit(x,y+111,"Inert image mapped; execution disabled",fg,false,right);},
                     19=>c.text_limit(x,y+91,"No supported relocatable PE64 download",fg,false,right),
                     20=>{let mut b=[0u8;128];let n=crate::platform::console_output(&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(x,y+91,t,fg,false,right);}c.text(x,y+111,"Console exit code: 42",green);},
-                    21=>c.text_limit(x,y+91,"Windows console test failed",fg,false,right),_=>{}
+                    21=>c.text_limit(x,y+91,"Windows console test failed",fg,false,right),
+                    22=>c.text_limit(x,y+91,"User fault and timeout recovered",green,false,right),23=>c.text_limit(x,y+91,"Trial containment unavailable or failed",fg,false,right),
+                    24=>{c.text_limit(x,y+91,"7-Zip trial returned; see serial evidence",fg,false,right);let mut b=[0u8;128];let n=crate::trial::output(&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(x,y+111,t,fg,false,right);}},
+                    25=>c.text_limit(x,y+91,"Trial blocked: verified 7za.exe required",fg,false,right),_=>{}
                 }
                 c.text(x,y+133,">",green);
                 if let Ok(t)=core::str::from_utf8(&self.term.buf[..self.term.len]){c.text_limit(x+16,y+133,t,fg,false,right);}
@@ -206,9 +209,9 @@ impl Ui{
     fn terminal_key(&mut self,key:u8){
         match key{
             0x1c=>{
-                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"winconsole"=>{if crate::platform::run_console_fixture(){20}else{21}},b"winruntime"=>{if crate::platform::run_runtime_fixture(){16}else{17}},b"pereloc"=>{if self.web_ok{match crate::relocate::inspect(&self.web[..self.web_len]){Ok(r)=>{self.rebase=r;18},Err(e)=>{serial::line(e);19}}}else{19}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
+                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"winfault"=>{if crate::trial::self_test(){22}else{23}},b"7za -h"=>{if self.web_ok{match crate::trial::run(&self.web[..self.web_len]){Ok(_)=>24,Err(e)=>{serial::line(e);25}}}else{25}},b"winconsole"=>{if crate::platform::run_console_fixture(){20}else{21}},b"winruntime"=>{if crate::platform::run_runtime_fixture(){16}else{17}},b"pereloc"=>{if self.web_ok{match crate::relocate::inspect(&self.web[..self.web_len]){Ok(r)=>{self.rebase=r;18},Err(e)=>{serial::line(e);19}}}else{19}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
                 self.term.last=self.term.buf;self.term.last_len=if result==0{0}else{self.term.len};self.term.len=0;self.term.result=result;
-                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",14=>"H5K: SHELL_PEINFO_OK",15=>"H5K: SHELL_PEINFO_FAILED",16=>"H5K: SHELL_WINRUNTIME_OK",17=>"H5K: SHELL_WINRUNTIME_FAILED",18=>"H5K: SHELL_PERELOC_OK",19=>"H5K: SHELL_PERELOC_FAILED",20=>"H5K: SHELL_WINCONSOLE_OK",21=>"H5K: SHELL_WINCONSOLE_FAILED",_=>"H5K: SHELL_UNKNOWN"});
+                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",14=>"H5K: SHELL_PEINFO_OK",15=>"H5K: SHELL_PEINFO_FAILED",16=>"H5K: SHELL_WINRUNTIME_OK",17=>"H5K: SHELL_WINRUNTIME_FAILED",18=>"H5K: SHELL_PERELOC_OK",19=>"H5K: SHELL_PERELOC_FAILED",20=>"H5K: SHELL_WINCONSOLE_OK",21=>"H5K: SHELL_WINCONSOLE_FAILED",22=>"H5K: SHELL_WINFAULT_OK",23=>"H5K: SHELL_WINFAULT_FAILED",24=>"H5K: SHELL_7ZIP_RETURNED",25=>"H5K: SHELL_7ZIP_BLOCKED",_=>"H5K: SHELL_UNKNOWN"});
                 if result==10{serial::metric("H5K: SHEET_RESULT=",self.sheet_result as u64);}
                 if result==5{self.theme();}else{self.draw();}
             }

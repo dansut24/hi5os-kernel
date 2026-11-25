@@ -2,13 +2,13 @@
 use crate::{boot::BootInfo,cpu,serial,kernel};
 use core::{arch::{asm,global_asm},ptr};
 #[repr(C,align(4096))]
-struct Table([u64;512]);
+pub(crate) struct Table(pub(crate) [u64;512]);
 static mut ROOT:Table=Table([0;512]);
 static mut PDPT:Table=Table([0;512]);
 static mut PD:[Table;4]=[Table([0;512]),Table([0;512]),Table([0;512]),Table([0;512])];
 static mut GUARD:Table=Table([0;512]);
-static mut USER_PD:Table=Table([0;512]);
-static mut USER_PT:Table=Table([0;512]);
+pub(crate) static mut USER_PD:Table=Table([0;512]);
+pub(crate) static mut USER_PT:Table=Table([0;512]);
 static mut USER_CODE:Table=Table([0;512]);
 static mut USER_STACK:Table=Table([0;512]);
 const USER_VA:u64=0x1_0000_0000;
@@ -53,6 +53,12 @@ h5_break:
     iretq
 .global h5_fault
 h5_fault:
+    cmp qword ptr [rip + H5_TRIAL_ACTIVE], 1
+    jne h5_regular_fault
+    cmp qword ptr [rsp + 16], 0x23
+    jne h5_regular_fault
+    jmp h5_trial_fault_error
+h5_regular_fault:
     push rax
     mov rax, cr2
     cmp rax, qword ptr [rip + H5_EXPECT]
@@ -79,6 +85,15 @@ h5_timer:
     mov al, 0x20
     out 0x20, al
     pop rax
+    cmp qword ptr [rip + H5_TRIAL_ACTIVE], 1
+    jne h5_timer_done
+    cmp qword ptr [rsp + 8], 0x23
+    jne h5_timer_done
+    dec qword ptr [rip + H5_TRIAL_BUDGET]
+    jnz h5_timer_done
+    mov qword ptr [rip + H5_TRIAL_STATUS], 3
+    jmp h5_trial_return
+h5_timer_done:
     iretq
 .global h5_bad
 h5_bad:
@@ -89,6 +104,13 @@ h5_bad:
     ud2
 .global h5_syscall
 h5_syscall:
+    cmp qword ptr [rip + H5_TRIAL_ACTIVE], 1
+    jne h5_normal_syscall
+    cmp qword ptr [rsp + 8], 0x23
+    jne h5_bad
+    mov qword ptr [rip + H5_TRIAL_STATUS], 4
+    jmp h5_trial_return
+h5_normal_syscall:
     cmp qword ptr [rsp + 8], 0x23
     jne h5_bad
     cmp qword ptr [rip + H5_PE_ACTIVE], 1
@@ -235,7 +257,7 @@ pub fn out(port:u16,value:u8){unsafe{asm!("out dx, al",in("dx")port,in("al")valu
 pub fn input(port:u16)->u8{let v:u8;unsafe{asm!("in al, dx",in("dx")port,out("al")v,options(nomem,nostack,preserves_flags));}v}
 pub fn out32(port:u16,value:u32){unsafe{asm!("out dx, eax",in("dx")port,in("eax")value,options(nomem,nostack,preserves_flags));}}
 pub fn input32(port:u16)->u32{let v:u32;unsafe{asm!("in eax, dx",in("dx")port,out("eax")v,options(nomem,nostack,preserves_flags));}v}
-unsafe fn gate(i:usize,handler:usize,attr:u8){
+pub(crate) unsafe fn gate(i:usize,handler:usize,attr:u8){
     let a=handler as u64;
     ptr::addr_of_mut!(IDT).cast::<Gate>().add(i).write(Gate{lo:a as u16,sel:8,ist:0,attr,mid:(a>>16)as u16,hi:(a>>32)as u32,zero:0});
 }
@@ -288,6 +310,7 @@ pub fn init(info:&BootInfo)->Result<(), &'static str>{
         for i in 0..256{gate(i,h5_bad as usize,0x8e);}
         gate(3,h5_break as usize,0x8e);gate(14,h5_fault as usize,0x8e);
         gate(32,h5_timer as usize,0x8e);gate(128,h5_syscall as usize,0xee);
+        crate::trial::install_gates();
         let id=Dtr{limit:4095,base:addr(ptr::addr_of!(IDT))};
         asm!("lidt [{}]",in(reg)&id,options(readonly,nostack,preserves_flags));
         asm!("int3");

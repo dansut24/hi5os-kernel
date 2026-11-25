@@ -15,6 +15,7 @@ mod disk;
 mod compat;
 mod imports;
 mod relocate;
+mod trial;
 mod net;
 mod http;
 mod heap;

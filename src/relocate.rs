@@ -11,7 +11,8 @@ fn u64at(b:&[u8],p:usize)->Option<u64>{Some(u64::from_le_bytes(b.get(p..p.checke
 #[derive(Clone,Copy,Default)]pub struct Report{pub size:usize,pub count:u32,pub base:u64,pub crc:u32}
 #[derive(Clone,Copy)]struct Section{va:usize,end:usize,raw:usize,rp:usize,attr:u32}
 const EMPTY:Section=Section{va:0,end:0,raw:0,rp:0,attr:0};
-fn map(b:&[u8],out:&mut[u8],seen:&mut[u8])->Result<Report,&'static str>{
+fn map(b:&[u8],out:&mut[u8],seen:&mut[u8])->Result<Report,&'static str>{map_at(b,out,seen,None)}
+pub fn map_at(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>)->Result<Report,&'static str>{
     if compat::classify(b)!=compat::Kind::Pe64{return Err("Invalid PE64");}
     let pe=u32at(b,60).ok_or("PE offset")?as usize;let opt=pe+24;
     let opts=u16at(b,pe+20).ok_or("Optional header")?as usize;
@@ -21,7 +22,7 @@ fn map(b:&[u8],out:&mut[u8],seen:&mut[u8])->Result<Report,&'static str>{
     let sa=u32at(b,opt+32).ok_or("Alignment")?as usize;let fa=u32at(b,opt+36).ok_or("File alignment")?as usize;
     let flags=u16at(b,pe+22).ok_or("Flags")?;
     if flags&0x2001!=0||size==0||size>out.len()||size>CAP||size%4096!=0||seen.len()<size.div_ceil(8)||sa!=4096||!fa.is_power_of_two()||!(512..=4096).contains(&fa)||headers>size||headers%fa!=0||preferred==0||preferred%65536!=0{return Err("Unsupported relocatable image layout");}
-    let base=preferred.checked_add(0x10000000).ok_or("Base overflow")?;
+    let base=match new_base{Some(v)=>v,None=>preferred.checked_add(0x10000000).ok_or("Base overflow")?};
     if base.checked_add(size as u64).map_or(true,|v|v>0x0000_8000_0000_0000){return Err("Noncanonical image range");}
     let dirs=u32at(b,opt+108).ok_or("Directories")?as usize;if !(6..=16).contains(&dirs)||112+dirs*8>opts{return Err("Invalid directories");}
     let rr=u32at(b,opt+112+5*8).ok_or("Relocation RVA")?as usize;let rn=u32at(b,opt+116+5*8).ok_or("Relocation size")?as usize;
@@ -53,7 +54,7 @@ fn map(b:&[u8],out:&mut[u8],seen:&mut[u8])->Result<Report,&'static str>{
             if end>size||at<re&&rr<end||!sections[..n].iter().any(|s|at>=s.va&&end<=s.end&&s.attr&0xe0000000!=0){return Err("Invalid relocation target");}
             for j in at..end{let mask=1u8<<(j%8);if seen[j/8]&mask!=0{return Err("Overlapping relocation targets");}seen[j/8]|=mask;}
             let old=u64at(out,at).ok_or("Relocation value")?;
-            let new=old.wrapping_add(base-preferred);out[at..end].copy_from_slice(&new.to_le_bytes());
+            let new=old.wrapping_add(base.wrapping_sub(preferred));out[at..end].copy_from_slice(&new.to_le_bytes());
             count=count.checked_add(1).ok_or("Relocation count")?;
         }p=end;
     }
