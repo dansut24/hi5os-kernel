@@ -54,7 +54,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.2.4-vm-evidence
+          name: hi5os-v0.2.5-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
@@ -63,7 +63,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.2.4-UTM
-          path: dist/hi5os-v0.2.4.img
-          compression-level: 0
+          name: hi5os-v0.2.5-UTM
+          path: dist/hi5os-v0.2.5.img
+          compression-level: 6
+          if-no-files-found: error
           retention-days: 14

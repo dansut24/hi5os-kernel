@@ -4,6 +4,15 @@ import tomllib
 import re, ipaddress
 
 class MarkerTests(unittest.TestCase):
+    def test_system_image_version_names(self):
+        ver=tomllib.loads((ROOT/"Cargo.toml").read_text())["package"]["version"]
+        expected=f"hi5os-v{ver}.img"
+        for path in ("scripts/build.sh","scripts/smoke.py","scripts/persistence.py","scripts/network.py","scripts/routed.py","scripts/offline7zip.py",".github/workflows/kernel.yml"):
+            with self.subTest(path=path):
+                names=re.findall(r"hi5os-v\d+\.\d+\.\d+\.img",(ROOT/path).read_text())
+                self.assertTrue(names)
+                self.assertEqual(set(names),{expected})
+
     def test_network_fixture_addresses(self):
         network=(ROOT/"scripts/network.py").read_text()
         desktop=(ROOT/"src/desktop.rs").read_text()

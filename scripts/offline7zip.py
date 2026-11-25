@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
     qmp=tmp/"qmp.sock";vars=tmp/"vars.fd";shutil.copyfile(var,vars)
     cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu",CPU,"-m","512","-smp","1",
          "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
-         "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.3.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
+         "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.5.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
          "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
          "-nic","none","-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
     proc=subprocess.Popen(cmd)
@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             key("ret");wait(b"SHELL_INSTALL7ZIP_OK",120)
             for ch in "7za -h":key({" ":"spc","-":"minus"}.get(ch,ch))
             key("ret");wait(b"APP_7ZIP_LOADED",120);wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
-            wait(b"TRIAL_DLL_RESOLVER_OK",2);wait(b"TRIAL_CPU_FEATURES_OK",2);wait(b"TRIAL_CRITICAL_SECTION_OK",2)
+            wait(b"TRIAL_DLL_RESOLVER_OK",2);wait(b"TRIAL_CPU_FEATURES_OK",2);wait(b"TRIAL_CRITICAL_SECTION_OK",2);wait(b"TRIAL_VERSION_INFO_OK",2)
             call("screendump",{"filename":str(ROOT/"dist"/f"7zip-offline-{CPU}-512m.ppm")});call("quit")
         proc.wait(timeout=10)
         assert proc.returncode==0
