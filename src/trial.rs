@@ -823,13 +823,13 @@ pub fn self_test()->bool{unsafe{
     serial::line("H5K: TRIAL_RESTRICTED_TOKEN_OK");
     reset();
     let a=allocate(1024);let b=allocate(1024);if a!=HEAP||b!=HEAP+1024||!release(a){return false;}
-    let c=allocate(128);let d=allocate(256);if c!=a||d!=a+128||!release(c)||!release(d)||!release(b)||NEXT!=HEAP{return false;}
+    let small_a=allocate(128);let small_b=allocate(256);if small_a!=a||small_b!=a+128||!release(small_a)||!release(small_b)||!release(b)||NEXT!=HEAP{return false;}
     let a=allocate_aligned(4096,4096);if a!=HEAP||!release(a)||NEXT!=HEAP{return false;}
     serial::line("H5K: TRIAL_HEAP_REUSE_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
-    ptr::copy_nonoverlapping(code.as_ptr(),d,code.len());
+    ptr::copy_nonoverlapping(code.as_ptr(),ptr::addr_of_mut!(DATA.0).cast::<u8>(),code.len());
     if enter(AUX,50)!=1||EXIT!=42{return false;}serial::line("H5K: TRIAL_WIN64_ENTRY_OK");true
 }}
 pub const PACKAGE_SIZE:usize=1328640;
