@@ -76,7 +76,7 @@ impl Ui{
             }
             App::Network=>{
                 c.title(x,y,"Network status",q.ink);c.round(x,y+44,r.w-44,91,8,q.sub);c.text(x+16,y+55,"Offline",q.ink);
-                c.text(x+16,y+83,"Detected PCI network devices:",q.muted);c.num(x+260,y+83,self.nics,q.ink);
+                c.text(x+16,y+83,"Detected PCI network devices:",q.muted);c.num(x+260,y+83,self.nics as u64,q.ink);
                 c.text_limit(x,y+155,"Hardware discovery only. No network driver or IP.",q.muted,false,right);
             }
             App::Terminal=>{
