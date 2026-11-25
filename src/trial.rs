@@ -43,7 +43,7 @@ static mut OUT:[u8;OUTPUT_CAP]=[0;OUTPUT_CAP];
 static mut OUT_LEN:usize=0;
 #[derive(Clone,Copy)]struct Block{at:u64,len:usize,used:bool}
 const FREE:Block=Block{at:0,len:0,used:false};
-static mut BLOCKS:[Block;512]=[FREE;512];
+static mut BLOCKS:[Block;2048]=[FREE;2048];
 static mut NEXT:u64=HEAP;
 static mut FS:crate::trialfs::Fs=crate::trialfs::Fs::new();
 static mut WORK:crate::trialfs::Fs=crate::trialfs::Fs::new();
@@ -267,12 +267,38 @@ unsafe fn allocate(n:usize)->u64{allocate_aligned(n,16)}
 unsafe fn allocate_aligned(n:usize,align:u64)->u64{
     let Some(n)=n.max(1).checked_add(15).map(|x|x&!15)else{return 0;};
     let blocks=&mut *ptr::addr_of_mut!(BLOCKS);
-    if let Some(b)=blocks.iter_mut().find(|b|!b.used&&b.at!=0&&b.len>=n&&b.at%align==0){b.used=true;return b.at;}
-    let Some(b)=blocks.iter_mut().find(|b|b.at==0)else{return 0;};let Some(at)=NEXT.checked_add(align-1).map(|v|v&!(align-1))else{return 0;};
-    if at.checked_add(n as u64).map_or(true,|x|x>HEAP_END){return 0;}
-    NEXT=at+n as u64;*b=Block{at,len:n,used:true};at
+    // Find best-fit free range with correct alignment. Split when descriptors permit.
+    let mut best=None;let mut best_len=usize::MAX;
+    for (i,b) in blocks.iter().enumerate(){
+        if b.used||b.at==0{continue;}
+        let Some(at)=b.at.checked_add(align-1).map(|v|v&!(align-1))else{continue;};
+        if at.checked_add(n as u64).is_some_and(|end|end<=b.at+b.len as u64)&&b.len<best_len{best=Some((i,at));best_len=b.len;}
+    }
+    if let Some((i,at))=best{
+        let b=blocks[i];let prefix=(at-b.at)as usize;let suffix=b.len-prefix-n;
+        let free=blocks.iter().filter(|v|v.at==0).count();
+        if free>=(prefix!=0)as usize+(suffix!=0)as usize{
+            blocks[i]=Block{at,len:n,used:true};
+            for (p,len) in [(b.at,prefix),(at+n as u64,suffix)]{if len!=0{if let Some(slot)=blocks.iter_mut().find(|v|v.at==0){*slot=Block{at:p,len,used:false};}}}
+            return at;
+        }
+        if prefix==0{blocks[i].used=true;return at;}
+    }
+    let Some(i)=blocks.iter().position(|b|b.at==0)else{serial::metric("H5K: TRIAL_ALLOC_RECORDS_EXHAUSTED=",n as u64);return 0;};
+    let Some(at)=NEXT.checked_add(align-1).map(|v|v&!(align-1))else{return 0;};
+    if at.checked_add(n as u64).map_or(true,|x|x>HEAP_END){serial::metric("H5K: TRIAL_ALLOC_OOM_BYTES=",n as u64);return 0;}
+    if at>NEXT{if let Some(j)=blocks.iter().enumerate().find(|(j,b)|*j!=i&&b.at==0).map(|(j,_)|j){blocks[j]=Block{at:NEXT,len:(at-NEXT)as usize,used:false};}}
+    NEXT=at+n as u64;blocks[i]=Block{at,len:n,used:true};at
 }
-unsafe fn release(v:u64)->bool{if v==0{return true;}if let Some(b)=(&mut *ptr::addr_of_mut!(BLOCKS)).iter_mut().find(|b|b.at==v&&b.used){b.used=false;true}else{false}}
+unsafe fn release(v:u64)->bool{
+    if v==0{return true;}let blocks=&mut *ptr::addr_of_mut!(BLOCKS);
+    let Some(i)=blocks.iter().position(|b|b.at==v&&b.used)else{return false;};blocks[i].used=false;
+    loop{
+        let a=blocks[i];let Some(j)=blocks.iter().enumerate().find(|(j,b)|*j!=i&&!b.used&&b.at!=0&&(b.at+b.len as u64==a.at||a.at+a.len as u64==b.at)).map(|(j,_)|j)else{break;};
+        let b=blocks[j];blocks[i]=Block{at:a.at.min(b.at),len:a.len+b.len,used:false};blocks[j]=FREE;
+    }
+    let a=blocks[i];if a.at+a.len as u64==NEXT{NEXT=a.at;blocks[i]=FREE;}true
+}
 unsafe fn detail(d:&[u8],n:&[u8]){
     let p=ptr::addr_of_mut!(DETAIL).cast::<u8>();let a=d.len().min(48);let b=n.len().min(128);
     ptr::copy_nonoverlapping(d.as_ptr(),p,a);p.add(a).write(b'!');ptr::copy_nonoverlapping(n.as_ptr(),p.add(a+1),b);DETAIL_LEN=a+1+b;
@@ -456,6 +482,23 @@ unsafe fn variant_copy(dst:u64,src:u64)->u32{
     let mut new=0;if ty==8{let v=u64::from_le_bytes(b[8..16].try_into().unwrap());if v!=0{let Some(n)=bstr_len(v)else{return 0x80070057;};new=bstr_alloc(v,n);if new==0{return 0x8007000e;}b[8..16].copy_from_slice(&new.to_le_bytes());}}
     let code=variant_clear(dst);if code!=0{bstr_free(new);return code;}ptr::copy_nonoverlapping(b.as_ptr(),q,24);0
 }
+unsafe fn format_message(f:&mut Frame,x:u64,y:u64,z:u64,w:u64){
+    let flags=x as u32;let id=z as u32;let (Some(buf),Some(cap),Some(args))=(arg(f,40),arg(f,48),arg(f,56))else{LAST=87;return;};
+    // Only built-in system messages, no external module, format string or insert execution.
+    if flags&0x1000==0||flags&!0x13ff!=0||y!=0||!matches!(w as u32,0|0x400|0x409)||args!=0&&flags&0x200==0{LAST=87;return;}
+    let msg=match id{
+        0=>"The operation completed successfully.",2=>"The system cannot find the file specified.",3=>"The system cannot find the path specified.",5=>"Access is denied.",6=>"The handle is invalid.",8=>"Not enough memory resources are available to process this command.",18=>"There are no more files.",32=>"The process cannot access the file because it is being used by another process.",50=>"The request is not supported.",80=>"The file exists.",87=>"The parameter is incorrect.",112=>"There is not enough space on the disk.",122=>"The data area passed to a system call is too small.",123=>"The filename, directory name, or volume label syntax is incorrect.",126=>"The specified module could not be found.",127=>"The specified procedure could not be found.",145=>"The directory is not empty.",183=>"Cannot create a file when that file already exists.",131=>"An attempt was made to move the file pointer before the beginning of the file.",1300=>"Not all privileges or groups referenced are assigned to the caller.",1113=>"No mapping for the Unicode character exists in the target multi-byte code page.",
+        _=>{LAST=317;return;}
+    };
+    let n=msg.len();let allocate_buffer=flags&0x100!=0;
+    let dest=if allocate_buffer{
+        if phys(buf,8,true).is_none(){LAST=87;return;}
+        let Some(bytes)=(n+1).max(cap as u32 as usize).checked_mul(2)else{LAST=8;return;};
+        if bytes>65536{LAST=8;return;}let at=allocate(bytes);if at==0{LAST=8;return;}write64(buf,at);at
+    }else{if cap as u32 as usize<=n{LAST=122;return;}buf};
+    let Some(p)=phys(dest,(n+1)*2,true)else{LAST=87;return;};
+    for(i,c)in msg.bytes().enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),c as u16);}ptr::write_unaligned(p.add(n*2).cast::<u16>(),0);f.rax=n as u64;
+}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -498,7 +541,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
     if id==257{if !CLEANUP_ACTIVE||ONEXIT_LEN!=0{H5_TRIAL_STATUS=4;return;}CLEANUP_ACTIVE=false;if f.rdx==1{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;}else{f.rax=0;}return;}if id>=N{H5_TRIAL_STATUS=4;return;}
     CALLS+=1;LAST_API=id;
     let a=ptr::addr_of!(APIS).cast::<Api>().add(id).read();
-    if CALLS<=160{serial::write("H5K: TRIAL_CALL|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
+    if CALLS<=4096{serial::write("H5K: TRIAL_CALL|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
     let (x,y,z,w)=(f.rcx,f.rdx,f.r8,f.r9);f.rax=0;
     match a.kind{
         1=>{if &a.name[..a.nn]==b"exit"{if !begin_cleanup(f,true,x as u32){abort_import(id);}}else{EXIT=x as u32;H5_TRIAL_STATUS=1;}},
@@ -644,6 +687,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         115=>{if z==0{LAST=87;return;}match fs().seek(x,y as i64,w as u32){Ok(v)=>{if write64(z,v as u64){f.rax=1;}else{LAST=87;}},Err(e)=>LAST=e}},
         116=>{if write32(y,fs().size(x).unwrap_or(0)){if fs().size(x).is_ok()&&write32(y+4,0){f.rax=1;}else{LAST=6;}}else{LAST=87;}},
         117=>{let r=path(x).ok_or(123u32).and_then(|p|fs().info(p).ok_or(2u32));match r{Ok(e)=>{if y!=0{LAST=87;return;}let Some(p)=phys(z,36,true)else{LAST=87;return;};ptr::write_bytes(p,0,36);ptr::write_unaligned(p.cast::<u32>(),e.attrs);for j in 0..3{ptr::write_unaligned(p.add(4+j*8).cast::<u64>(),e.times[j]);}ptr::write_unaligned(p.add(32).cast::<u32>(),e.size);f.rax=1;},Err(e)=>LAST=e}},
+        118=>format_message(f,x,y,z,w),
         _=>abort_import(id)
     }
 }
@@ -677,7 +721,7 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
     }None
 }
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,_=>0}}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,_=>0}}
     else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
 }
 unsafe fn init_env(){
@@ -697,7 +741,7 @@ unsafe fn init_env(){
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    WORK_ACTIVE=false;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;CLEANUP_ACTIVE=false;DLL_POLICY=0;BLOCKS=[FREE;512];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    WORK_ACTIVE=false;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;CLEANUP_ACTIVE=false;DLL_POLICY=0;ptr::write_bytes(ptr::addr_of_mut!(BLOCKS).cast::<Block>(),0,2048);NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
@@ -777,6 +821,11 @@ pub fn self_test()->bool{unsafe{
     if !write32(state,1)||!write64(state+4,17)||!write32(state+12,2){return false;}
     if adjust_privileges(h,false,state,4,prev,ret)!=Ok(1300)||adjust_privileges(h,true,0,4,prev,ret)!=Ok(0)||!token_close(h)||token_access(h).is_some(){return false;}
     serial::line("H5K: TRIAL_RESTRICTED_TOKEN_OK");
+    reset();
+    let a=allocate(1024);let b=allocate(1024);if a!=HEAP||b!=HEAP+1024||!release(a){return false;}
+    let c=allocate(128);let d=allocate(256);if c!=a||d!=a+128||!release(c)||!release(d)||!release(b)||NEXT!=HEAP{return false;}
+    let a=allocate_aligned(4096,4096);if a!=HEAP||!release(a)||NEXT!=HEAP{return false;}
+    serial::line("H5K: TRIAL_HEAP_REUSE_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
