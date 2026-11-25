@@ -40,7 +40,7 @@ impl Ui{
         // Quiet, low-cost gradient and a native desktop with standard controls.
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
-        c.text(w.saturating_sub(202),54,"Developer preview 0.1.5",q.muted);
+        c.text(w.saturating_sub(202),54,concat!("Developer preview ",env!("CARGO_PKG_VERSION")),q.muted);
         for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser"};c.text(18,y+35,label,q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
@@ -68,7 +68,7 @@ impl Ui{
                 c.title(x,y,"About this PC",q.ink);c.round(x,y+42,r.w-44,76,9,q.sub);
                 c.text(x+14,y+50,"Hi5OS Developer Preview",q.ink);c.text(x+14,y+77,"Independent x86-64 kernel",q.muted);
                 c.text(x,y+135,"Managed memory (MiB)",q.muted);c.num(x+200,y+135,self.ram,q.ink);
-                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.5",q.ink);
+                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,concat!("Hi5Kernel ",env!("CARGO_PKG_VERSION")),q.ink);
                 c.text(x,y+191,"PE and compound-file probes passed",q.green);
                 self.button(Rect{x,y:y+223,w:180,h:34},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
             }
@@ -134,7 +134,7 @@ impl Ui{
                 match self.term.result{
                     1=>{c.text_limit(x,y+91,"help mem ver ls clear theme compat",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
-                    3=>c.text(x,y+91,"Hi5OS 0.1.5",fg),
+                    3=>c.text(x,y+91,concat!("Hi5OS ",env!("CARGO_PKG_VERSION")),fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
                     5=>c.text(x,y+91,"Appearance changed",fg),
                     6=>c.text(x,y+91,"Unknown command",fg),7=>c.text_limit(x,y+91,"PE32/PE64 + OLE probe only; no execution",fg,false,right),_=>{}

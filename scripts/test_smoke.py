@@ -1,7 +1,15 @@
 import unittest
-from smoke import REQUIRED, validate
+from smoke import ROOT, REQUIRED, validate
+import tomllib
 
 class MarkerTests(unittest.TestCase):
+    def test_boot_version_matches_cargo(self):
+        with (ROOT / "Cargo.toml").open("rb") as f:
+            version = tomllib.load(f)["package"]["version"]
+        self.assertEqual(REQUIRED[0], ("H5K: BOOT v" + version).encode())
+    def test_wrong_boot_version(self):
+        with self.assertRaises(ValueError):
+            validate(b"\n".join([b"H5K: BOOT v0.0.0", *REQUIRED[1:]]))
     def test_valid(self): validate(b'\r\n'.join(REQUIRED))
     def test_missing_handoff(self):
         with self.assertRaises(ValueError): validate(b'\n'.join(m for m in REQUIRED if m != b'H5K: EXIT_BOOT_SERVICES_OK'))

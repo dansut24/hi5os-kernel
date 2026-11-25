@@ -56,7 +56,7 @@ impl Screen {
         let scale = (fb.width/240).min(fb.height/150).clamp(1,4);
         let mut s = Self { fb, scale, x: 8*scale, y: 8*scale };
         s.rect(0,0,fb.width,fb.height,BG);
-        s.line("HI5OS - HI5KERNEL V0.1.5",BLUE);
+        s.line(concat!("HI5OS - HI5KERNEL V",env!("CARGO_PKG_VERSION")),BLUE);
         s.line("MEMORY DEVELOPMENT PREVIEW",WHITE);
         s.y += 4*scale;
         s
