@@ -6,9 +6,11 @@ import shutil
 import subprocess
 import tempfile
 import time
+import socket
+import json
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-REQUIRED = [b'H5K: BOOT v0.0.2', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: FRAMEBUFFER_OK', b'H5K: KERNEL_READY']
+REQUIRED = [b'H5K: BOOT v0.0.8', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: PCI_SCAN_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: KERNEL_READY']
 
 def validate(data):
     pos = 0
@@ -35,7 +37,7 @@ def main():
     if args.memory < 128 or args.timeout < 1:
         parser.error('memory must be >=128 MiB and timeout positive')
     code, var = firmware()
-    img = ROOT/'dist/hi5os-v0.0.2.img'
+    img = ROOT/'dist/hi5os-v0.0.8.img'
     if not img.is_file(): raise SystemExit('Run scripts/build.sh first')
     log = ROOT / 'dist' / f'boot-{args.memory}m.log'
     log.unlink(missing_ok=True)
@@ -45,14 +47,34 @@ def main():
         cmd = ['qemu-system-x86_64','-machine','q35,accel=tcg','-cpu','qemu64','-m',str(args.memory),'-smp','1', '-drive',f'if=pflash,format=raw,readonly=on,file={code}', '-drive',f'if=pflash,format=raw,file={variables}', '-drive',f'if=none,id=os,format=raw,readonly=on,file={img}', '-device','qemu-xhci','-device','usb-storage,drive=os,bootindex=1','-vga','std','-nic','none','-monitor','none','-no-reboot','-serial',f'file:{log}']
         if args.interactive:
             return subprocess.call(cmd)
-        proc = subprocess.Popen(cmd + ['-display','none'])
+        qmp = str(pathlib.Path(tmp)/'qmp.sock')
+        proc = subprocess.Popen(cmd + ['-display','none','-qmp',f'unix:{qmp},server=on,wait=off'])
         try:
             end = time.monotonic()+args.timeout
             while time.monotonic() < end:
                 data = log.read_bytes() if log.exists() else b''
                 if b'H5K: KERNEL_READY' in data:
                     validate(data)
-                    # Ensure the guest remains halted without a reset/crash.
+                    # Exercise real keyboard input and RAM workspace through QMP.
+                    with socket.socket(socket.AF_UNIX) as sock:
+                        sock.settimeout(5)
+                        sock.connect(qmp)
+                        stream = sock.makefile('rwb')
+                        json.loads(stream.readline())
+                        def call(name, args=None):
+                            stream.write((json.dumps({'execute':name, **({'arguments':args} if args else {})})+'\n').encode());stream.flush()
+                            while True:
+                                reply=json.loads(stream.readline())
+                                if 'error' in reply: raise RuntimeError(reply['error'])
+                                if 'return' in reply:return reply['return']
+                        call('qmp_capabilities')
+                        call('screendump',{'filename':str(ROOT/'dist'/f'desktop-{args.memory}m.ppm')})
+                        for key,marker in [('1',b'GUI_SYSTEM_OPEN'),('2',b'GUI_FILES_OPEN'),('n',b'GUI_FILE_CREATED'),('d',b'GUI_FILE_DELETED'),('3',b'GUI_NETWORK_OPEN')]:
+                            call('human-monitor-command',{'command-line':'sendkey '+key})
+                            deadline=time.monotonic()+5
+                            while marker not in log.read_bytes() and time.monotonic()<deadline:time.sleep(.1)
+                            if marker not in log.read_bytes():raise RuntimeError('GUI input failed: '+key)
+                        call('screendump',{'filename':str(ROOT/'dist'/f'network-{args.memory}m.ppm')})
                     time.sleep(1)
                     if proc.poll() is not None: raise RuntimeError('QEMU exited after kernel-ready marker')
                     validate(log.read_bytes())

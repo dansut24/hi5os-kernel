@@ -11,6 +11,8 @@ class MarkerTests(unittest.TestCase):
         with self.assertRaises(ValueError): validate(b'\n'.join(m for m in REQUIRED if m != b'H5K: FRAME_RW_REUSE_OK'))
     def test_kernel_failure(self):
         with self.assertRaises(ValueError): validate(b'\n'.join(REQUIRED)+b'\nH5K: FAIL STACK_CHECK')
+    def test_missing_desktop(self):
+        with self.assertRaises(ValueError): validate(b'\n'.join(m for m in REQUIRED if m != b'H5K: DESKTOP_READY'))
     def test_panic(self):
         with self.assertRaises(ValueError): validate(b'\n'.join(REQUIRED)+b'\nH5K: PANIC')
     def test_firmware_failure(self):

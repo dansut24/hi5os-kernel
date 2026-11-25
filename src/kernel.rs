@@ -1,5 +1,5 @@
-//! v0.0.2 first memory milestone; firmware mappings retained deliberately.
-use crate::{boot::BootInfo,cpu,display::Screen,memory,serial};
+//! v0.0.8 first memory milestone; firmware mappings retained deliberately.
+use crate::{boot::BootInfo,cpu,display::Screen,memory,serial,platform,services,desktop};
 use core::arch::asm;
 
 pub fn halt() -> ! {loop {unsafe {asm!("cli","hlt",options(nomem,nostack));}}}
@@ -33,13 +33,15 @@ pub fn on_stack(info:BootInfo)->! {
     serial::line("H5K: STACK_CANARY_OK");
     let leaf=unsafe {core::arch::x86_64::__cpuid(0)};
     serial::metric("H5K: CPUID_MAX=",leaf.eax as u64);
-    serial::metric("H5K: FIRMWARE_CR3=",cpu::cr3());
-    if let Some(s)=&mut screen {
-        s.number("CPU MAX CPUID LEAF: ",leaf.eax as u64);
-        s.note("PAGING: FIRMWARE MAP RETAINED");
-        s.ok("KERNEL READY");
-        serial::line("H5K: FRAMEBUFFER_OK");
-    } else {serial::line("H5K: FRAMEBUFFER_SKIPPED");}
-    serial::line("H5K: KERNEL_READY");
-    halt()
+    let ram=allocator.total/256;
+    if let Err(e)=platform::init(&info){fail(&mut screen,e);}
+    let mut tasks=services::Tasks::new();
+    if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
+    serial::line("H5K: COOPERATIVE_SCHEDULER_OK");
+    let mut files=services::Files::new();
+    if !files.self_test(){fail(&mut screen,"RAMFS_TEST");}
+    serial::line("H5K: RAMFS_OK");
+    let nics=services::network_probe();
+    if let Some(fb)=info.framebuffer{desktop::run(fb,ram,nics,files,tasks);}
+    fail(&mut screen,"DESKTOP_REQUIRES_FRAMEBUFFER")
 }

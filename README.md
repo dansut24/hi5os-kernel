@@ -1,11 +1,7 @@
-# Hi5Kernel v0.0.2 — memory milestone candidate
+# Hi5OS v0.0.8 experimental combined desktop candidate
 
-Known-good v0.0.1: commit cc3ae6aac6e891d1e7484c1fb53d7701dd6618db, baseline/v0.0.1. QEMU 256/1024 MiB passed, visual UTM SE iOS 512 MiB x86_64 Q35 passed on 25 November 2026.
+Baseline v0.0.2 fe4f687e0e37da8b8e3aa752372ea414eb43124c passed 256/512/1024 MiB QEMU and visual UTM SE iOS 512 MiB (473 MiB managed, 121282 free frames). Preserved separately.
 
-This branch adds a 64 KiB kernel-owned stack and canary; conservative 4 KiB frame allocation using separate managed/free bitmaps, only EFI conventional memory from 1 MiB to 4 GiB (excluding framebuffer); writable identity mapping checks; eight-frame pattern read/write, distinctness, reuse, invalid/double-free and free-count tests; on-screen version, progress, memory and CPUID diagnostics.
+Scope: new low-4GiB identity page tables, kernel-owned GDT/IDT, recoverable breakpoint and guard-page read probe, supervisor write protection, one ring-3 code/stack probe with INT 80 gate, PIT timer, cooperative event dispatch, single volatile RAM file, PCI network discovery and actual framebuffer GUI with keyboard and experimental PS/2 relative mouse. Native desktop opens automatically. Keys: 1 System, 2 Files, 3 Network, M Start, Esc close, N create note and D delete in Files. No persistent filesystem or native disk driver, NIC driver, IP, full process scheduler, arbitrary user programs, general syscalls, NX/W^X, SMP or production security. User test is one trusted program, no general process isolation. RAM file is not persisted. No Linux/Windows runtime. No external Cargo dependencies.
 
-Still uses firmware-initialised page tables and descriptor tables; no guard pages, allocator concurrency, exception isolation, scheduling, user mode, EXE/MSI or filesystem. This is the first staged part of memory development. No production or physical machine use, no secrets, no open-source licence granted by this notice. No external Rust dependencies.
-
-Build with bash scripts/build.sh after installing rustup, qemu-system-x86, ovmf, mtools and dosfstools. Run python3 -m unittest discover -s scripts -p 'test_*.py' and python3 scripts/smoke.py --memory 512. CI also tests 256 and 1024 MiB. The raw FAT32 image is for UEFI VM boot, not installation.
-
-UTM SE: create a separate VM or replace only the imported Hi5OS drive on a stopped copy of the known-good VM; x86_64 Q35, 512 MiB, one core, UEFI enabled, no sharing or networking. Expected screen KERNEL READY with green test lines. Preserve the old VM. Candidate qualification pending.
+CI compiles, tests boot at 256/512/1024 MiB and injects keyboard input via QMP, verifies view and file-action serial markers, retains raw image, screenshots and evidence. UTM SE x86_64 Q35 512 MiB one core UEFI enabled, IDE disk image, no network/sharing. Use duplicate VM. Mouse support depends on emulated relative PS/2 device; keyboard is fallback. No production changes or physical hardware use. Candidate unqualified until CI and UTM pass. No open-source licence granted by this notice.

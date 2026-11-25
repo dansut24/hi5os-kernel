@@ -6,7 +6,7 @@ const BLUE: [u8;3] = [80,174,241];
 const WHITE: [u8;3] = [216,232,245];
 const GREEN: [u8;3] = [107,219,156];
 const RED: [u8;3] = [255,118,118];
-fn glyph(c: u8) -> [u8;7] {
+pub fn glyph(c: u8) -> [u8;7] {
     match c {
         b'0' => [14,17,19,21,25,17,14],
         b'1' => [4,12,4,4,4,4,14],
@@ -56,7 +56,7 @@ impl Screen {
         let scale = (fb.width/240).min(fb.height/150).clamp(1,4);
         let mut s = Self { fb, scale, x: 8*scale, y: 8*scale };
         s.rect(0,0,fb.width,fb.height,BG);
-        s.line("HI5OS - HI5KERNEL V0.0.2",BLUE);
+        s.line("HI5OS - HI5KERNEL V0.0.8",BLUE);
         s.line("MEMORY DEVELOPMENT PREVIEW",WHITE);
         s.y += 4*scale;
         s
