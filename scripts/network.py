@@ -46,6 +46,7 @@ def main():
         "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
         "-netdev",net,"-device","e1000,netdev=n0,mac=52:54:00:12:34:56",*([] if MODE=="sevenzip" else ["-object",f"filter-dump,id=cap,netdev=n0,file={capture}"]),
         "-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
+        first_log=None
         proc=subprocess.Popen(cmd)
         def wait(marker,seconds=30):
             end=time.monotonic()+seconds
@@ -89,20 +90,30 @@ def main():
                     key("ret");wait(b"SHELL_WINFAULT_OK",30)
                     for ch in "install7zip":key(ch)
                     key("ret");wait(b"SHELL_INSTALL7ZIP_OK",120)
-                    # Reboot with same data disk and no fresh browser download.
-                    prior=log.read_bytes().count(b"H5K: KERNEL_READY")
-                    call("system_reset")
-                    end=time.monotonic()+90
-                    while time.monotonic()<end:
-                        if log.read_bytes().count(b"H5K: KERNEL_READY")>prior:break
-                        if proc.poll() is not None:raise RuntimeError("Guest exited during reboot")
-                        time.sleep(.1)
-                    else:raise RuntimeError("No second boot")
-                    key("4");time.sleep(.5)
-                    for ch in "7za -h":key({" ":"spc","-":"minus"}.get(ch,ch))
-                    key("ret");wait(b"APP_7ZIP_LOADED",120);wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
-                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-trial-512m.ppm")});call("quit")
+                    # Real cold boot: keep -no-reboot to detect guest resets/triple faults.
+                    call("quit");proc.wait(timeout=10)
+                    if proc.returncode!=0:raise RuntimeError("First VM exited unsuccessfully")
+                    first_log=log
+                    log=ROOT/"dist"/"network-sevenzip-cold.log";log.unlink(missing_ok=True)
+                    qmp2=tmp/"qmp-cold.sock";vars2=tmp/"vars-cold.fd";shutil.copyfile(var,vars2)
+                    cmd2=cmd.copy()
+                    cmd2[cmd2.index(f"if=pflash,format=raw,file={vars}")]=f"if=pflash,format=raw,file={vars2}"
+                    cmd2[cmd2.index(f"file:{first_log}")]=f"file:{log}"
+                    cmd2[cmd2.index(f"unix:{qmp},server=on,wait=off")]=f"unix:{qmp2},server=on,wait=off"
+                    # No fixture forwarding on the second boot: executable must come from disk.
+                    cmd2[cmd2.index(net)]="user,id=n0,restrict=on"
+                    proc=subprocess.Popen(cmd2)
+                    validate(wait(b"H5K: KERNEL_READY",90))
+                    with socket.socket(socket.AF_UNIX) as sock2:
+                        sock2.settimeout(5);sock2.connect(str(qmp2));stream=sock2.makefile("rwb");json.loads(stream.readline())
+                        call("qmp_capabilities")
+                        key("4");wait(b"GUI_TERMINAL_OPEN",5)
+                        for ch in "7za -h":key({" ":"spc","-":"minus"}.get(ch,ch))
+                        key("ret");wait(b"APP_7ZIP_LOADED",120);wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
+                        assert b"HTTP_DOWNLOAD_OK" not in log.read_bytes(),"Unexpected second boot download"
+                        call("screendump",{"filename":str(ROOT/"dist"/"7zip-trial-512m.ppm")});call("quit")
                     proc.wait(timeout=10)
+                    if proc.returncode!=0:raise RuntimeError("Second VM exited unsuccessfully")
                     with data.open("rb") as fh:
                         fh.seek(8192*512);h=fh.read(512);body=fh.read(len(PAYLOAD))
                     assert h[:8]==b"H5APP001" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
@@ -128,6 +139,11 @@ def main():
                 proc.terminate()
                 try:proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:proc.kill();proc.wait()
+            if first_log is not None:
+                # Retain independent cold boot log and combined evidence for sevenzip.py.
+                if log.exists():
+                    with first_log.open("ab") as fh:fh.write(b"\n--- COLD BOOT ---\n"+log.read_bytes())
+                log=first_log
             if log.exists():print(log.read_text(errors="replace"))
             server.shutdown()
 if __name__=="__main__":main()
