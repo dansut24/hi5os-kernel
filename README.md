@@ -1,34 +1,11 @@
-# Hi5Kernel / Hi5OS v0.0.1 — first boot candidate
+# Hi5Kernel v0.0.2 — memory milestone candidate
 
-Independent x86-64 Rust kernel research for Hi5Central. **Source candidate; not yet compiled or boot-qualified.** No Windows or Linux kernel is linked into the runtime. UEFI firmware loads the initial PE image.
+Known-good v0.0.1: commit cc3ae6aac6e891d1e7484c1fb53d7701dd6618db, baseline/v0.0.1. QEMU 256/1024 MiB passed, visual UTM SE iOS 512 MiB x86_64 Q35 passed on 25 November 2026.
 
-- Original no_std Rust, no external Cargo crates.
-- UEFI memory map handoff and bounded ExitBootServices retry.
-- Direct COM1 diagnostics and GOP framebuffer drawing after handoff.
-- CPUID and conventional-memory accounting; no allocation or reclamation yet.
-- Single CPU, interrupts disabled, halt at end.
+This branch adds a 64 KiB kernel-owned stack and canary; conservative 4 KiB frame allocation using separate managed/free bitmaps, only EFI conventional memory from 1 MiB to 4 GiB (excluding framebuffer); writable identity mapping checks; eight-frame pattern read/write, distinctness, reuse, invalid/double-free and free-count tests; on-screen version, progress, memory and CPUID diagnostics.
 
-Boot and kernel code are linked into one EFI PE image. Firmware-initialised page tables, descriptor tables and stack are retained until a later milestone. No scheduler, user mode, general application loader, MSI, network, or production integration yet. Secure Boot is not supported. Test only in an isolated disposable VM.
+Still uses firmware-initialised page tables and descriptor tables; no guard pages, allocator concurrency, exception isolation, scheduling, user mode, EXE/MSI or filesystem. This is the first staged part of memory development. No production or physical machine use, no secrets, no open-source licence granted by this notice. No external Rust dependencies.
 
-## Build and test
+Build with bash scripts/build.sh after installing rustup, qemu-system-x86, ovmf, mtools and dosfstools. Run python3 -m unittest discover -s scripts -p 'test_*.py' and python3 scripts/smoke.py --memory 512. CI also tests 256 and 1024 MiB. The raw FAT32 image is for UEFI VM boot, not installation.
 
-On a development Ubuntu 24.04 machine with rustup installed:
-
-    sudo apt-get install qemu-system-x86 ovmf mtools dosfstools
-    rustup target add x86_64-unknown-uefi
-    bash scripts/build.sh
-    python3 -m unittest discover -s scripts -p 'test_*.py'
-    python3 scripts/smoke.py --memory 256
-    python3 scripts/smoke.py --memory 1024
-
-The GitHub Actions workflow builds and tests both VM sizes, retaining the raw FAT32 image, EFI executable, checksums and logs for 14 days. No deployment or production secrets are required. For a local graphical test, run python3 scripts/smoke.py --interactive. The image is not a physical-machine installer or ISO.
-
-## Qualification
-
-Require ordered post-handoff serial markers through KERNEL_READY and no reset or panic. The validator unit tests do not establish successful compilation or VM boot. Verify framebuffer output visually as a separate test.
-
-## Rights and scope
-
-Public repository approved for development builds on 25 November 2026. No open-source licence is granted by this notice; GitHub platform terms apply. Do not publish production secrets, credentials, proprietary third-party code or binaries. Keep this project separate from the existing Hi5Central production environment.
-
-Next: v0.0.2 owned stack, GDT/IDT, physical frame allocator and page tables after boot qualification.
+UTM SE: create a separate VM or replace only the imported Hi5OS drive on a stopped copy of the known-good VM; x86_64 Q35, 512 MiB, one core, UEFI enabled, no sharing or networking. Expected screen KERNEL READY with green test lines. Preserve the old VM. Candidate qualification pending.

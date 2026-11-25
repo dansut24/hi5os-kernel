@@ -8,7 +8,7 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-REQUIRED = [b'H5K: BOOT v0.0.1', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: MEMORY_MAP_OK', b'H5K: CPUID_MAX=', b'H5K: FRAMEBUFFER_OK', b'H5K: KERNEL_READY']
+REQUIRED = [b'H5K: BOOT v0.0.2', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: FRAMEBUFFER_OK', b'H5K: KERNEL_READY']
 
 def validate(data):
     pos = 0
@@ -17,7 +17,7 @@ def validate(data):
         if found < 0:
             raise ValueError(f'Missing/out-of-order marker: {marker.decode()}')
         pos = found + len(marker)
-    if b'H5K: PANIC' in data or b'H5K: EFI_STATUS=' in data:
+    if b'H5K: PANIC' in data or b'H5K: EFI_STATUS=' in data or b'H5K: FAIL ' in data:
         raise ValueError('Kernel or boot failure marker present')
 
 def firmware():
@@ -35,7 +35,7 @@ def main():
     if args.memory < 128 or args.timeout < 1:
         parser.error('memory must be >=128 MiB and timeout positive')
     code, var = firmware()
-    img = ROOT/'dist/hi5os-v0.0.1.img'
+    img = ROOT/'dist/hi5os-v0.0.2.img'
     if not img.is_file(): raise SystemExit('Run scripts/build.sh first')
     log = ROOT / 'dist' / f'boot-{args.memory}m.log'
     log.unlink(missing_ok=True)
@@ -60,7 +60,7 @@ def main():
                     print(f'PASS: {args.memory} MiB UEFI post-handoff boot')
                     return 0
                 if proc.poll() is not None: raise RuntimeError(f'QEMU exited: {proc.returncode}')
-                if b'H5K: PANIC' in data or b'H5K: EFI_STATUS=' in data: raise RuntimeError('Guest reported a boot failure')
+                if b'H5K: PANIC' in data or b'H5K: EFI_STATUS=' in data or b'H5K: FAIL ' in data: raise RuntimeError('Guest reported a boot failure')
                 time.sleep(.2)
             raise RuntimeError('Timed out waiting for kernel-ready marker')
         finally:
