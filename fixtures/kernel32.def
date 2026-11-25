@@ -1,3 +1,6 @@
 LIBRARY KERNEL32.dll
 EXPORTS
  ExitProcess
+ GetCurrentProcessId
+ SetLastError
+ GetLastError

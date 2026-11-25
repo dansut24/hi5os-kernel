@@ -53,6 +53,9 @@ pub fn on_stack(info:BootInfo)->! {
     if !crate::platform::run_pe_fixture(){fail(&mut screen,"PE_EXECUTION_TEST");}
     if !crate::imports::self_test(){fail(&mut screen,"PE_IMPORT_INVENTORY_TEST");}
     serial::line("H5K: PE_IMPORT_INVENTORY_OK");
+    if !crate::relocate::self_test(){fail(&mut screen,"PE_RELOC_TEST");}
+    serial::line("H5K: PE_RELOC_SELFTEST_OK");
+    if !crate::platform::run_runtime_fixture(){fail(&mut screen,"PE_RUNTIME_TEST");}
     let nics=services::network_probe();
     let (store,loaded)=crate::disk::Store::open();
     if let Some((present,data,len))=loaded {if present{files.write(&data[..len]);}else{files.remove();}}

@@ -39,7 +39,8 @@ impl<'a> Pe<'a>{
         core::str::from_utf8(&t[..n]).ok()
     }
 }
-pub fn inspect(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>))->Result<Report,&'static str>{
+pub fn inspect(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>))->Result<Report,&'static str>{inspect_slots(b,|d,s,_|emit(d,s))}
+pub fn inspect_slots(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>,u32))->Result<Report,&'static str>{
     let p=Pe::new(b).ok_or("Invalid or unsupported PE64")?;
     let (r,n)=p.dir(1).ok_or("Invalid import directory")?;
     let mut report=Report{delayed:p.dir(13).ok_or("Invalid delay imports")?.0!=0,reloc:p.dir(5).ok_or("Invalid relocation directory")?.0!=0,..Report::default()};
@@ -60,16 +61,16 @@ pub fn inspect(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>))->Result<Report,&'st
             if v==0{ended=true;break;}
             if report.functions>=4096{return Err("Too many imports");}
             // IAT must also be backed by the file; this inventory never modifies it.
-            p.bytes(iat.checked_add(off).ok_or("IAT overflow")?,8).ok_or("IAT outside file")?;
+            let slot=iat.checked_add(off).ok_or("IAT overflow")?;p.bytes(slot,8).ok_or("IAT outside file")?;
             report.functions+=1;
             if v&(1u64<<63)!=0{
-                if v&0x7fff_ffff_ffff_0000!=0{return Err("Invalid ordinal");}emit(dll,Symbol::Ordinal(v as u16));
+                if v&0x7fff_ffff_ffff_0000!=0{return Err("Invalid ordinal");}emit(dll,Symbol::Ordinal(v as u16),slot);
             }else{
                 let hint=u32::try_from(v).map_err(|_|"Invalid name RVA")?;
                 p.bytes(hint,2).ok_or("Invalid import hint")?;
                 let name=p.name(hint.checked_add(2).ok_or("Name overflow")?).ok_or("Invalid function name")?;
                 if dll.eq_ignore_ascii_case("kernel32.dll")&&name=="ExitProcess"{report.fixture_apis+=1;}
-                emit(dll,Symbol::Name(name));
+                emit(dll,Symbol::Name(name),slot);
             }
         }
         if !ended{return Err("Unterminated thunk table");}

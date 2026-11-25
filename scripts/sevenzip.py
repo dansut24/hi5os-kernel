@@ -2,7 +2,7 @@
 """Pinned official 7-Zip x64 binary, read-only import comparison against pefile.
 Never executes or republishes the third-party executable. CI isolated guest HTTP only.
 """
-import collections, hashlib, json, pathlib, subprocess, sys, tempfile, re
+import collections, hashlib, json, pathlib, subprocess, sys, tempfile, re, struct, zlib
 import pefile
 from smoke import ROOT
 VERSION="26.06"
@@ -44,3 +44,28 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     assert len(set(d for d,s in guest))==5,"Pinned DLL count changed"
     assert collections.Counter(guest)==collections.Counter(imports),f"Import mismatch: missing {collections.Counter(imports)-collections.Counter(guest)}, extra {collections.Counter(guest)-collections.Counter(imports)}"
     print(f"PASS: native PE inventory exactly matches host pefile for all {len(imports)} imports")
+    # Independent reference: pefile supplies section and relocation records.
+    # Preserve the original header bytes just as the inert guest mapper does.
+    size=pe.OPTIONAL_HEADER.SizeOfImage
+    preferred=pe.OPTIONAL_HEADER.ImageBase
+    base=preferred+0x10000000
+    image=bytearray(size)
+    headers=pe.OPTIONAL_HEADER.SizeOfHeaders
+    image[:headers]=raw[:headers]
+    for sec in pe.sections:
+        a=sec.VirtualAddress;rp=sec.PointerToRawData;n=sec.SizeOfRawData
+        if n:image[a:a+n]=raw[rp:rp+n]
+    count=0
+    for block in pe.DIRECTORY_ENTRY_BASERELOC:
+        for e in block.entries:
+            if e.type==0:continue
+            assert e.type==10,"Unsupported reference relocation"
+            old=struct.unpack_from("<Q",image,e.rva)[0]
+            struct.pack_into("<Q",image,e.rva,(old+base-preferred)&0xffffffffffffffff)
+            count+=1
+    for k,v in {"SIZE":size,"BASE":base,"COUNT":count,"CRC":zlib.crc32(image)}.items():
+        assert f"PE_REBASE_{k}=0x{v:016x}" in log,f"Rebase {k} mismatch: expected {v:#x}"
+    report["rebase"]={"image_bytes":size,"base":hex(base),"dir64_count":count,"crc32":hex(zlib.crc32(image))}
+    (ROOT/"dist"/"7zip-imports.json").write_text(json.dumps(report,indent=2)+"\n")
+    print(f"PASS: real 7-Zip inert image at {base:#x}, {count} relocations, exact mapped-image CRC32 matched reference")
+

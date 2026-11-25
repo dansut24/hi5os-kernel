@@ -105,3 +105,18 @@ pub fn stage_hello(out:&mut[u8],shim:u64)->Result<Image,&'static str>{
     if mem.get(name..name+12)!=Some(b"ExitProcess\0".as_slice()){return Err("Unsupported Win32 API");}
     mem[iat..iat+8].copy_from_slice(&shim.to_le_bytes());Ok(image)
 }
+
+const RUNTIME:&[u8]=include_bytes!("../target/hi5-fixture/runtime.exe");
+pub fn stage_runtime(out:&mut[u8],shim:u64)->Result<Image,&'static str>{
+    let image=stage(RUNTIME,out,true)?;
+    if image.preferred_base!=0x1_0000_0000||image.size!=0x3000||image.entry!=0x1000{return Err("Unexpected runtime fixture layout");}
+    let mut mask=0u8;let mut valid=true;
+    let r=crate::imports::inspect_slots(RUNTIME,|dll,s,slot|{
+        if !dll.eq_ignore_ascii_case("kernel32.dll"){valid=false;return;}
+        let id=match s{crate::imports::Symbol::Name("ExitProcess")=>0,crate::imports::Symbol::Name("GetCurrentProcessId")=>1,
+            crate::imports::Symbol::Name("SetLastError")=>2,crate::imports::Symbol::Name("GetLastError")=>3,_=>{valid=false;return;}};
+        let slot=slot as usize;if mask&(1<<id)!=0||!(0x2000..=0x2ff8).contains(&slot)||slot%8!=0{valid=false;return;}
+        mask|=1<<id;out[slot..slot+8].copy_from_slice(&(shim+id*16).to_le_bytes());
+    })?;
+    if !valid||mask!=15||r.dlls!=1||r.functions!=4{return Err("Unexpected runtime imports");}Ok(image)
+}
