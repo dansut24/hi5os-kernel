@@ -1,8 +1,21 @@
 import unittest
 from smoke import ROOT, REQUIRED, validate
 import tomllib
+import re, ipaddress
 
 class MarkerTests(unittest.TestCase):
+    def test_network_fixture_addresses(self):
+        network=(ROOT/"scripts/network.py").read_text()
+        desktop=(ROOT/"src/desktop.rs").read_text()
+        for name,source in [("network",network),("desktop",desktop)]:
+            for addr in re.findall(r"(?<![\d.])(?:10|127)\.\d+\.\d+\.\d+(?![\d.])",source):
+                with self.subTest(file=name,address=addr):
+                    ipaddress.IPv4Address(addr)
+        self.assertIn("guestfwd=tcp:10.0.2.200:8080",network)
+        self.assertIn("http://10.0.2.2:{server.server_port}/hello.exe",network)
+        self.assertIn("http://10.0.2.200:8080/hello.exe",network)
+        self.assertIn('b"http://10.0.2.200:8080/hello.exe"',desktop)
+
     def test_boot_version_matches_cargo(self):
         with (ROOT / "Cargo.toml").open("rb") as f:
             version = tomllib.load(f)["package"]["version"]
