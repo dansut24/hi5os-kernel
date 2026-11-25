@@ -10,7 +10,7 @@ import socket
 import json
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-REQUIRED = [b'H5K: BOOT v0.0.9', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: KERNEL_READY']
+REQUIRED = [b'H5K: BOOT v0.1.0', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: KERNEL_READY']
 
 def validate(data):
     pos = 0
@@ -37,7 +37,7 @@ def main():
     if args.memory < 128 or args.timeout < 1:
         parser.error('memory must be >=128 MiB and timeout positive')
     code, var = firmware()
-    img = ROOT/'dist/hi5os-v0.0.9.img'
+    img = ROOT/'dist/hi5os-v0.1.0.img'
     if not img.is_file(): raise SystemExit('Run scripts/build.sh first')
     log = ROOT / 'dist' / f'boot-{args.memory}m.log'
     log.unlink(missing_ok=True)

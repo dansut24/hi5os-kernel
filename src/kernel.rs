@@ -42,6 +42,8 @@ pub fn on_stack(info:BootInfo)->! {
     if !files.self_test(){fail(&mut screen,"RAMFS_TEST");}
     serial::line("H5K: RAMFS_OK");
     let nics=services::network_probe();
-    if let Some(fb)=info.framebuffer{desktop::run(fb,ram,nics,files,tasks);}
+    let (store,loaded)=crate::disk::Store::open();
+    if let Some((present,data,len))=loaded {if present{files.write(&data[..len]);}else{files.remove();}}
+    if let Some(fb)=info.framebuffer{desktop::run(fb,ram,nics,files,tasks,store);}
     fail(&mut screen,"DESKTOP_REQUIRES_FRAMEBUFFER")
 }

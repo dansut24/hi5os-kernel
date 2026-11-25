@@ -28,11 +28,13 @@ jobs:
         run: python3 scripts/smoke.py --memory 512
       - name: Qualify 1024 MiB VM
         run: python3 scripts/smoke.py --memory 1024
+      - name: Persistent document cold boot test
+        run: python3 scripts/persistence.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.0.9-vm-evidence
+          name: hi5os-v0.1.0-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14

@@ -11,6 +11,7 @@ mod platform;
 mod desktop;
 mod ui;
 mod services;
+mod disk;
 
 use core::panic::PanicInfo;
 
@@ -19,7 +20,7 @@ use core::panic::PanicInfo;
 #[no_mangle]
 pub extern "efiapi" fn efi_main(image: usize, table: *mut boot::SystemTable) -> usize {
     serial::init();
-    serial::line("H5K: BOOT v0.0.9");
+    serial::line("H5K: BOOT v0.1.0");
     // SAFETY: the firmware supplies the image handle and system table.
     unsafe { boot::start(image, table) }
 }

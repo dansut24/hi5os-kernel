@@ -1,8 +1,8 @@
 //! Explicit cooperative tasks, volatile file service, PCI network discovery.
 use crate::{platform,serial};
-pub struct Files { pub data:[u8;64], pub len:usize, pub present:bool }
+pub struct Files { pub data:[u8;crate::disk::CAP], pub len:usize, pub present:bool }
 impl Files {
-    pub fn new()->Self{Self{data:[0;64],len:0,present:false}}
+    pub fn new()->Self{Self{data:[0;crate::disk::CAP],len:0,present:false}}
     pub fn write(&mut self,data:&[u8])->bool{
         if data.len()>self.data.len(){return false;}
         self.data.fill(0);self.data[..data.len()].copy_from_slice(data);self.len=data.len();self.present=true;true
