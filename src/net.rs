@@ -5,8 +5,8 @@ use core::{ptr,sync::atomic::{fence,Ordering}};
 const N:usize=16;
 const B:usize=2048;
 const ZERO:[u8;4]=[0;4];
-pub const MAX_BODY:usize=4096;
-pub const MAX_RESPONSE:usize=6144;
+pub const MAX_BODY:usize=1024*1024;
+pub const MAX_RESPONSE:usize=MAX_BODY+128*1024;
 #[repr(C,align(128))]struct Descs([u8;N*16]);
 #[repr(C,align(4096))]struct Buffers([u8;N*B]);
 static mut RX:Descs=Descs([0;N*16]);
@@ -180,14 +180,15 @@ impl Nic{
         let mut req=[0u8;256];let mut k=0;
         for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
         if !self.packet(mac,ip,port,self.seq,remote,0x18,&req[..k]){return Err("Request failed");}self.seq=self.seq.wrapping_add(k as u32);
-        let end=p::ticks()+500;let mut used=0;
-        while before(end){
+        let overall=p::ticks()+12000;let mut end=p::ticks()+1000;let mut used=0;let mut next_log=65536;
+        while before(end)&&before(overall){
             let n=self.recv(&mut rx);if n==0{p::wait_tick();continue;}self.answer_arp(&rx[..n]);
             if let Some((s,a,f,data))=self.segment(&rx[..n],ip,port){
                 if f&0x10==0||a!=self.seq{continue;}if f&4!=0{return Err("TCP reset");}
                 if s!=remote{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);continue;}
                 if used+data.len()>response.len(){return Err("Response exceeds preview limit");}
                 response[used..used+data.len()].copy_from_slice(data);used+=data.len();remote=remote.wrapping_add(data.len()as u32);
+                if !data.is_empty(){end=p::ticks()+1000;if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}}
                 if f&1!=0{remote=remote.wrapping_add(1);serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
                 if !data.is_empty()||f&1!=0{let _=self.packet(mac,ip,port,self.seq,remote,0x10,&[]);}
                 match crate::http::complete(response,used,f&1!=0)?{

@@ -11,15 +11,15 @@ def fixture():
     for off,val in [(104,4096),(144,8192),(148,512),(208,1),(212,4096),(216,512),(220,512)]:struct.pack_into("<I",b,off,val)
     b[512]=0xc3
     return bytes(b)
-PAYLOAD=fixture()
 MODE=sys.argv[1] if len(sys.argv)>1 else "length"
-assert MODE in ("length","close","chunked")
+assert MODE in ("length","close","chunked","large")
+PAYLOAD=fixture()+ (bytes(range(256))*4092 if MODE=="large" else b"")
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         if self.path!="/hello.exe":self.send_error(404);return
         self.send_response(200);self.send_header("Content-Type","application/octet-stream")
-        if MODE=="length":self.send_header("Content-Length",str(len(PAYLOAD)))
+        if MODE in ("length","large"):self.send_header("Content-Length",str(len(PAYLOAD)))
         elif MODE=="chunked":self.send_header("Transfer-Encoding","chunked")
         self.send_header("Connection","close");self.end_headers()
         if MODE=="chunked":
@@ -35,7 +35,7 @@ def main():
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
         vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/f"network-{MODE}.log";log.unlink(missing_ok=True)
-        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.4.img"
+        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.5.img"
         # Close-delimited test uses real SLIRP host-loopback TCP, in CI network namespace.
         net="user,id=n0" if MODE=="close" else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:8080-tcp:127.0.0.1:{server.server_port}"
         capture=ROOT/"dist"/f"network-{MODE}.pcap"
@@ -71,19 +71,21 @@ def main():
                     key("ctrl-l")
                     for ch in f"http://10.0.2.2:{server.server_port}/hello.exe":
                         key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
-                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",20)
-                wait(b"HTTP_DOWNLOAD_BYTES=0x0000000000000400",2)
-                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK"}[MODE],2)
+                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",120 if MODE=="large" else 20)
+                wait(f"HTTP_DOWNLOAD_BYTES=0x{len(PAYLOAD):016x}".encode(),2)
+                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK"}[MODE],2)
                 if MODE=="close":wait(b"HTTP_FIN_BYTES=",2)
-                key("f9");wait(b"DOWNLOAD_SAVED",10)
+                key("f9");wait(b"DOWNLOAD_SAVED",90 if MODE=="large" else 10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
-                key("f10");wait(b"GUI_DOWNLOAD_REOPENED",5)
+                key("f10");wait(b"GUI_DOWNLOAD_REOPENED",90 if MODE=="large" else 5)
                 call("screendump",{"filename":str(ROOT/"dist"/f"browser-{MODE}-512m.ppm")});call("quit")
             proc.wait(timeout=10)
             with data.open("rb") as fh:
-                fh.seek(16*512);h=fh.read(512);body=fh.read(4096)
-            assert h[:8]==b"H5DL0001" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
-            assert body[:len(PAYLOAD)]==PAYLOAD
+                fh.seek(64*512);h=fh.read(512);body=fh.read(len(PAYLOAD))
+            assert h[:8]==b"H5DL0002" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
+            assert body==PAYLOAD
+            url=(f"http://10.0.2.2:{server.server_port}/hello.exe" if MODE=="close" else "http://10.0.2.100:8080/hello.exe").encode()
+            assert struct.unpack_from("<I",h,20)[0]==len(url) and h[24:24+len(url)]==url
             assert struct.unpack_from("<I",h,508)[0]==zlib.crc32(h[:508])
             print(f"PASS: {MODE} HTTP downloaded binary and saved byte-exact fixture to dedicated data image")
         finally:

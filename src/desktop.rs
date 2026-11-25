@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.1.4 — native software GUI; single foreground window.
+//! Hi5Desktop v0.1.5 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
@@ -14,7 +14,9 @@ struct Terminal{buf:[u8;48],len:usize,last:[u8;48],last_len:usize,result:u8,shif
 impl Terminal{fn new()->Self{Self{buf:[0;48],len:0,last:[0;48],last_len:0,result:0,shift:false}}}
 #[derive(Clone,Copy)]struct FileSlot{data:[u8;CAP],len:usize,present:bool}
 const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
-struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:[u8;MAX_RESPONSE],web_len:usize,web_ok:bool,web_msg:&'static str}
+// The large response buffer is image-owned static memory, not the 64 KiB kernel stack.
+static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
+struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
 impl Ui{
     fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{unsafe{ptr::write_volatile((self.c.fb.base as *mut u32).add((self.my+y)*self.c.fb.stride+self.mx+x),self.saved[y*16+x]);}}}}self.saved_valid=false;}
     fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{self.saved[y*16+x]=unsafe{ptr::read_volatile((self.c.fb.base as *const u32).add((self.my+y)*self.c.fb.stride+self.mx+x))};if x<=y/2&&y<14{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}}}self.saved_valid=true;}
@@ -38,7 +40,7 @@ impl Ui{
         // Quiet, low-cost gradient and a native desktop with standard controls.
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
-        c.text(w.saturating_sub(202),54,"Developer preview 0.1.4",q.muted);
+        c.text(w.saturating_sub(202),54,"Developer preview 0.1.5",q.muted);
         for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser"};c.text(18,y+35,label,q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
@@ -66,7 +68,7 @@ impl Ui{
                 c.title(x,y,"About this PC",q.ink);c.round(x,y+42,r.w-44,76,9,q.sub);
                 c.text(x+14,y+50,"Hi5OS Developer Preview",q.ink);c.text(x+14,y+77,"Independent x86-64 kernel",q.muted);
                 c.text(x,y+135,"Managed memory (MiB)",q.muted);c.num(x+200,y+135,self.ram,q.ink);
-                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.4",q.ink);
+                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.5",q.ink);
                 c.text(x,y+191,"PE and compound-file probes passed",q.green);
                 self.button(Rect{x,y:y+223,w:180,h:34},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
             }
@@ -102,9 +104,14 @@ impl Ui{
                     if self.web[..self.web_len].iter().all(|b|*b==9||*b==10||*b==13||*b>=32)&&core::str::from_utf8(&self.web[..self.web_len]).is_ok(){
                         let mut preview=[0u8;768];let len=crate::http::preview(&self.web[..self.web_len],&mut preview);
                         let mut yy=y+163;for line in preview[..len].split(|b|*b==10){for part in line.chunks(45){if yy>=y+223{break;}if let Ok(t)=core::str::from_utf8(part){c.text_limit(x,yy,t,q.ink,false,right);}yy+=20;}if yy>=y+223{break;}}
-                    }else{c.text(x,y+165,"Binary preview - execution disabled",q.muted);}
+                    }else{
+                        c.text(x,y+165,"Binary preview - execution disabled",q.muted);
+                        let src=&self.source[..self.source_len];let path=src.split(|b|*b==b'?').next().unwrap_or(&[]);
+                        let name=path.rsplit(|b|*b==b'/').next().unwrap_or(&[]);
+                        if let Ok(t)=core::str::from_utf8(name){if !t.is_empty(){c.text_limit(x,y+188,t,q.ink,false,right);}}
+                    }
                     self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);
-                }else{c.text_limit(x,y+120,"Plain HTTP - no TLS. Max 4096 bytes.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
+                }else{c.text_limit(x,y+120,"Plain HTTP - no TLS. Max 1 MiB.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
             }
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
@@ -127,7 +134,7 @@ impl Ui{
                 match self.term.result{
                     1=>{c.text_limit(x,y+91,"help mem ver ls clear theme compat",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
-                    3=>c.text(x,y+91,"Hi5OS 0.1.4",fg),
+                    3=>c.text(x,y+91,"Hi5OS 0.1.5",fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
                     5=>c.text(x,y+91,"Appearance changed",fg),
                     6=>c.text(x,y+91,"Unknown command",fg),7=>c.text_limit(x,y+91,"PE32/PE64 + OLE probe only; no execution",fg,false,right),_=>{}
@@ -177,14 +184,20 @@ impl Ui{
         }
     }
     fn connect_net(&mut self){if self.nic.is_none(){self.nic=Nic::open();}if let Some(n)=&mut self.nic{if n.configure().is_err(){serial::line("H5K: DHCP_CONNECT_FAILED");}}self.draw();}
-    fn reopen_web(&mut self){let mut b=[0;4096];if let Some(n)=self.store.load_download(&mut b){self.web[..n].copy_from_slice(&b[..n]);self.web_len=n;self.web_ok=true;self.web_msg="Recovered saved download - not authenticated";serial::line("H5K: GUI_DOWNLOAD_REOPENED");}else{self.web_ok=false;self.web_len=0;self.web_msg="No valid saved download";}self.draw();}
+    fn reopen_web(&mut self){
+        if let Some(d)=self.store.load_download(self.web){
+            self.web_len=d.len;self.web_ok=true;self.source=d.url;self.source_len=d.url_len;self.url=d.url;self.url_len=d.url_len;
+            self.web_msg=if d.url_len==0{"Recovered legacy download - source unknown"}else{"Recovered saved download - not authenticated"};
+            serial::line("H5K: GUI_DOWNLOAD_REOPENED");
+        }else{self.web_ok=false;self.web_len=0;self.web_msg="No valid saved download";}self.draw();
+    }
     fn fetch_web(&mut self){
         self.web_ok=false;self.web_len=0;self.web_msg="Connecting via DHCP / HTTP...";self.draw();
         if self.nic.is_none(){self.nic=Nic::open();}
-        if let Some(nic)=&mut self.nic{match nic.get(&self.url[..self.url_len],&mut self.web){Ok(n)=>{self.web_len=n;self.web_ok=true;self.web_msg="Download complete - not authenticated";},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}else{self.web_msg="No supported E1000 network adapter";}
+        if let Some(nic)=&mut self.nic{match nic.get(&self.url[..self.url_len],self.web){Ok(n)=>{self.web_len=n;self.web_ok=true;self.source=self.url;self.source_len=self.url_len;self.web_msg="Download complete - not authenticated";},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}else{self.web_msg="No supported E1000 network adapter";}
         self.draw();
     }
-    fn save_web(&mut self){if self.web_ok{self.web_msg=if self.store.save_download(&self.web[..self.web_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
+    fn save_web(&mut self){if self.web_ok{self.web_msg=if self.store.save_download(&self.web[..self.web_len],&self.source[..self.source_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
     fn browser_key(&mut self,key:u8){
         if key==0x1c{self.fetch_web();return;}if key==0x43{self.save_web();return;}if key==0x44{self.reopen_web();return;}
         if self.ctrl{if key==0x26{self.url_len=0;self.draw();}return;}
@@ -255,7 +268,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
     let _=store.load(0);
     let mut url=[0;128];let default=b"http://10.0.2.100:8080/hello.exe";url[..default.len()].copy_from_slice(default);
-    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:[0;MAX_RESPONSE],web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
+    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");

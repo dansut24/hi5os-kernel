@@ -35,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if lba>48||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if lba>4161||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -87,7 +87,8 @@ fn find()->Option<Port>{
         }
     }}None
 }
-fn crc(b:&[u8])->u32{let mut v=0xffff_ffffu32;for byte in b{v^=*byte as u32;for _ in 0..8{v=(v>>1)^if v&1!=0{0xedb88320}else{0};}}!v}
+fn crc_step(mut v:u32,b:&[u8])->u32{for byte in b{v^=*byte as u32;for _ in 0..8{v=(v>>1)^if v&1!=0{0xedb88320}else{0};}}v}
+fn crc(b:&[u8])->u32{!crc_step(0xffff_ffff,b)}
 fn put(b:&mut [u8],off:usize,n:u32){b[off..off+4].copy_from_slice(&n.to_le_bytes());}
 fn get(b:&[u8],off:usize)->u32{u32::from_le_bytes([b[off],b[off+1],b[off+2],b[off+3]])}
 fn decode(b:&[u8;512])->Option<(u32,bool,usize)>{
@@ -96,6 +97,11 @@ fn decode(b:&[u8;512])->Option<(u32,bool,usize)>{
     if gen==0||flag>1||len>CAP||(flag==0&&len!=0)||!b[20..20+len].iter().all(|c|*c==10||(32..127).contains(c)){return None;}
     Some((gen,flag==1,len))
 }
+// V2 download banks: sectors 64..2112 and 2113..4161, inside the original 16 MiB disk.
+const BANK_A:u32=64;
+const BANK_B:u32=2113;
+const DL_CAP:usize=crate::net::MAX_BODY;
+#[derive(Clone,Copy)]pub struct Download{pub len:usize,pub url:[u8;128],pub url_len:usize,gen:u32,sum:u32}
 pub struct Store{port:Option<Port>,generation:u32,slot:u32,file:usize}
 impl Store{
     pub fn open()->(Self,Option<(bool,[u8;CAP],usize)>){
@@ -132,22 +138,51 @@ impl Store{
         for i in 0..8{let mut b=[0;512];if !p.read(base+1+i as u32,&mut b){return None;}out[i*512..(i+1)*512].copy_from_slice(&b);}
         if crc(&out[..len])!=get(&h,16){return None;}Some((gen,len))
     }
-    pub fn load_download(&mut self,out:&mut[u8;4096])->Option<usize>{
-        let p=self.port?;let a=Self::download_bank(p,16,out);let b=Self::download_bank(p,32,out);
-        let base=match(a,b){(Some(x),Some(y))=>if x.0>=y.0{16}else{32},(Some(_),None)=>16,(None,Some(_))=>32,_=>return None};
-        let (_,len)=Self::download_bank(p,base,out)?;serial::metric("H5K: DOWNLOAD_LOADED_CRC=",crc(&out[..len])as u64);Some(len)
+    fn v2_header(p:Port,base:u32)->Option<Download>{
+        let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=b"H5DL0002"||get(&h,508)!=crc(&h[..508]){return None;}
+        let gen=get(&h,8);let len=get(&h,12)as usize;let sum=get(&h,16);let url_len=get(&h,20)as usize;
+        if gen==0||len>DL_CAP||url_len>128||!h[24..24+url_len].iter().all(|b|(33..127).contains(b)){return None;}
+        let mut url=[0;128];url[..url_len].copy_from_slice(&h[24..24+url_len]);
+        Some(Download{len,url,url_len,gen,sum})
     }
-    pub fn save_download(&mut self,data:&[u8])->bool{
-        let Some(p)=self.port else{return false;};if data.len()>4096{return false;}
+    fn v2_read(p:Port,base:u32,d:Download,mut out:Option<&mut[u8]>,compare:Option<&[u8]>)->bool{
+        if out.as_ref().is_some_and(|b|b.len()<d.len)||compare.is_some_and(|b|b.len()!=d.len){return false;}
+        let mut state=0xffff_ffff;let mut pos=0;
+        while pos<d.len{let mut block=[0;512];if !p.read(base+1+(pos/512)as u32,&mut block){return false;}
+            let n=(d.len-pos).min(512);state=crc_step(state,&block[..n]);
+            if let Some(ref mut dst)=out{dst[pos..pos+n].copy_from_slice(&block[..n]);}
+            if let Some(src)=compare{if src[pos..pos+n]!=block[..n]{return false;}}pos+=n;
+        }!state==d.sum
+    }
+    pub fn load_download(&mut self,out:&mut[u8])->Option<Download>{
+        let p=self.port?;let a=Self::v2_header(p,BANK_A);let b=Self::v2_header(p,BANK_B);
+        let order=if b.map_or(0,|v|v.gen)>a.map_or(0,|v|v.gen){[(BANK_B,b),(BANK_A,a)]}else{[(BANK_A,a),(BANK_B,b)]};
+        for (base,d) in order{if let Some(d)=d{if Self::v2_read(p,base,d,Some(out),None){
+            serial::metric("H5K: DOWNLOAD_LOADED_CRC=",d.sum as u64);serial::metric("H5K: DOWNLOAD_URL_CRC=",crc(&d.url[..d.url_len])as u64);return Some(d);
+        }}}
+        // Old v0.1.2-4 downloads remain readable, but never invent their original URL.
+        let old:&mut[u8;4096]=out.get_mut(..4096)?.try_into().ok()?;
+        let a=Self::download_bank(p,16,old);let b=Self::download_bank(p,32,old);
+        let base=match(a,b){(Some(x),Some(y))=>if x.0>=y.0{16}else{32},(Some(_),None)=>16,(None,Some(_))=>32,_=>return None};
+        let (_,len)=Self::download_bank(p,base,old)?;let sum=crc(&old[..len]);
+        serial::metric("H5K: DOWNLOAD_LOADED_CRC=",sum as u64);serial::line("H5K: DOWNLOAD_LEGACY_NO_URL");Some(Download{len,url:[0;128],url_len:0,gen:0,sum})
+    }
+    pub fn save_download(&mut self,data:&[u8],url:&[u8])->bool{
+        let Some(p)=self.port else{return false;};
+        if data.len()>DL_CAP||url.len()>128||!url.iter().all(|b|(33..127).contains(b)){return false;}
         let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){self.port=None;return false;}
-        let mut scratch=[0;4096];let a=Self::download_bank(p,16,&mut scratch);let b=Self::download_bank(p,32,&mut scratch);
-        let (base,gen)=match(a,b){(Some(x),Some(y))=>if x.0>=y.0{(32,x.0)}else{(16,y.0)},(Some(x),None)=>(32,x.0),(None,Some(y))=>(16,y.0),_=>(16,0)};
+        let a=Self::v2_header(p,BANK_A).filter(|d|Self::v2_read(p,BANK_A,*d,None,None));
+        let b=Self::v2_header(p,BANK_B).filter(|d|Self::v2_read(p,BANK_B,*d,None,None));
+        let (base,gen)=match(a,b){(Some(x),Some(y))=>if x.gen>=y.gen{(BANK_B,x.gen)}else{(BANK_A,y.gen)},(Some(x),None)=>(BANK_B,x.gen),(None,Some(y))=>(BANK_A,y.gen),_=>(BANK_A,0)};
         let Some(gen)=gen.checked_add(1)else{return false;};
-        for i in 0..8{let mut block=[0;512];let start=i*512;if start<data.len(){let end=(start+512).min(data.len());block[..end-start].copy_from_slice(&data[start..end]);}if !p.write(base+1+i as u32,&mut block){self.port=None;return false;}}
+        for (i,part) in data.chunks(512).enumerate(){let mut block=[0;512];block[..part.len()].copy_from_slice(part);
+            if !p.write(base+1+i as u32,&mut block){self.port=None;return false;}}
         if !p.flush(){self.port=None;return false;}
-        h.fill(0);h[..8].copy_from_slice(b"H5DL0001");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let c=crc(&h[..508]);put(&mut h,508,c);
-        if !p.write(base,&mut h)||!p.flush()||Self::download_bank(p,base,&mut scratch)!=Some((gen,data.len()))||&scratch[..data.len()]!=data{self.port=None;return false;}
-        serial::metric("H5K: DOWNLOAD_SAVED_CRC=",crc(data)as u64);serial::line("H5K: DOWNLOAD_SAVED");true
+        let sum=crc(data);h.fill(0);h[..8].copy_from_slice(b"H5DL0002");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,sum);put(&mut h,20,url.len()as u32);h[24..24+url.len()].copy_from_slice(url);let c=crc(&h[..508]);put(&mut h,508,c);
+        if !p.write(base,&mut h)||!p.flush(){self.port=None;return false;}
+        let Some(d)=Self::v2_header(p,base)else{self.port=None;return false;};
+        if d.gen!=gen||d.len!=data.len()||d.sum!=sum||&d.url[..d.url_len]!=url||!Self::v2_read(p,base,d,None,Some(data)){self.port=None;return false;}
+        serial::metric("H5K: DOWNLOAD_SAVED_CRC=",sum as u64);serial::metric("H5K: DOWNLOAD_URL_CRC=",crc(url)as u64);serial::line("H5K: DOWNLOAD_SAVED");true
     }
     pub fn save(&mut self,present:bool,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};

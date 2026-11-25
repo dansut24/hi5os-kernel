@@ -8,7 +8,7 @@ permissions:
 jobs:
   build-and-boot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install VM and image tools
@@ -36,13 +36,15 @@ jobs:
         run: sudo -n unshare --net bash -c 'ip link set lo up; exec runuser -u "$1" -- python3 scripts/network.py close' bash "$USER"
       - name: HTTP chunked binary download
         run: python3 scripts/network.py chunked
+      - name: One MiB HTTP binary download and exact disk verification
+        run: python3 scripts/network.py large
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
         run: python3 scripts/routed.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.1.4-vm-evidence
+          name: hi5os-v0.1.5-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
