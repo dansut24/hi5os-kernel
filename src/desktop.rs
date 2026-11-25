@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.1.2 — native software GUI; single foreground window.
+//! Hi5Desktop v0.1.3 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
@@ -38,14 +38,14 @@ impl Ui{
         // Quiet, low-cost gradient and a native desktop with standard controls.
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
-        c.text(w.saturating_sub(202),54,"Developer preview 0.1.2",q.muted);
+        c.text(w.saturating_sub(202),54,"Developer preview 0.1.3",q.muted);
         for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser"};c.text(18,y+35,label,q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
         self.button(Rect{x:8,y:by+8,w:78,h:36},"Start",BLUE,WHITE);
         let dock=self.dock_x();
         for(i,a)in APPS.iter().enumerate(){let x=dock+i*50;if self.app==Some(*a){c.round(x,by+5,46,42,7,q.sub);c.rect(x+14,by+47,18,3,BLUE);}self.icon(*a,x+6,by+10);}
-        c.text(w.saturating_sub(100),by+6,if self.nic.is_some(){"Lab network"}else{"Offline"},q.muted);c.text(w.saturating_sub(100),by+25,"Hi5Kernel",q.ink);
+        c.text(w.saturating_sub(100),by+6,if self.nic.as_ref().map_or(false,|n|n.config().0!=[0;4]){"IPv4 ready"}else{"Offline"},q.muted);c.text(w.saturating_sub(100),by+25,"Hi5Kernel",q.ink);
         if self.menu{let r=self.menu_rect();c.round(r.x+3,r.y+4,r.w,r.h,12,q.edge);c.round(r.x,r.y,r.w,r.h,12,q.panel);c.title(r.x+16,r.y+10,"Start",q.ink);
             for(i,a)in APPS.iter().enumerate(){let y=r.y+49+i*40;self.icon(*a,r.x+14,y);c.text(r.x+60,y+6,a.title(),q.ink);}
             self.button(Rect{x:r.x+12,y:r.y+298,w:r.w-24,h:38},if self.dark{"Light appearance (T)"}else{"Dark appearance (T)"},q.sub,q.ink);
@@ -66,7 +66,7 @@ impl Ui{
                 c.title(x,y,"About this PC",q.ink);c.round(x,y+42,r.w-44,76,9,q.sub);
                 c.text(x+14,y+50,"Hi5OS Developer Preview",q.ink);c.text(x+14,y+77,"Independent x86-64 kernel",q.muted);
                 c.text(x,y+135,"Managed memory (MiB)",q.muted);c.num(x+200,y+135,self.ram,q.ink);
-                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.2",q.ink);
+                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.3",q.ink);
                 c.text(x,y+191,"PE and compound-file probes passed",q.green);
                 self.button(Rect{x,y:y+223,w:180,h:34},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
             }
@@ -84,12 +84,13 @@ impl Ui{
                 c.text(x,y+242,"F7: Next file   N: New   D: Delete   E: Edit",q.muted);
             }
             App::Network=>{
-                c.title(x,y,"Network status",q.ink);c.round(x,y+44,r.w-44,91,8,q.sub);c.text(x+16,y+55,if self.nic.is_some(){"E1000 - 10.0.2.15"}else{"Offline / no E1000"},q.ink);
+                c.title(x,y,"Network status",q.ink);c.round(x,y+44,r.w-44,91,8,q.sub);c.text(x+16,y+55,if self.nic.is_some(){"Intel E1000"}else{"Not connected"},q.ink);
                 c.text(x+16,y+83,"Detected PCI network devices:",q.muted);c.num(x+260,y+83,self.nics as u64,q.ink);
-                c.text_limit(x,y+155,"Static lab IPv4; no DHCP, DNS or TLS.",q.muted,false,right);
+                if let Some(n)=&self.nic{let (ip,gw,dns)=n.config();for (i,(label,value)) in [("IP address",ip),("Gateway",gw),("DNS server",dns)].iter().enumerate(){let yy=y+148+i*24;c.text(x,yy,label,q.muted);draw_ip(c,x+140,yy,*value,q.ink);}}
+                self.button(Rect{x,y:y+229,w:190,h:34},"Connect / DHCP (C)",BLUE,WHITE);
             }
             App::Browser=>{
-                c.title(x,y,"Hi5Browser - HTTP lab",q.ink);
+                c.title(x,y,"Hi5Browser - HTTP preview",q.ink);
                 c.round(x,y+42,r.w-132,34,5,q.sub);
                 if let Ok(t)=core::str::from_utf8(&self.url[..self.url_len]){c.text_limit(x+6,y+48,t,q.ink,false,right-90);}
                 self.button(Rect{x:r.x+r.w-95,y:y+42,w:72,h:34},"Go",BLUE,WHITE);
@@ -102,7 +103,7 @@ impl Ui{
                         let mut yy=y+163;for line in self.web[..self.web_len].split(|b|*b==10).take(3){if let Ok(t)=core::str::from_utf8(line){c.text_limit(x,yy,t,q.ink,false,right);}yy+=20;}
                     }else{c.text(x,y+165,"Binary preview - execution disabled",q.muted);}
                     self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);
-                }else{c.text_limit(x,y+120,"Numeric 10.0.2.x HTTP only. Max 4096 bytes.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; Enter fetches.",q.muted);}
+                }else{c.text_limit(x,y+120,"HTTP only - no TLS. Max 4096 bytes.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
             }
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
@@ -125,7 +126,7 @@ impl Ui{
                 match self.term.result{
                     1=>{c.text_limit(x,y+91,"help mem ver ls clear theme compat",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
-                    3=>c.text(x,y+91,"Hi5OS 0.1.2",fg),
+                    3=>c.text(x,y+91,"Hi5OS 0.1.3",fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
                     5=>c.text(x,y+91,"Appearance changed",fg),
                     6=>c.text(x,y+91,"Unknown command",fg),7=>c.text_limit(x,y+91,"PE32/PE64 + OLE probe only; no execution",fg,false,right),_=>{}
@@ -174,15 +175,17 @@ impl Ui{
             _=>{if let Some(b)=ascii(key,self.term.shift){if self.term.len<self.term.buf.len(){self.term.buf[self.term.len]=b;self.term.len+=1;self.draw();}}}
         }
     }
+    fn connect_net(&mut self){if self.nic.is_none(){self.nic=Nic::open();}if let Some(n)=&mut self.nic{if n.configure().is_err(){serial::line("H5K: DHCP_CONNECT_FAILED");}}self.draw();}
+    fn reopen_web(&mut self){let mut b=[0;4096];if let Some(n)=self.store.load_download(&mut b){self.web[..n].copy_from_slice(&b[..n]);self.web_len=n;self.web_ok=true;self.web_msg="Recovered saved download - not authenticated";serial::line("H5K: GUI_DOWNLOAD_REOPENED");}else{self.web_ok=false;self.web_len=0;self.web_msg="No valid saved download";}self.draw();}
     fn fetch_web(&mut self){
-        self.web_ok=false;self.web_len=0;self.web_msg="Connecting to lab HTTP server...";self.draw();
+        self.web_ok=false;self.web_len=0;self.web_msg="Connecting via DHCP / HTTP...";self.draw();
         if self.nic.is_none(){self.nic=Nic::open();}
         if let Some(nic)=&mut self.nic{match nic.get(&self.url[..self.url_len],&mut self.web){Ok(n)=>{self.web_len=n;self.web_ok=true;self.web_msg="Download complete - not authenticated";},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");}}}else{self.web_msg="No supported E1000 network adapter";}
         self.draw();
     }
     fn save_web(&mut self){if self.web_ok{self.web_msg=if self.store.save_download(&self.web[..self.web_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
     fn browser_key(&mut self,key:u8){
-        if key==0x1c{self.fetch_web();return;}if key==0x43{self.save_web();return;}
+        if key==0x1c{self.fetch_web();return;}if key==0x43{self.save_web();return;}if key==0x44{self.reopen_web();return;}
         if self.ctrl{if key==0x26{self.url_len=0;self.draw();}return;}
         if key==0x0e{self.url_len=self.url_len.saturating_sub(1);self.draw();return;}
         if let Some(b)=ascii(key,self.term.shift){if self.url_len<self.url.len(){self.url[self.url_len]=b;self.url_len+=1;self.draw();}}
@@ -199,7 +202,7 @@ impl Ui{
         if self.app==Some(App::Terminal)&&!self.menu&&!self.minimized{self.terminal_key(key);return;}
         match key{
             0x02..=0x07=>self.select(APPS[(key-2)as usize]),0x32=>{self.menu=!self.menu;serial::line("H5K: GUI_MENU_TOGGLED");self.draw();},
-            0x14=>self.theme(),0x2d if self.app.is_some()=>self.maximize(),
+            0x2e if self.app==Some(App::Network)=>self.connect_net(),0x14=>self.theme(),0x2d if self.app.is_some()=>self.maximize(),
             0x12 if self.app==Some(App::Files)=>self.select(App::Notepad),0x31 if self.app==Some(App::Files)=>self.new_file(),0x20 if self.app==Some(App::Files)=>self.delete_file(),_=>{}
         }
     }
@@ -210,6 +213,7 @@ impl Ui{
         if let Some(a)=self.app{let r=self.win;if !self.minimized&&r.hit(x,y){
             if y<r.y+42{if x>=r.x+r.w-38{self.close();}else if x>=r.x+r.w-73{self.maximize();}else if x>=r.x+r.w-108{self.minimized=true;self.draw();}else if !self.maximized{self.drag=Some((x-r.x,y-r.y));}return;}
             let bx=r.x+22;let yy=r.y+58;
+            if a==App::Network&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+190{self.connect_net();return;}
             if a==App::Browser&&y>=yy+42&&y<yy+76&&x>=r.x+r.w-95{self.fetch_web();return;}
             if a==App::Browser&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+180{self.save_web();return;}
             if a==App::Notepad&&y>=yy+1&&y<yy+34{if x>=bx&&x<bx+82{self.save_note();}else if x>=bx+92&&x<bx+174{self.clear_note();}return;}
@@ -226,6 +230,7 @@ impl Ui{
         if !self.saved_valid{self.cursor_show();}
     }
 }
+fn draw_ip(c:&Canvas,x:usize,y:usize,ip:[u8;4],color:Color){let mut b=[0u8;15];let mut n=0;for(i,v)in ip.iter().enumerate(){if i!=0{b[n]=b'.';n+=1;}if *v>=100{b[n]=b'0'+*v/100;n+=1;}if *v>=10{b[n]=b'0'+(*v/10)%10;n+=1;}b[n]=b'0'+*v%10;n+=1;}if let Ok(s)=core::str::from_utf8(&b[..n]){c.text(x,y,s,color);}}
 fn ascii(key:u8,shift:bool)->Option<u8>{
     let mut b=match key{0x02..=0x0b=>b"1234567890"[(key-2)as usize],0x10..=0x19=>b"qwertyuiop"[(key-0x10)as usize],0x1e..=0x26=>b"asdfghjkl"[(key-0x1e)as usize],0x2c..=0x32=>b"zxcvbnm"[(key-0x2c)as usize],0x39=>b' ',0x0c=>b'-',0x0d=>b'=',0x33=>b',',0x34=>b'.',0x35=>b'/',0x27=>b';',0x28=>b'\'',_=>return None};
     if shift{b=match b{b'a'..=b'z'=>b.to_ascii_uppercase(),b'1'=>b'!',b'2'=>b'"',b'3'=>b'#',b'4'=>b'$',b'5'=>b'%',b'6'=>b'^',b'7'=>b'&',b'8'=>b'*',b'9'=>b'(',b'0'=>b')',b'-'=>b'_',b'='=>b'+',b','=>b'<',b'.'=>b'>',b'/'=>b'?',b';'=>b':',b'\''=>b'@',_=>b};}Some(b)

@@ -32,11 +32,13 @@ jobs:
         run: python3 scripts/persistence.py
       - name: Restricted native HTTP binary download test
         run: python3 scripts/network.py
+      - name: DHCP DNS and routed HTTP on isolated alternate subnet
+        run: python3 scripts/routed.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.1.2-vm-evidence
+          name: hi5os-v0.1.3-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14

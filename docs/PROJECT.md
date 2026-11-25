@@ -1,2 +1,2 @@
-# Hi5OS handoff
-v0.1.1 qualified in CI and user says all looks good. baseline/v0.1.1 preserved. User prioritises EXE/MSI and Hi5Office, asks for networking/browser to download EXE. v0.1.2 candidate: E1000 static lab IP ARP/TCP/HTTP, native browser preview, 4096-byte binary save in separate banks, CI restricted local server byte-exact download test. No general web, TLS, DHCP/DNS, real installer, separate processes, FAT32 or Office apps yet. Keep prior data disk. Next qualify network lab then DHCP/DNS/TLS, full filesystem, safe PE loader and native Hi5Office. No production/EU changes.
+# Hi5OS continuation
+v0.1.2 automated full pass, UTM gateway TCP reset. baseline/v0.1.2 preserved. v0.1.3 candidate DHCP/DNS/routing, network status and saved download readback. CI real restricted HTTP plus alternate-subnet isolated Ethernet peer. 4 KiB limit, no TLS/EXE/MSI execution or Hi5Office yet. Primary priorities unchanged. Keep existing data disk. No production/EU changes.

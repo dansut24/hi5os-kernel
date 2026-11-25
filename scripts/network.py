@@ -22,7 +22,7 @@ def main():
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
         vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/"network-lab.log";log.unlink(missing_ok=True)
-        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.2.img"
+        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.3.img"
         cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1",
         "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
         "-drive",f"if=none,id=os,format=raw,readonly=on,file={system}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
@@ -50,10 +50,11 @@ def main():
                         if "return" in reply:return reply["return"]
                 call("qmp_capabilities")
                 def key(k):call("human-monitor-command",{"command-line":"sendkey "+k});time.sleep(.3)
-                key("6");wait(b"GUI_BROWSER_OPEN",5);key("ret");wait(b"HTTP_DOWNLOAD_OK",20)
+                key("6");wait(b"GUI_BROWSER_OPEN",5);key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",20)
                 wait(b"HTTP_DOWNLOAD_BYTES=0x0000000000000400",2)
                 key("f9");wait(b"DOWNLOAD_SAVED",10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
+                key("f10");wait(b"GUI_DOWNLOAD_REOPENED",5)
                 call("screendump",{"filename":str(ROOT/"dist"/"browser-512m.ppm")});call("quit")
             proc.wait(timeout=10)
             with data.open("rb") as fh:

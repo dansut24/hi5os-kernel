@@ -132,6 +132,11 @@ impl Store{
         for i in 0..8{let mut b=[0;512];if !p.read(base+1+i as u32,&mut b){return None;}out[i*512..(i+1)*512].copy_from_slice(&b);}
         if crc(&out[..len])!=get(&h,16){return None;}Some((gen,len))
     }
+    pub fn load_download(&mut self,out:&mut[u8;4096])->Option<usize>{
+        let p=self.port?;let a=Self::download_bank(p,16,out);let b=Self::download_bank(p,32,out);
+        let base=match(a,b){(Some(x),Some(y))=>if x.0>=y.0{16}else{32},(Some(_),None)=>16,(None,Some(_))=>32,_=>return None};
+        let (_,len)=Self::download_bank(p,base,out)?;serial::metric("H5K: DOWNLOAD_LOADED_CRC=",crc(&out[..len])as u64);Some(len)
+    }
     pub fn save_download(&mut self,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};if data.len()>4096{return false;}
         let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){self.port=None;return false;}
