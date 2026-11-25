@@ -30,11 +30,13 @@ jobs:
         run: python3 scripts/smoke.py --memory 1024
       - name: Persistent document cold boot test
         run: python3 scripts/persistence.py
+      - name: Restricted native HTTP binary download test
+        run: python3 scripts/network.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.1.1-vm-evidence
+          name: hi5os-v0.1.2-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14

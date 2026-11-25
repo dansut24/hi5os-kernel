@@ -35,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if lba>8||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if lba>48||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -124,6 +124,26 @@ impl Store{
         None
     }
     pub fn attached(&self)->bool{self.port.is_some()}
+    // Bank headers at 16 and 32; each bank has eight 512-byte payload sectors.
+    // Never touches document slots 1..8. CRC checks detect incomplete writes.
+    fn download_bank(p:Port,base:u32,out:&mut[u8;4096])->Option<(u32,usize)>{
+        let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=b"H5DL0001"||get(&h,508)!=crc(&h[..508]){return None;}
+        let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len>4096{return None;}
+        for i in 0..8{let mut b=[0;512];if !p.read(base+1+i as u32,&mut b){return None;}out[i*512..(i+1)*512].copy_from_slice(&b);}
+        if crc(&out[..len])!=get(&h,16){return None;}Some((gen,len))
+    }
+    pub fn save_download(&mut self,data:&[u8])->bool{
+        let Some(p)=self.port else{return false;};if data.len()>4096{return false;}
+        let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){self.port=None;return false;}
+        let mut scratch=[0;4096];let a=Self::download_bank(p,16,&mut scratch);let b=Self::download_bank(p,32,&mut scratch);
+        let (base,gen)=match(a,b){(Some(x),Some(y))=>if x.0>=y.0{(32,x.0)}else{(16,y.0)},(Some(x),None)=>(32,x.0),(None,Some(y))=>(16,y.0),_=>(16,0)};
+        let Some(gen)=gen.checked_add(1)else{return false;};
+        for i in 0..8{let mut block=[0;512];let start=i*512;if start<data.len(){let end=(start+512).min(data.len());block[..end-start].copy_from_slice(&data[start..end]);}if !p.write(base+1+i as u32,&mut block){self.port=None;return false;}}
+        if !p.flush(){self.port=None;return false;}
+        h.fill(0);h[..8].copy_from_slice(b"H5DL0001");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let c=crc(&h[..508]);put(&mut h,508,c);
+        if !p.write(base,&mut h)||!p.flush()||Self::download_bank(p,base,&mut scratch)!=Some((gen,data.len()))||&scratch[..data.len()]!=data{self.port=None;return false;}
+        serial::metric("H5K: DOWNLOAD_SAVED_CRC=",crc(data)as u64);serial::line("H5K: DOWNLOAD_SAVED");true
+    }
     pub fn save(&mut self,present:bool,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};
         if data.len()>CAP||(!present&&!data.is_empty())||self.generation==u32::MAX{return false;}
