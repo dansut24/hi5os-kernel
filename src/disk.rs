@@ -4,6 +4,8 @@ use core::ptr;
 const HEADER:&[u8]=b"HI5OS-DATA-V1-7D1F6C0284A9E3B5";
 const RECORD:&[u8;8]=b"H5NOTE01";
 pub const CAP:usize=384;
+pub const FILE_COUNT:usize=4;
+pub const NAMES:[&str;FILE_COUNT]=["notes.txt","work.txt","personal.txt","office.txt"];
 #[repr(C,align(4096))]
 struct Dma([u8;4096]);
 static mut CL:Dma=Dma([0;4096]);
@@ -33,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if lba>2||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if lba>8||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -94,25 +96,32 @@ fn decode(b:&[u8;512])->Option<(u32,bool,usize)>{
     if gen==0||flag>1||len>CAP||(flag==0&&len!=0)||!b[20..20+len].iter().all(|c|*c==10||(32..127).contains(c)){return None;}
     Some((gen,flag==1,len))
 }
-pub struct Store{port:Option<Port>,generation:u32,slot:u32}
+pub struct Store{port:Option<Port>,generation:u32,slot:u32,file:usize}
 impl Store{
     pub fn open()->(Self,Option<(bool,[u8;CAP],usize)>){
-        let mut s=Self{port:find(),generation:0,slot:2};
+        let mut s=Self{port:find(),generation:0,slot:2,file:0};
         let Some(p)=s.port else{serial::line("H5K: DATA_DISK_MISSING");return (s,None);};
+        let loaded=s.load(0);(s,loaded)
+    }
+    pub fn load(&mut self,file:usize)->Option<(bool,[u8;CAP],usize)>{
+        if file>=FILE_COUNT{return None;}
+        self.file=file;self.generation=0;self.slot=2;
+        let p=self.port?;
+        let offset=(file as u32)*2;
         let mut a=[0;512];let mut b=[0;512];
-        if !p.read(1,&mut a)||!p.read(2,&mut b){s.port=None;serial::line("H5K: DATA_DISK_READ_ERROR");return (s,None);}
+        if !p.read(offset+1,&mut a)||!p.read(offset+2,&mut b){self.port=None;serial::line("H5K: DATA_DISK_READ_ERROR");return None;}
         let selected=match(decode(&a),decode(&b)){
             (Some(x),Some(y))=>if y.0>x.0{Some((2,y,&b))}else{Some((1,x,&a))},
             (Some(x),None)=>Some((1,x,&a)),(None,Some(y))=>Some((2,y,&b)),_=>None
         };
         if let Some((slot,(gen,present,len),raw))=selected{
-            s.generation=gen;s.slot=slot;let mut data=[0;CAP];data[..len].copy_from_slice(&raw[20..20+len]);
+            self.generation=gen;self.slot=slot;let mut data=[0;CAP];data[..len].copy_from_slice(&raw[20..20+len]);
             serial::line("H5K: DATA_DISK_LOADED");serial::metric("H5K: DATA_LENGTH=",len as u64);serial::metric("H5K: DATA_CRC=",crc(&data[..len])as u64);
-            return (s,Some((present,data,len)));
+            return Some((present,data,len));
         }
-        if a.iter().any(|x|*x!=0)||b.iter().any(|x|*x!=0){s.port=None;serial::line("H5K: DATA_DISK_CORRUPT");}
+        if a.iter().any(|x|*x!=0)||b.iter().any(|x|*x!=0){self.port=None;serial::line("H5K: DATA_DISK_CORRUPT");}
         else{serial::line("H5K: DATA_DISK_EMPTY");}
-        (s,None)
+        None
     }
     pub fn attached(&self)->bool{self.port.is_some()}
     pub fn save(&mut self,present:bool,data:&[u8])->bool{
@@ -122,8 +131,8 @@ impl Store{
         let mut record=[0;512];record[..8].copy_from_slice(RECORD);let gen=self.generation+1;
         put(&mut record,8,gen);put(&mut record,12,present as u32);put(&mut record,16,data.len()as u32);record[20..20+data.len()].copy_from_slice(data);
         let sum=crc(&record[..508]);put(&mut record,508,sum);
-        let slot=3-self.slot;let mut check=[0;512];
-        if !p.write(slot,&mut record)||!p.flush()||!p.read(slot,&mut check)||check!=record{self.port=None;return false;}
+        let slot=3-self.slot;let lba=slot+2*self.file as u32;let mut check=[0;512];
+        if !p.write(lba,&mut record)||!p.flush()||!p.read(lba,&mut check)||check!=record{self.port=None;return false;}
         self.generation=gen;self.slot=slot;serial::metric("H5K: DATA_SAVED_CRC=",crc(data)as u64);true
     }
 }

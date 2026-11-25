@@ -7,7 +7,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hi5os-data-") as td:
         tmp=pathlib.Path(td);data=tmp/"data.img"
         shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
-        system=ROOT/"dist/hi5os-v0.1.0.img"
+        system=ROOT/"dist/hi5os-v0.1.1.img"
         for boot in (1,2):
             vars=tmp/f"vars{boot}.fd";shutil.copyfile(var,vars)
             log=ROOT/"dist"/f"persistence-{boot}.log";log.unlink(missing_ok=True)
@@ -46,18 +46,24 @@ def main():
                         for k in "persist":key(k)
                         key("f6");wait(b"GUI_NOTE_SAVED",10)
                         wait(f"H5K: DATA_SAVED_CRC=0x{zlib.crc32(b'persist'):016x}".encode(),2)
+                        key("f7");wait(b"GUI_FILE_SELECTED=0x0000000000000001",5)
+                        for k in "office":key(k)
+                        key("f6");wait(f"H5K: DATA_SAVED_CRC=0x{zlib.crc32(b'office'):016x}".encode(),5)
                         call("screendump",{"filename":str(ROOT/"dist"/"notepad-512m.ppm")})
                         call("quit")
                     proc.wait(timeout=10)
                     with data.open("rb") as fh:
-                        fh.seek(512);record=fh.read(512)
+                        fh.seek(512);record=fh.read(512);fh.seek(3*512);second=fh.read(512)
                     assert record[:8]==b"H5NOTE01" and record[20:27]==b"persist"
                     assert int.from_bytes(record[508:512],"little")==zlib.crc32(record[:508])
+                    assert second[:8]==b"H5NOTE01" and second[20:26]==b"office"
+                    assert int.from_bytes(second[508:512],"little")==zlib.crc32(second[:508])
                 else:
                     wait(b"H5K: DATA_DISK_LOADED",2)
                     wait(f"H5K: DATA_CRC=0x{zlib.crc32(b'persist'):016x}".encode(),2)
                     wait(b"H5K: DATA_LENGTH=0x0000000000000007",2)
-                    print("PASS: typed document survived cold restart")
+                    wait(f"H5K: DATA_CRC=0x{zlib.crc32(b'office'):016x}".encode(),2)
+                    print("PASS: two typed documents survived cold restart")
             finally:
                 if proc.poll() is None:
                     proc.terminate()

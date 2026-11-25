@@ -7,11 +7,11 @@ cargo build --release --locked --target x86_64-unknown-uefi
 mkdir -p dist
 cp target/x86_64-unknown-uefi/release/hi5kernel.efi dist/BOOTX64.EFI
 # A removable UEFI FAT32 image, not a physical-machine installer or an ISO.
-rm -f dist/hi5os-v0.1.0.img
-truncate -s 64M dist/hi5os-v0.1.0.img
-mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.1.0.img
-mmd -i dist/hi5os-v0.1.0.img ::/EFI ::/EFI/BOOT
-mcopy -i dist/hi5os-v0.1.0.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+rm -f dist/hi5os-v0.1.1.img
+truncate -s 64M dist/hi5os-v0.1.1.img
+mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.1.1.img
+mmd -i dist/hi5os-v0.1.1.img ::/EFI ::/EFI/BOOT
+mcopy -i dist/hi5os-v0.1.1.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 rm -f dist/hi5os-data-v1.img
 python3 scripts/data_image.py dist/hi5os-data-v1.img
-(cd dist && sha256sum BOOTX64.EFI hi5os-v0.1.0.img hi5os-data-v1.img > SHA256SUMS)
+(cd dist && sha256sum BOOTX64.EFI hi5os-v0.1.1.img hi5os-data-v1.img > SHA256SUMS)

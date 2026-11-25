@@ -1,5 +1,5 @@
-//! Hi5Desktop v0.1.0 — native software GUI; single foreground window.
-use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP}};
+//! Hi5Desktop v0.1.1 — native software GUI; single foreground window.
+use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 const BLUE:Color=[34,112,195];const WHITE:Color=[255,255,255];const GOLD:Color=[234,178,66];
 #[derive(Clone,Copy)]struct Palette{wall:Color,wall2:Color,bar:Color,panel:Color,sub:Color,ink:Color,muted:Color,edge:Color,green:Color}
@@ -11,7 +11,9 @@ const APPS:[App;5]=[App::System,App::Files,App::Network,App::Terminal,App::Notep
 impl Rect{fn hit(self,x:usize,y:usize)->bool{x>=self.x&&x<self.x+self.w&&y>=self.y&&y<self.y+self.h}}
 struct Terminal{buf:[u8;48],len:usize,last:[u8;48],last_len:usize,result:u8,shift:bool}
 impl Terminal{fn new()->Self{Self{buf:[0;48],len:0,last:[0;48],last_len:0,result:0,shift:false}}}
-struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool}
+#[derive(Clone,Copy)]struct FileSlot{data:[u8;CAP],len:usize,present:bool}
+const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
+struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT]}
 impl Ui{
     fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{unsafe{ptr::write_volatile((self.c.fb.base as *mut u32).add((self.my+y)*self.c.fb.stride+self.mx+x),self.saved[y*16+x]);}}}}self.saved_valid=false;}
     fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{self.saved[y*16+x]=unsafe{ptr::read_volatile((self.c.fb.base as *const u32).add((self.my+y)*self.c.fb.stride+self.mx+x))};if x<=y/2&&y<14{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}}}self.saved_valid=true;}
@@ -34,7 +36,7 @@ impl Ui{
         // Quiet, low-cost gradient and a native desktop with standard controls.
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
-        c.text(w.saturating_sub(202),54,"Developer preview 0.1.0",q.muted);
+        c.text(w.saturating_sub(202),54,"Developer preview 0.1.1",q.muted);
         for(i,a)in APPS.iter().enumerate(){let y=12+i*70;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad"};c.text(18,y+35,label,q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
@@ -62,18 +64,22 @@ impl Ui{
                 c.title(x,y,"About this PC",q.ink);c.round(x,y+42,r.w-44,76,9,q.sub);
                 c.text(x+14,y+50,"Hi5OS Developer Preview",q.ink);c.text(x+14,y+77,"Independent x86-64 kernel",q.muted);
                 c.text(x,y+135,"Managed memory (MiB)",q.muted);c.num(x+200,y+135,self.ram,q.ink);
-                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.0",q.ink);
-                c.text(x,y+191,"Paging and exception checks passed",q.green);
+                c.text(x,y+163,"Kernel",q.muted);c.text(x+200,y+163,"Hi5Kernel 0.1.1",q.ink);
+                c.text(x,y+191,"PE and compound-file probes passed",q.green);
                 self.button(Rect{x,y:y+223,w:180,h:34},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
             }
             App::Files=>{
                 c.title(x,y,if self.store.attached(){"Hi5OS Data"}else{"RAM workspace"},q.ink);
                 self.button(Rect{x,y:y+43,w:106,h:34},"New note",BLUE,WHITE);
                 self.button(Rect{x:x+116,y:y+43,w:90,h:34},"Delete",q.sub,q.ink);
-                c.round(x,y+90,r.w-44,104,8,q.sub);
-                if let Some(b)=self.files.read(){self.icon(App::Files,x+12,y+102);c.text(x+60,y+103,"notes.txt",q.ink);if let Ok(t)=core::str::from_utf8(b){c.text_limit(x+60,y+132,t,q.muted,false,right-6);}}else{c.text(x+15,y+110,"This workspace is empty",q.muted);}
-                c.text_limit(x,y+211,if self.store.attached(){"Dedicated data disk - use Notepad to edit."}else{"No data disk - changes remain in RAM."},q.muted,false,right);
-                c.text(x,y+239,"N: New note   D: Delete   E: Edit",q.muted);
+                for i in 0..FILE_COUNT{
+                    let yy=y+88+i*31;
+                    c.round(x,yy,r.w-44,29,4,if i==self.file{q.edge}else{q.sub});
+                    c.text(x+8,yy+1,NAMES[i],q.ink);
+                    c.text(x+156,yy+1,if self.cache[i].present{"Document"}else{"Empty slot"},q.muted);
+                }
+                c.text_limit(x,y+216,if self.store.attached(){"Data disk attached - four document slots."}else{"RAM only - no persistent data disk."},q.muted,false,right);
+                c.text(x,y+242,"F7: Next file   N: New   D: Delete   E: Edit",q.muted);
             }
             App::Network=>{
                 c.title(x,y,"Network status",q.ink);c.round(x,y+44,r.w-44,91,8,q.sub);c.text(x+16,y+55,"Offline",q.ink);
@@ -83,7 +89,7 @@ impl Ui{
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
                 self.button(Rect{x:x+92,y:y+1,w:82,h:33},"Clear",q.sub,q.ink);
-                c.text_limit(x+186,y+6,if self.save_status==2{"RAM only / save failed"}else if self.dirty{"Unsaved changes"}else if self.save_status==1{"Saved to data disk"}else{"notes.txt"},q.muted,false,right);
+                c.text_limit(x+186,y+6,if self.save_status==2{"RAM only / save failed"}else if self.dirty{"Unsaved changes"}else if self.save_status==1{"Saved to data disk"}else{NAMES[self.file]},q.muted,false,right);
                 c.round(x,y+44,r.w-44,r.h.saturating_sub(162),6,q.sub);
                 let mut yy=y+52;
                 for line in self.note[..self.note_len].split(|b|*b==10){
@@ -91,7 +97,7 @@ impl Ui{
                     for part in line.chunks(38){if yy>=r.y+r.h-48{break;}if let Ok(t)=core::str::from_utf8(part){c.text_limit(x+8,yy,t,q.ink,false,right-8);}yy+=20;}
                     if yy>=r.y+r.h-48{break;}
                 }
-                c.text_limit(x,r.y+r.h-33,"Type text - F6 or Ctrl+S saves - Esc closes",q.muted,false,right);
+                c.text_limit(x,r.y+r.h-33,"F6 / Ctrl+S save - F7 next file - Esc close",q.muted,false,right);
             }
             App::Terminal=>{
                 c.rect(r.x+8,r.y+49,r.w-16,r.h-57,[22,32,43]);let fg=[220,234,247];let green=[112,220,164];
@@ -99,12 +105,12 @@ impl Ui{
                 c.text_limit(x,y+29,"Type help for available commands.",fg,false,right);
                 if self.term.last_len>0{c.text(x,y+63,">",green);if let Ok(t)=core::str::from_utf8(&self.term.last[..self.term.last_len]){c.text_limit(x+16,y+63,t,fg,false,right);}}
                 match self.term.result{
-                    1=>{c.text_limit(x,y+91,"help  mem  ver  ls  clear  theme",fg,false,right);}
+                    1=>{c.text_limit(x,y+91,"help mem ver ls clear theme compat",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
-                    3=>c.text(x,y+91,"Hi5OS 0.1.0",fg),
-                    4=>c.text(x,y+91,if self.files.present{"notes.txt"}else{"Empty workspace"},fg),
+                    3=>c.text(x,y+91,"Hi5OS 0.1.1",fg),
+                    4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
                     5=>c.text(x,y+91,"Appearance changed",fg),
-                    6=>c.text(x,y+91,"Unknown command",fg),_=>{}
+                    6=>c.text(x,y+91,"Unknown command",fg),7=>c.text_limit(x,y+91,"PE32/PE64 + OLE probe only; no execution",fg,false,right),_=>{}
                 }
                 c.text(x,y+133,">",green);
                 if let Ok(t)=core::str::from_utf8(&self.term.buf[..self.term.len]){c.text_limit(x+16,y+133,t,fg,false,right);}
@@ -114,10 +120,19 @@ impl Ui{
     }
     fn select(&mut self,a:App){if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN"});self.draw();}
     fn theme(&mut self){self.dark=!self.dark;serial::line(if self.dark{"H5K: GUI_THEME_DARK"}else{"H5K: GUI_THEME_LIGHT"});self.draw();}
+    fn cache_current(&mut self){let s=&mut self.cache[self.file];s.data=self.files.data;s.len=self.files.len;s.present=self.files.present;}
+    fn switch_file(&mut self,i:usize){
+        if i>=FILE_COUNT||i==self.file{return;}
+        if self.dirty{serial::line("H5K: FILE_SWITCH_UNSAVED");return;}
+        self.cache_current();self.file=i;
+        if self.store.attached(){let _=self.store.load(i);}
+        let s=self.cache[i];self.files.data=s.data;self.files.len=s.len;self.files.present=s.present;
+        self.load_note();self.save_status=0;serial::metric("H5K: GUI_FILE_SELECTED=",i as u64);self.draw();
+    }
     fn load_note(&mut self){self.note.fill(0);self.note_len=0;if let Some(b)=self.files.read(){self.note[..b.len()].copy_from_slice(b);self.note_len=b.len();}}
     fn save_note(&mut self){if self.files.write(&self.note[..self.note_len]){
-        if self.store.save(true,&self.note[..self.note_len]){self.save_status=1;self.dirty=false;serial::line("H5K: GUI_NOTE_SAVED");}
-        else{self.save_status=2;self.dirty=true;serial::line("H5K: GUI_NOTE_RAM_ONLY");}
+        self.cache_current();if self.store.save(true,&self.note[..self.note_len]){self.save_status=1;self.dirty=false;serial::line("H5K: GUI_NOTE_SAVED");}
+        else{self.save_status=2;self.dirty=false;serial::line("H5K: GUI_NOTE_RAM_ONLY");}
     }self.draw();}
     fn clear_note(&mut self){self.note.fill(0);self.note_len=0;self.dirty=true;self.save_status=0;self.draw();}
     fn notepad_key(&mut self,key:u8){if key==0x40||(self.ctrl&&key==0x1f){self.save_note();return;}if self.ctrl{return;}
@@ -125,16 +140,16 @@ impl Ui{
         let b=if key==0x1c{Some(10)}else{ascii(key,self.term.shift)};
         if let Some(b)=b{if self.note_len<CAP{self.note[self.note_len]=b;self.note_len+=1;self.dirty=true;self.save_status=0;self.draw();}}
     }
-    fn new_file(&mut self){self.files.write(b"New Hi5OS note");if self.store.attached(){self.store.save(true,b"New Hi5OS note");}self.dirty=false;self.save_status=0;serial::line("H5K: GUI_FILE_CREATED");self.draw();}
-    fn delete_file(&mut self){self.files.remove();if self.store.attached(){self.store.save(false,&[]);}self.dirty=false;self.note_len=0;self.save_status=0;serial::line("H5K: GUI_FILE_DELETED");self.draw();}
+    fn new_file(&mut self){self.files.write(b"New Hi5OS note");self.cache_current();if self.store.attached(){self.store.save(true,b"New Hi5OS note");}self.dirty=false;self.save_status=0;serial::line("H5K: GUI_FILE_CREATED");self.draw();}
+    fn delete_file(&mut self){self.files.remove();self.cache_current();if self.store.attached(){self.store.save(false,&[]);}self.dirty=false;self.note_len=0;self.save_status=0;serial::line("H5K: GUI_FILE_DELETED");self.draw();}
     fn close(&mut self){self.app=None;self.minimized=false;self.menu=false;self.drag=None;serial::line("H5K: GUI_HOME");self.draw();}
     fn maximize(&mut self){if self.maximized{self.win=self.restore;}else{self.restore=self.win;self.win=Rect{x:6,y:6,w:self.c.fb.width.saturating_sub(12),h:self.bar_y().saturating_sub(12)};}self.maximized=!self.maximized;serial::line(if self.maximized{"H5K: GUI_MAXIMIZED"}else{"H5K: GUI_RESTORED"});self.draw();}
     fn terminal_key(&mut self,key:u8){
         match key{
             0x1c=>{
-                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,_=>6};
+                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,_=>6};
                 self.term.last=self.term.buf;self.term.last_len=if result==0{0}else{self.term.len};self.term.len=0;self.term.result=result;
-                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",_=>"H5K: SHELL_UNKNOWN"});
+                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",_=>"H5K: SHELL_UNKNOWN"});
                 if result==5{self.theme();}else{self.draw();}
             }
             0x0e=>{self.term.len=self.term.len.saturating_sub(1);self.draw();}
@@ -145,6 +160,7 @@ impl Ui{
         match key{0x1d=>{self.ctrl=true;return;},0x9d=>{self.ctrl=false;return;},0x2a|0x36=>{self.term.shift=true;return;},0xaa|0xb6=>{self.term.shift=false;return;},_=>{}}
         if key&0x80!=0{return;}
         if key==0x01{if self.menu{self.menu=false;self.draw();}else{self.close();}return;}
+        if key==0x41&&(self.app==Some(App::Files)||self.app==Some(App::Notepad)){self.switch_file((self.file+1)%FILE_COUNT);return;}
         if key>=0x3b&&key<=0x3f{self.select(APPS[(key-0x3b)as usize]);return;}
         if self.app==Some(App::Notepad)&&!self.menu&&!self.minimized{self.notepad_key(key);return;}
         if self.app==Some(App::Terminal)&&!self.menu&&!self.minimized{self.terminal_key(key);return;}
@@ -162,7 +178,7 @@ impl Ui{
             if y<r.y+42{if x>=r.x+r.w-38{self.close();}else if x>=r.x+r.w-73{self.maximize();}else if x>=r.x+r.w-108{self.minimized=true;self.draw();}else if !self.maximized{self.drag=Some((x-r.x,y-r.y));}return;}
             let bx=r.x+22;let yy=r.y+58;
             if a==App::Notepad&&y>=yy+1&&y<yy+34{if x>=bx&&x<bx+82{self.save_note();}else if x>=bx+92&&x<bx+174{self.clear_note();}return;}
-            if a==App::Files&&y>=yy+90&&y<yy+194{self.select(App::Notepad);return;}
+            if a==App::Files&&y>=yy+88&&y<yy+88+FILE_COUNT*31{let i=(y-yy-88)/31;if i==self.file{self.select(App::Notepad);}else{self.switch_file(i);}return;}
             if a==App::Files&&y>=yy+43&&y<yy+77{if x>=bx&&x<bx+106{self.new_file();}else if x>=bx+116&&x<bx+206{self.delete_file();}}
             if a==App::System&&x>=bx&&x<bx+180&&y>=yy+223&&y<yy+257{self.theme();}return;
         }}
@@ -191,10 +207,13 @@ fn init_input()->bool{
     mouse_cmd(0xf6)&&mouse_cmd(0xf4)
 }
 
-pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,store:Store)->!{
+pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Store)->!{
     if fb.width<640||fb.height<480{serial::line("H5K: FAIL DESKTOP_RESOLUTION");crate::kernel::halt();}
     let w=560.min(fb.width.saturating_sub(108));let h=365.min(fb.height.saturating_sub(66));let win=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};
-    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false};
+    let mut cache=[EMPTY_FILE;FILE_COUNT];cache[0]=FileSlot{data:files.data,len:files.len,present:files.present};
+    for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
+    let _=store.load(0);
+    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");
