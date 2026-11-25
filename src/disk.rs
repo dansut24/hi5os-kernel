@@ -35,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if (lba>4161&&!(8192..=16383).contains(&lba))||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if (lba>4161&&!(8192..=20479).contains(&lba))||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -190,6 +190,28 @@ impl Store{
         let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=b"H5APP001"||get(&h,508)!=crc(&h[..508]){return None;}
         let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len!=crate::trial::PACKAGE_SIZE{return None;}
         Some(Download{len,gen,sum:get(&h,16),url:[0;128],url_len:0})
+    }
+    // Dedicated workspace snapshot banks, 1 MiB each, outside app and notes/downloads.
+    fn work_header(p:Port,base:u32)->Option<Download>{
+        let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=b"H5WORK01"||get(&h,508)!=crc(&h[..508]){return None;}
+        let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len<12||len>crate::trialfs::SNAP_CAP{return None;}
+        Some(Download{len,gen,sum:get(&h,16),url:[0;128],url_len:0})
+    }
+    pub fn load_workspace(&mut self,out:&mut[u8])->Option<usize>{
+        let p=self.port?;let a=Self::work_header(p,16384);let b=Self::work_header(p,18432);
+        let order=if b.map_or(0,|x|x.gen)>a.map_or(0,|x|x.gen){[(18432,b),(16384,a)]}else{[(16384,a),(18432,b)]};
+        for(base,v)in order{if let Some(v)=v{if out.len()>=v.len&&Self::v2_read(p,base,v,Some(out),None){serial::line("H5K: WORKSPACE_LOADED");return Some(v.len);}}}None
+    }
+    pub fn save_workspace(&mut self,data:&[u8])->bool{
+        let Some(p)=self.port else{return false;};if data.len()<12||data.len()>crate::trialfs::SNAP_CAP{return false;}
+        let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}
+        let a=Self::work_header(p,16384).filter(|v|Self::v2_read(p,16384,*v,None,None));let b=Self::work_header(p,18432).filter(|v|Self::v2_read(p,18432,*v,None,None));
+        let (base,gen)=if a.map_or(0,|v|v.gen)>b.map_or(0,|v|v.gen){(18432,a.unwrap().gen)}else{(16384,b.map_or(0,|v|v.gen))};
+        let Some(gen)=gen.checked_add(1)else{return false;};
+        for(i,part)in data.chunks(512).enumerate(){let mut block=[0;512];block[..part.len()].copy_from_slice(part);if !p.write(base+1+i as u32,&mut block){return false;}}
+        if !p.flush(){return false;}h.fill(0);h[..8].copy_from_slice(b"H5WORK01");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let sum=crc(&h[..508]);put(&mut h,508,sum);
+        if !p.write(base,&mut h)||!p.flush(){return false;}let Some(v)=Self::work_header(p,base)else{return false;};if v.gen!=gen||!Self::v2_read(p,base,v,None,Some(data)){return false;}
+        serial::line("H5K: WORKSPACE_SAVED");true
     }
     pub fn install_7zip(&mut self,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};if !crate::trial::verified(data){return false;}

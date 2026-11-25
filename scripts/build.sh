@@ -21,12 +21,12 @@ cp target/x86_64-unknown-uefi/release/hi5kernel.efi dist/BOOTX64.EFI
 rm -rf dist/7zip-notices
 cp -r target/hi5-fixture/7zip-notices dist/7zip-notices
 # A removable UEFI FAT32 image, not a physical-machine installer or an ISO.
-rm -f dist/hi5os-v0.2.6.img
-truncate -s 64M dist/hi5os-v0.2.6.img
-mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.2.6.img
-mmd -i dist/hi5os-v0.2.6.img ::/EFI ::/EFI/BOOT
-mcopy -i dist/hi5os-v0.2.6.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-mcopy -s -i dist/hi5os-v0.2.6.img dist/7zip-notices ::/7ZIP-NOTICES
+rm -f dist/hi5os-v0.2.7.img
+truncate -s 64M dist/hi5os-v0.2.7.img
+mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.2.7.img
+mmd -i dist/hi5os-v0.2.7.img ::/EFI ::/EFI/BOOT
+mcopy -i dist/hi5os-v0.2.7.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+mcopy -s -i dist/hi5os-v0.2.7.img dist/7zip-notices ::/7ZIP-NOTICES
 rm -f dist/hi5os-data-v1.img
 python3 scripts/data_image.py dist/hi5os-data-v1.img
-(cd dist && sha256sum hi5-winhello.exe hi5-winruntime.exe hi5-winconsole.exe BOOTX64.EFI hi5os-v0.2.6.img hi5os-data-v1.img > SHA256SUMS)
+(cd dist && sha256sum hi5-winhello.exe hi5-winruntime.exe hi5-winconsole.exe BOOTX64.EFI hi5os-v0.2.7.img hi5os-data-v1.img > SHA256SUMS)

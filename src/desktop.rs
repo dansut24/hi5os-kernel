@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.2.6 — native software GUI; single foreground window.
+//! Hi5Desktop v0.2.7 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
@@ -10,12 +10,13 @@ impl App{fn title(self)->&'static str{match self{Self::System=>"Settings",Self::
 const APPS:[App;6]=[App::System,App::Files,App::Network,App::Terminal,App::Notepad,App::Browser];
 #[derive(Clone,Copy)]struct Rect{x:usize,y:usize,w:usize,h:usize}
 impl Rect{fn hit(self,x:usize,y:usize)->bool{x>=self.x&&x<self.x+self.w&&y>=self.y&&y<self.y+self.h}}
-struct Terminal{buf:[u8;48],len:usize,last:[u8;48],last_len:usize,result:u8,shift:bool}
-impl Terminal{fn new()->Self{Self{buf:[0;48],len:0,last:[0;48],last_len:0,result:0,shift:false}}}
+struct Terminal{buf:[u8;112],len:usize,last:[u8;112],last_len:usize,result:u8,shift:bool,scroll:usize,workspace:bool}
+impl Terminal{fn new()->Self{Self{buf:[0;112],len:0,last:[0;112],last_len:0,result:0,shift:false,scroll:0,workspace:false}}}
 #[derive(Clone,Copy)]struct FileSlot{data:[u8;CAP],len:usize,present:bool}
 const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
 // The large response buffer is image-owned static memory, not the 64 KiB kernel stack.
 static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
+static mut WORK_BUFFER:[u8;crate::trialfs::SNAP_CAP]=[0;crate::trialfs::SNAP_CAP];
 static mut APP_BUFFER:[u8;crate::trial::PACKAGE_SIZE]=[0;crate::trial::PACKAGE_SIZE];
 struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,rebase:crate::relocate::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
 impl Ui{
@@ -150,8 +151,20 @@ impl Ui{
                 c.text_limit(x,y,"Hi5Shell - native diagnostic console",fg,false,right);
                 c.text_limit(x,y+29,"Type help for available commands.",fg,false,right);
                 if self.term.last_len>0{c.text(x,y+63,">",green);if let Ok(t)=core::str::from_utf8(&self.term.last[..self.term.last_len]){c.text_limit(x+16,y+63,t,fg,false,right);}}
+                if self.term.result==24{
+                    c.text_limit(x,y+91,if crate::trial::help_ok(){"7-Zip help qualified"}else if crate::trial::command_ok(){"7-Zip command completed"}else{"7-Zip command stopped"},fg,false,right);
+                    c.text(x,y+111,"Exit code:",fg);c.num(x+95,y+111,crate::trial::exit_code()as u64,green);
+                    let mut err=[0u8;192];let n=crate::trial::diagnostic(&mut err);let mut row=y+133;
+                    if n!=0{if let Ok(s)=core::str::from_utf8(&err[..n]){c.text_limit(x,row,s,fg,false,right);}row+=20;}
+                    let bottom=r.y+r.h;let maxrows=bottom.saturating_sub(row+58)/20;
+                    let raw=crate::trial::output_bytes();let text=core::str::from_utf8(raw).unwrap_or("Non UTF-8 output");
+                    for (i,line) in text.lines().skip(self.term.scroll).take(maxrows).enumerate(){c.text_limit(x,row+i*20,line,fg,false,right);}
+                    let prompt=bottom.saturating_sub(48);c.text(x,prompt,">",green);
+                    if let Ok(t)=core::str::from_utf8(&self.term.buf[..self.term.len]){c.text_limit(x+16,prompt,t,fg,false,right);}
+                    c.text_limit(x,bottom.saturating_sub(25),"PgUp/PgDn: scroll | Esc: close",fg,false,right);return;
+                }
                 match self.term.result{
-                    1=>{c.text_limit(x,y+91,"winfault winconsole install7zip 7za -h",fg,false,right);}
+                    1=>{c.text_limit(x,y+91,"install7zip | 7za i | arcseed | arcimport | arcverify",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
                     3=>c.text(x,y+91,concat!("Hi5OS ",env!("CARGO_PKG_VERSION")),fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
@@ -172,8 +185,8 @@ impl Ui{
                     20=>{let mut b=[0u8;128];let n=crate::platform::console_output(&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(x,y+91,t,fg,false,right);}c.text(x,y+111,"Console exit code: 42",green);},
                     21=>c.text_limit(x,y+91,"Windows console test failed",fg,false,right),
                     22=>c.text_limit(x,y+91,"User fault and timeout recovered",green,false,right),23=>c.text_limit(x,y+91,"Trial containment unavailable or failed",fg,false,right),
-                    24=>{c.text_limit(x,y+91,if crate::trial::help_ok(){"7-Zip help qualified"}else{"7-Zip startup stopped"},fg,false,right);let mut b=[0u8;192];let n=if crate::trial::help_ok(){crate::trial::output(&mut b)}else{crate::trial::diagnostic(&mut b)};if let Ok(t)=core::str::from_utf8(&b[..n]){for (i,line) in t.lines().take(4).enumerate(){c.text_limit(x,y+111+i*20,line,fg,false,right);}}},
-                    25=>c.text_limit(x,y+91,"Trial blocked: verified 7za.exe required",fg,false,right),26=>c.text_limit(x,y+91,"7-Zip portable package installed on data disk",green,false,right),27=>c.text_limit(x,y+91,"Install requires Hi5OS data disk",fg,false,right),_=>{}
+                    24=>{},
+                    25=>c.text_limit(x,y+91,"Trial blocked: verified 7za.exe required",fg,false,right),26=>c.text_limit(x,y+91,"7-Zip portable package installed on data disk",green,false,right),27=>c.text_limit(x,y+91,"Install requires Hi5OS data disk",fg,false,right),28=>c.text_limit(x,y+91,"Archive workspace source saved",green,false,right),29=>c.text_limit(x,y+91,"Archive workspace operation failed",fg,false,right),30=>c.text_limit(x,y+91,"ZIP and 7z extracted bytes match source",green,false,right),_=>{}
                 }
                 c.text(x,y+133,">",green);
                 if let Ok(t)=core::str::from_utf8(&self.term.buf[..self.term.len]){c.text_limit(x+16,y+133,t,fg,false,right);}
@@ -207,12 +220,14 @@ impl Ui{
     fn delete_file(&mut self){self.files.remove();self.cache_current();if self.store.attached(){self.store.save(false,&[]);}self.dirty=false;self.note_len=0;self.save_status=0;serial::line("H5K: GUI_FILE_DELETED");self.draw();}
     fn close(&mut self){self.app=None;self.minimized=false;self.menu=false;self.drag=None;serial::line("H5K: GUI_HOME");self.draw();}
     fn maximize(&mut self){if self.maximized{self.win=self.restore;}else{self.restore=self.win;self.win=Rect{x:6,y:6,w:self.c.fb.width.saturating_sub(12),h:self.bar_y().saturating_sub(12)};}self.maximized=!self.maximized;serial::line(if self.maximized{"H5K: GUI_MAXIMIZED"}else{"H5K: GUI_RESTORED"});self.draw();}
+    fn load_workspace(&mut self){if !self.term.workspace{let b=unsafe{&mut *ptr::addr_of_mut!(WORK_BUFFER)};if let Some(n)=self.store.load_workspace(b){let _=crate::trial::workspace_load(&b[..n]);}else{crate::trial::workspace_ready();}self.term.workspace=true;}}
+    fn save_workspace(&mut self)->bool{let b=unsafe{&mut *ptr::addr_of_mut!(WORK_BUFFER)};if let Some(n)=crate::trial::workspace_pack(b){self.store.save_workspace(&b[..n])}else{false}}
     fn terminal_key(&mut self,key:u8){
         match key{
             0x1c=>{
-                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"winfault"=>{if crate::trial::self_test(){22}else{23}},b"install7zip"=>{let src=if self.web_ok&&crate::trial::verified(&self.web[..self.web_len]){&self.web[..self.web_len]}else{crate::trial::BUNDLED};if self.store.install_7zip(src){26}else{27}},b"7za -h"=>{let buf=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};let r=if let Some(n)=self.store.load_7zip(buf){crate::trial::run(&buf[..n])}else if self.web_ok{crate::trial::run(&self.web[..self.web_len])}else{Err("Verified 7za.exe required")};match r{Ok(_)=>24,Err(e)=>{serial::line(e);25}}},b"winconsole"=>{if crate::platform::run_console_fixture(){20}else{21}},b"winruntime"=>{if crate::platform::run_runtime_fixture(){16}else{17}},b"pereloc"=>{if self.web_ok{match crate::relocate::inspect(&self.web[..self.web_len]){Ok(r)=>{self.rebase=r;18},Err(e)=>{serial::line(e);19}}}else{19}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
-                self.term.last=self.term.buf;self.term.last_len=if result==0{0}else{self.term.len};self.term.len=0;self.term.result=result;
-                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",14=>"H5K: SHELL_PEINFO_OK",15=>"H5K: SHELL_PEINFO_FAILED",16=>"H5K: SHELL_WINRUNTIME_OK",17=>"H5K: SHELL_WINRUNTIME_FAILED",18=>"H5K: SHELL_PERELOC_OK",19=>"H5K: SHELL_PERELOC_FAILED",20=>"H5K: SHELL_WINCONSOLE_OK",21=>"H5K: SHELL_WINCONSOLE_FAILED",22=>"H5K: SHELL_WINFAULT_OK",23=>"H5K: SHELL_WINFAULT_FAILED",24=>"H5K: SHELL_7ZIP_RETURNED",25=>"H5K: SHELL_7ZIP_BLOCKED",26=>"H5K: SHELL_INSTALL7ZIP_OK",27=>"H5K: SHELL_INSTALL7ZIP_FAILED",_=>"H5K: SHELL_UNKNOWN"});
+                let cmd_copy=self.term.buf;let cmd=&cmd_copy[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"winfault"=>{if crate::trial::self_test(){22}else{23}},b"install7zip"=>{let src=if self.web_ok&&crate::trial::verified(&self.web[..self.web_len]){&self.web[..self.web_len]}else{crate::trial::BUNDLED};if self.store.install_7zip(src){26}else{27}},b"arcseed"=>{self.load_workspace();if crate::trial::workspace_seed(crate::trial::SAMPLE)&&self.save_workspace(){28}else{29}},b"arcimport"=>{self.load_workspace();let s=self.cache[self.file];if s.present&&crate::trial::workspace_seed(&s.data[..s.len])&&self.save_workspace(){28}else{29}},b"arcverify"=>{self.load_workspace();if crate::trial::workspace_verify(){30}else{29}},_ if cmd.starts_with(b"7za ")=>{self.load_workspace();let buf=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};let r=if let Some(n)=self.store.load_7zip(buf){crate::trial::run_command(&buf[..n],cmd)}else if self.web_ok{crate::trial::run_command(&self.web[..self.web_len],cmd)}else{Err("Verified 7za.exe required")};match r{Ok(_)=>{if crate::trial::command_ok()&&cmd!=b"7za -h"&&cmd!=b"7za i"&&!self.save_workspace(){serial::line("H5K: WORKSPACE_SAVE_FAILED");29}else{24}},Err(e)=>{serial::line(e);25}}},b"winconsole"=>{if crate::platform::run_console_fixture(){20}else{21}},b"winruntime"=>{if crate::platform::run_runtime_fixture(){16}else{17}},b"pereloc"=>{if self.web_ok{match crate::relocate::inspect(&self.web[..self.web_len]){Ok(r)=>{self.rebase=r;18},Err(e)=>{serial::line(e);19}}}else{19}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
+                self.term.last=self.term.buf;self.term.last_len=if result==0{0}else{self.term.len};self.term.len=0;self.term.result=result;self.term.scroll=0;
+                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",14=>"H5K: SHELL_PEINFO_OK",15=>"H5K: SHELL_PEINFO_FAILED",16=>"H5K: SHELL_WINRUNTIME_OK",17=>"H5K: SHELL_WINRUNTIME_FAILED",18=>"H5K: SHELL_PERELOC_OK",19=>"H5K: SHELL_PERELOC_FAILED",20=>"H5K: SHELL_WINCONSOLE_OK",21=>"H5K: SHELL_WINCONSOLE_FAILED",22=>"H5K: SHELL_WINFAULT_OK",23=>"H5K: SHELL_WINFAULT_FAILED",24=>"H5K: SHELL_7ZIP_RETURNED",25=>"H5K: SHELL_7ZIP_BLOCKED",26=>"H5K: SHELL_INSTALL7ZIP_OK",27=>"H5K: SHELL_INSTALL7ZIP_FAILED",28=>"H5K: SHELL_ARCSEED_OK",29=>"H5K: SHELL_WORKSPACE_FAILED",30=>"H5K: SHELL_ARCHIVE_VERIFY_OK",_=>"H5K: SHELL_UNKNOWN"});
                 if result==10{serial::metric("H5K: SHEET_RESULT=",self.sheet_result as u64);}
                 if result==5{self.theme();}else{self.draw();}
             }
@@ -330,7 +345,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     loop{match ui.tasks.dispatch(){
         0=>{for _ in 0..32{let st=p::input(0x64);if st&1==0{break;}let b=p::input(0x60);if st&0x20!=0{
             if pos==0&&b&8==0{continue;}packet[pos]=b;pos+=1;if pos==3{pos=0;let flags=packet[0];if flags&0xc0!=0{continue;}let dx=packet[1]as isize-if flags&0x10!=0{256}else{0};let dy=packet[2]as isize-if flags&0x20!=0{256}else{0};let pressed=flags&1!=0;ui.move_pointer(dx,dy,pressed,down);down=pressed;}
-        }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}ext=false;}}}
+        }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
         1=>core::hint::spin_loop(),_=>p::wait_tick(),
     }}
 }

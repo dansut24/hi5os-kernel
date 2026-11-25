@@ -88,7 +88,6 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     report["unsupported"]=re.findall(r"TRIAL_UNSUPPORTED\|([^\r\n]+)",log)
     (ROOT/"dist"/"7zip-imports.json").write_text(json.dumps(report,indent=2)+"\n")
     print("7-Zip execution result:",report["execution"],report["trial_status"],report["unsupported"])
-    if report["execution"]!="help-qualified":
-        print("::warning::7-Zip startup probe returned, but application help is NOT qualified. This is a diagnostic test, not a launch pass.")
+    assert report["execution"]=="help-qualified","Regression: genuine help no longer qualified"
 
 
