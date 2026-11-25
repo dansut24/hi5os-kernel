@@ -17,6 +17,8 @@ mod imports;
 mod relocate;
 mod trial;
 mod trialfs;
+mod winwindow;
+mod msi;
 mod net;
 mod http;
 mod heap;

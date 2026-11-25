@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UTM-equivalent offline package installation and actual trial launch."""
 import pathlib,tempfile,shutil,subprocess,time,socket,json,struct,zlib,hashlib,sys
-CPU=sys.argv[1] if len(sys.argv)>1 else "qemu64"
+CPU=next((a for a in sys.argv[1:] if not a.startswith("--")),"qemu64")
 assert CPU in ("qemu64","max")
 from smoke import ROOT,firmware,validate
 code,var=firmware()

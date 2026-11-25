@@ -737,6 +737,7 @@ unsafe fn enter(ip:u64,budget:u64)->u64{
     H5_TRIAL_STATUS
 }
 pub fn self_test()->bool{unsafe{
+    WORK_ACTIVE=false;
     if !supported(){serial::line("H5K: TRIAL_NX_UNAVAILABLE");return false;}
     if !fs().test(){return false;}serial::line("H5K: TRIAL_RAMFS_OK");
     reset();let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();ptr::copy_nonoverlapping([0x0fu8,0x0b].as_ptr(),d,2);
@@ -813,7 +814,7 @@ pub fn run_command(b:&[u8],cmd:&[u8])->Result<u64,&'static str>{unsafe{
     if !self_test(){return Err("Trial containment checks failed");}
     reset();if !set_args(cmd){return Err("Invalid command arguments");}
     workspace_ready();let backup=&mut *ptr::addr_of_mut!(WORK_BACKUP);let before=WORK.pack(backup).ok_or("Workspace snapshot failed")?;
-    WORK.close_all();WORK_ACTIVE=true;ptr::write_bytes(ptr::addr_of_mut!(HEAP_DATA.0).cast::<u8>(),0,HEAP_BYTES);
+    WORK.close_all();ptr::write_bytes(ptr::addr_of_mut!(HEAP_DATA.0).cast::<u8>(),0,HEAP_BYTES);
     let image=&mut *ptr::addr_of_mut!(IMAGE.0);let r=relocate::map_at(b,image,&mut *ptr::addr_of_mut!(SEEN),Some(BASE))?;
     IMAGE_SIZE=r.size;
     let pe=u32at(b,60).ok_or("PE")?as usize;let opt=pe+24;let opts=u16at(b,pe+20).ok_or("Optional header")?as usize;let count=u16at(b,pe+6).ok_or("Sections")?as usize;
@@ -843,7 +844,7 @@ pub fn run_command(b:&[u8],cmd:&[u8])->Result<u64,&'static str>{unsafe{
     })?;
     if !ok||report.functions!=145||report.delayed{return Err("Pinned import layout mismatch");}
     serial::metric("H5K: TRIAL_SUPPORTED_STATIC=",implemented);serial::line("H5K: TRIAL_ENTER_7ZIP");
-    let status=enter(BASE+entry,3000);
+    WORK_ACTIVE=true;let status=enter(BASE+entry,3000);
     WORK.close_all();WORK_ACTIVE=false;if status!=1||EXIT!=0{let _=WORK.unpack(&backup[..before]);}
     serial::metric("H5K: TRIAL_RESULT=",status);serial::metric("H5K: TRIAL_EXIT=",EXIT as u64);
     serial::metric("H5K: TRIAL_FAULT_ADDRESS=",H5_TRIAL_FAULT);serial::metric("H5K: TRIAL_FAULT_RIP=",H5_TRIAL_RIP);

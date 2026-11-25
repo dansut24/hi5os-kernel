@@ -12,15 +12,15 @@ def fixture():
     b[512]=0xc3
     return bytes(b)
 MODE=sys.argv[1] if len(sys.argv)>1 else "length"
-assert MODE in ("length","close","chunked","large","sevenzip")
-PAYLOAD=pathlib.Path(sys.argv[2]).read_bytes() if MODE=="sevenzip" else fixture()+ (bytes(range(256))*4092 if MODE=="large" else b"")
+assert MODE in ("length","close","chunked","large","sevenzip","msi")
+PAYLOAD=pathlib.Path(sys.argv[2]).read_bytes() if MODE in ("sevenzip","msi") else fixture()+ (bytes(range(256))*4092 if MODE=="large" else b"")
 assert len(PAYLOAD)<=4*1024*1024
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         if self.path!="/hello.exe":self.send_error(404);return
         self.send_response(200);self.send_header("Content-Type","application/octet-stream")
-        if MODE in ("length","large","sevenzip"):self.send_header("Content-Length",str(len(PAYLOAD)))
+        if MODE in ("length","large","sevenzip","msi"):self.send_header("Content-Length",str(len(PAYLOAD)))
         elif MODE=="chunked":self.send_header("Transfer-Encoding","chunked")
         self.send_header("Connection","close");self.end_headers()
         if MODE=="chunked":
@@ -44,7 +44,7 @@ def main():
         "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
         "-drive",f"if=none,id=os,format=raw,readonly=on,file={system}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
         "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
-        "-netdev",net,"-device","e1000,netdev=n0,mac=52:54:00:12:34:56",*([] if MODE=="sevenzip" else ["-object",f"filter-dump,id=cap,netdev=n0,file={capture}"]),
+        "-netdev",net,"-device","e1000,netdev=n0,mac=52:54:00:12:34:56",*([] if MODE in ("sevenzip","msi") else ["-object",f"filter-dump,id=cap,netdev=n0,file={capture}"]),
         "-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
         first_log=None
         proc=subprocess.Popen(cmd)
@@ -73,10 +73,15 @@ def main():
                     key("ctrl-l")
                     for ch in f"http://10.0.2.2:{server.server_port}/hello.exe":
                         key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
-                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",240 if MODE in ("large","sevenzip") else 20)
+                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",240 if MODE in ("large","sevenzip","msi") else 20)
                 wait(f"HTTP_DOWNLOAD_BYTES=0x{len(PAYLOAD):016x}".encode(),2)
-                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK","sevenzip":b"HTTP_LENGTH_OK"}[MODE],2)
+                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK","sevenzip":b"HTTP_LENGTH_OK","msi":b"HTTP_LENGTH_OK"}[MODE],2)
                 if MODE=="close":wait(b"HTTP_FIN_BYTES=",2)
+                if MODE=="msi":
+                    key("esc");key("4");wait(b"GUI_TERMINAL_OPEN",5)
+                    for ch in "msiinfo":key(ch)
+                    key("ret");wait(b"SHELL_MSIINFO_OK",120)
+                    call("screendump",{"filename":str(ROOT/"dist"/"msi-inspect-512m.ppm")});call("quit");proc.wait(timeout=10);return
                 if MODE=="sevenzip":
                     key("esc");key("4");wait(b"GUI_TERMINAL_OPEN",5)
                     for ch in "peinfo":key(ch)

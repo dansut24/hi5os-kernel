@@ -46,6 +46,10 @@ pub fn on_stack(info:BootInfo)->! {
     let mut files=services::Files::new();
     if !files.self_test(){fail(&mut screen,"RAMFS_TEST");}
     serial::line("H5K: RAMFS_OK");
+    if !crate::winwindow::self_test(){fail(&mut screen,"WINDOW_OBJECT_TEST");}
+    serial::line("H5K: WINDOW_OBJECT_TEST_OK");
+    if !crate::msi::self_test(){fail(&mut screen,"MSI_CONTAINER_TEST");}
+    serial::line("H5K: MSI_CONTAINER_TEST_OK");
     if !crate::compat::self_test(){fail(&mut screen,"COMPAT_FORMAT_TEST");}
     serial::line("H5K: COMPAT_FORMAT_PROBE_OK");
     if !crate::compat::stage_test(){fail(&mut screen,"PE_STAGE_TEST");}

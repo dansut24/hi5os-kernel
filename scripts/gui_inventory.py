@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Inspect official installer and its real GUI payload; no Windows binary is executed or redistributed."""
-import hashlib,json,pathlib,subprocess,tempfile,collections
+import hashlib,json,pathlib,subprocess,tempfile,collections,re,zlib,sys
+import olefile
 import pefile
 from smoke import ROOT
 url="https://github.com/ip7z/7zip/releases/download/26.06/"
@@ -21,6 +22,15 @@ with tempfile.TemporaryDirectory() as td:
     report["payload"]=[inspect(p) for p in dest.rglob("*") if p.is_file() and p.suffix.lower() in (".exe",".dll")]
     assert any(p["filename"].lower()=="7zfm.exe" for p in report["payload"]),"7-Zip File Manager missing"
     assert any(p["filename"].lower()=="7z.dll" for p in report["payload"]),"7-Zip codec DLL missing"
+    subprocess.run([sys.executable,str(ROOT/"scripts/network.py"),"msi",str(msi)],check=True)
+    log=(ROOT/"dist"/"network-msi.log").read_text(errors="replace")
+    guest=collections.Counter((name,int(size,16),int(crc,16)) for name,size,crc in re.findall(r"H5K: MSI_STREAM\|([0-9a-f]+)\r?\nH5K: MSI_STREAM_SIZE=(0x[0-9a-f]+)\r?\nH5K: MSI_STREAM_CRC=(0x[0-9a-f]+)",log))
+    with olefile.OleFileIO(str(msi)) as ole:
+        host=collections.Counter()
+        for name in ole.listdir(streams=True,storages=False):
+            raw=ole.openstream(name).read();key="".join(f"{ord(c):04x}" for c in name[-1]);host[(key,len(raw),zlib.crc32(raw))]+=1
+    assert guest==host,f"Native MSI stream mismatch: missing {host-guest}, extra {guest-host}"
+    report["native_msi_stream_crc_comparison"]={"passed":True,"streams":sum(host.values())}
     tables=subprocess.run(["msiinfo","tables",str(msi)],capture_output=True,text=True,check=True).stdout.splitlines()
     report["msi"]={"sha256":pins[msi.name],"tables":tables,"execution":"not attempted","row_counts":{}}
     for table in ["Property","Directory","Component","File","Feature","FeatureComponents","Registry","Shortcut","InstallExecuteSequence","CustomAction","Media"]:
