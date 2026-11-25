@@ -16,6 +16,7 @@ mod compat;
 mod imports;
 mod relocate;
 mod trial;
+mod trialfs;
 mod net;
 mod http;
 mod heap;

@@ -1,5 +1,5 @@
 //! Experimental single-CPU, pinned-binary PE startup probe. Not a general sandbox.
-use core::{arch::{asm,global_asm,x86_64::{__cpuid,__cpuid_count}},ptr};
+use core::{arch::{asm,global_asm,x86_64::__cpuid},ptr};
 use crate::{platform,imports,relocate,serial,cpu};
 const BASE:u64=0x1_0000_0000;
 const AUX:u64=BASE+0x200000;
@@ -39,9 +39,34 @@ static mut OUT_LEN:usize=0;
 const FREE:Block=Block{at:0,len:0,used:false};
 static mut BLOCKS:[Block;128]=[FREE;128];
 static mut NEXT:u64=HEAP;
+static mut FS:crate::trialfs::Fs=crate::trialfs::Fs::new();
+static mut MATH_HANDLER:u64=0;
 #[repr(C)]struct Frame{rax:u64,rcx:u64,rdx:u64,r8:u64,r9:u64,rip:u64,cs:u64,flags:u64,rsp:u64,ss:u64}
 global_asm!(r#"
 .text
+.global h5_initterm_start
+.global h5_initterm_end
+h5_initterm_start:
+    push rbx
+    push rsi
+    sub rsp,40
+    mov rbx,rcx
+    mov rsi,rdx
+h5_initterm_loop:
+    cmp rbx,rsi
+    jae h5_initterm_done
+    mov rax,[rbx]
+    add rbx,8
+    test rax,rax
+    jz h5_initterm_loop
+    call rax
+    jmp h5_initterm_loop
+h5_initterm_done:
+    add rsp,40
+    pop rsi
+    pop rbx
+    ret
+h5_initterm_end:
 .global h5_trial_enter
 h5_trial_enter:
     pushfq
@@ -140,7 +165,7 @@ h5_trial_sys:
     pop r9
     iretq
 "#);
-extern "efiapi"{fn h5_trial_enter(ip:u64,sp:u64);fn h5_trial_sys();fn h5_trial_fault_error();fn h5_trial_fault_noerror();}
+extern "efiapi"{fn h5_initterm_start();fn h5_initterm_end();fn h5_trial_enter(ip:u64,sp:u64);fn h5_trial_sys();fn h5_trial_fault_error();fn h5_trial_fault_noerror();}
 pub unsafe fn install_gates(){
     for v in [0,1,4,5,6,7,16,19]{platform::gate(v,h5_trial_fault_noerror as usize,0x8e);}
     for v in [10,11,12,13,17,21]{platform::gate(v,h5_trial_fault_error as usize,0x8e);}
@@ -188,7 +213,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         4=>f.rax=LAST as u64,
         5=>f.rax=ENV+0x400,
         6=>f.rax=match x as u32{0xfffffff5=>1,0xfffffff4=>2,_=>u64::MAX},
-        7=>{let sync=f.rsp.checked_add(40).and_then(|v|phys(v,8,false)).map(|p|ptr::read_unaligned(p.cast::<u64>())==0).unwrap_or(false);
+        7=>{if x>=0x100{read_write(f,true,x,y,z,w);return;}let sync=f.rsp.checked_add(40).and_then(|v|phys(v,8,false)).map(|p|ptr::read_unaligned(p.cast::<u64>())==0).unwrap_or(false);
             if matches!(x,1|2)&&sync&&phys(w,4,true).is_some()&&capture(y,z as u32 as usize){write32(w,z as u32);f.rax=1;}else{LAST=87;}},
         8=>f.rax=allocate(x as usize),
         9=>{if !release(x){abort_import(id);}},
@@ -201,12 +226,61 @@ unsafe fn capture(v:u64,n:usize)->bool{
         16=>f.rax=u64::MAX,
         17=>{if x==0{f.rax=BASE;}else{abort_import(id);}},
         18=>{if z<=LIMIT as u64{if z==0{return;}if let (Some(a),Some(b))=(phys(x,z as usize,false),phys(y,z as usize,false)){for i in 0..z as usize{let d=*a.add(i)as i32-*b.add(i)as i32;if d!=0{f.rax=d as u32 as u64;break;}}}else{abort_import(id);}}else{abort_import(id);}},
+        19=>f.rax=realloc(x,y as usize),
+        20|21=>{if let Some(d)=text_cmp(x,y,a.kind==21){f.rax=d as u32 as u64;}else{abort_import(id);}},
+        22=>{if x==0||phys(x,1,false).is_some(){MATH_HANDLER=x;}else{abort_import(id);}},
+        23=>f.rax=if x as u32<=2{1}else{0},
+        24=>f.rax=match x as u32{1=>1,2=>2,_=>u64::MAX},
+        25=>{let mode=arg(f,40);let flags=arg(f,48);let template=arg(f,56);
+            if w!=0||template!=Some(0)||!matches!(flags,Some(0|0x80))||mode.is_none(){LAST=87;f.rax=u64::MAX;return;}
+            let Some(p)=path(x)else{LAST=123;f.rax=u64::MAX;return;};
+            match fs().open(p,y as u32,z as u32,mode.unwrap()as u32){Ok((h,e))=>{f.rax=h;LAST=e},Err(e)=>{LAST=e;f.rax=u64::MAX;}}},
+        26=>read_write(f,false,x,y,z,w),
+        27=>{let r=fs().close(x);bool_result(f,r);},
+        28=>{if y!=0&&!write32(y,0){LAST=87;f.rax=u32::MAX as u64;return;}match fs().size(x){Ok(v)=>f.rax=v as u64,Err(e)=>{LAST=e;f.rax=u32::MAX as u64;}}},
+        29=>{if z!=0{LAST=87;f.rax=u32::MAX as u64;return;}match fs().seek(x,y as u32 as i32 as i64,w as u32){Ok(v)=>f.rax=v as u64,Err(e)=>{LAST=e;f.rax=u32::MAX as u64;}}},
+        30=>{let r=fs().truncate(x);bool_result(f,r);},
+        31|32|33=>{let Some(p)=path(x)else{LAST=123;return;};let r=match a.kind{31 if y==0=>fs().mkdir(p),31=>Err(87),32=>fs().rmdir(p),_=>fs().delete(p)};bool_result(f,r);},
+        34=>{let r=path(x).ok_or(123u32).and_then(|p|fs().attrs(p));match r{Ok(v)=>f.rax=v as u64,Err(e)=>{LAST=e;f.rax=u32::MAX as u64;}}},
+        35=>{if x<4{f.rax=4;}else if let Some(p)=phys(y,8,true){for(i,v)in [67u16,58,92,0].iter().enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),*v);}f.rax=3;}else{LAST=87;}},
+        36=>{let stdout=ENV+0x700+48;let stderr=ENV+0x700+96;if y!=stdout&&y!=stderr{abort_import(id);return;}let Some(n)=c_len(x,false)else{abort_import(id);return;};if capture(x,n){f.rax=0;}else{f.rax=u32::MAX as u64;}},
+        37=>{let stdout=ENV+0x700+48;let stderr=ENV+0x700+96;if y!=stdout&&y!=stderr{abort_import(id);return;}if OUT_LEN<8192{ptr::addr_of_mut!(OUT).cast::<u8>().add(OUT_LEN).write(x as u8);OUT_LEN+=1;f.rax=x as u8 as u64;}else{f.rax=u32::MAX as u64;}},
+        38=>{if x!=0&&x!=ENV+0x700+48&&x!=ENV+0x700+96{abort_import(id);}},
         _=>abort_import(id)
     }
 }
+unsafe fn fs()->&'static mut crate::trialfs::Fs{&mut *ptr::addr_of_mut!(FS)}
+unsafe fn path(v:u64)->Option<crate::trialfs::Path>{
+    let n=c_len(v,true)?;if n>96{return None;}let mut b=[0u8;96];for i in 0..n{
+        let w=ptr::read_unaligned(phys(v+2*i as u64,2,false)?.cast::<u16>());if w>127{return None;}b[i]=w as u8;
+    }crate::trialfs::Path::parse(&b[..n])
+}
+unsafe fn arg(f:&Frame,off:u64)->Option<u64>{Some(ptr::read_unaligned(phys(f.rsp.checked_add(off)?,8,false)?.cast::<u64>()))}
+unsafe fn bool_result(f:&mut Frame,r:Result<(),u32>){match r{Ok(())=>f.rax=1,Err(e)=>{LAST=e;f.rax=0;}}}
+unsafe fn read_write(f:&mut Frame,write:bool,x:u64,y:u64,z:u64,w:u64){
+    let n=z as u32 as usize;
+    if arg(f,40)!=Some(0)||phys(w,4,true).is_none()||n>65536{LAST=87;return;}
+    if n==0{let r=if write{fs().write(x,&[])}else{fs().read(x,&mut [])};match r{Ok(k)=>{write32(w,k as u32);f.rax=1;},Err(e)=>LAST=e}return;}
+    let Some(p)=phys(y,n,!write)else{LAST=87;return;};
+    let r=if write{fs().write(x,core::slice::from_raw_parts(p,n))}else{fs().read(x,core::slice::from_raw_parts_mut(p,n))};
+    match r{Ok(k)=>{write32(w,k as u32);f.rax=1;},Err(e)=>LAST=e}
+}
+unsafe fn realloc(v:u64,n:usize)->u64{
+    if v==0{return allocate(n);}if n==0{release(v);return 0;}
+    let Some(b)=(&*ptr::addr_of!(BLOCKS)).iter().find(|b|b.used&&b.at==v).copied()else{return 0;};
+    if n<=b.len{return v;}let at=allocate(n);if at==0{return 0;}
+    if let (Some(a),Some(b))=(phys(at,b.len,true),phys(v,b.len,false)){ptr::copy_nonoverlapping(b,a,n.min((&*ptr::addr_of!(BLOCKS)).iter().find(|q|q.at==v).map_or(0,|q|q.len)));release(v);at}else{release(at);0}
+}
+unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
+    let step=if wide{2}else{1};for i in 0..65536usize{
+        let a=phys(x.checked_add((i*step)as u64)?,step,false)?;let b=phys(y.checked_add((i*step)as u64)?,step,false)?;
+        let a=if wide{ptr::read_unaligned(a.cast::<u16>())as i32}else{*a as i32};let b=if wide{ptr::read_unaligned(b.cast::<u16>())as i32}else{*b as i32};
+        if a!=b||a==0{return Some(a-b);}
+    }None
+}
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,_=>0}}else{0}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,_=>0}}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
@@ -218,11 +292,14 @@ unsafe fn init_env(){
     ptr::write_unaligned(d.add(0x1370).cast::<u16>(),20);ptr::write_unaligned(d.add(0x1372).cast::<u16>(),22);set(0x378,ENV+0x400);
     ptr::copy_nonoverlapping(b"7za.exe\0-h\0".as_ptr(),d.add(0x1500),11);
     set(0x600,ENV+0x500);set(0x608,ENV+0x508);set(0x610,0);set(0x620,0);
+    // Narrow legacy CRT stream records: only output via fputs/fputc/fflush is supported.
+    for i in 0..3usize{ptr::write_unaligned(d.add(0x1700+i*48+28).cast::<u32>(),i as u32);}
+
 }
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    fs().reset();MATH_HANDLER=0;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
@@ -252,6 +329,7 @@ unsafe fn enter(ip:u64,budget:u64)->u64{
 }
 pub fn self_test()->bool{unsafe{
     if !supported(){serial::line("H5K: TRIAL_NX_UNAVAILABLE");return false;}
+    if !fs().test(){return false;}serial::line("H5K: TRIAL_RAMFS_OK");
     reset();let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();ptr::copy_nonoverlapping([0x0fu8,0x0b].as_ptr(),d,2);
     if enter(AUX,50)!=2{return false;}serial::line("H5K: TRIAL_FAULT_RECOVERED");
     reset();ptr::copy_nonoverlapping([0xebu8,0xfe].as_ptr(),d,2);
@@ -272,14 +350,16 @@ pub fn run(b:&[u8])->Result<u64,&'static str>{unsafe{
         for j in va/4096..(va+span).div_ceil(4096){table.add(j).write(raw+j as u64*4096|flags);}
     }
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();let mut ok=true;let mut implemented=0;
+    let start=h5_initterm_start as usize;let end=h5_initterm_end as usize;let len=end.checked_sub(start).ok_or("CRT stub layout")?;
+    if len>256{return Err("CRT stub too large");}ptr::copy_nonoverlapping(start as *const u8,d.add(0xf00),len);
     let report=imports::inspect_slots(b,|dll,s,slot|{
         let i=N;if i>=256||dll.len()>48||slot as usize+8>r.size||slot%8!=0{ok=false;return;}
         let mut a=EMPTY;a.dn=dll.len();a.dll[..a.dn].copy_from_slice(dll.as_bytes());
         match s{imports::Symbol::Name(n)=>{if n.len()>128{ok=false;return;}a.nn=n.len();a.name[..a.nn].copy_from_slice(n.as_bytes());a.kind=kind(dll,n);},imports::Symbol::Ordinal(n)=>{a.name[0]=b'#';for j in 0..4{a.name[1+j]=b"0123456789abcdef"[((n>>(12-j*4))&15)as usize];}a.nn=5;}}
-        ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);N+=1;if a.kind!=0{implemented+=1;}
+        ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);N+=1;if a.kind!=0||dll.eq_ignore_ascii_case("msvcrt.dll")&&matches!(&a.name[..a.nn],b"_initterm"){implemented+=1;}
         // Data imports must be data, not executable trampolines. Unsupported data remains unmapped.
         let name=&a.name[..a.nn];let target=if dll.eq_ignore_ascii_case("msvcrt.dll"){
-            match name{b"__initenv"=>{let p=ENV+0x640;ptr::write_unaligned(d.add(0x1640).cast::<u64>(),ENV+0x620);p},b"_commode"=>ENV+0x648,b"_fmode"=>ENV+0x64c,b"_iob"=>AUX+0x8000,_=>AUX+i as u64*16}
+            match name{b"__initenv"=>{let p=ENV+0x640;ptr::write_unaligned(d.add(0x1640).cast::<u64>(),ENV+0x620);p},b"_commode"=>ENV+0x648,b"_fmode"=>ENV+0x64c,b"_iob"=>ENV+0x700,b"_initterm"=>AUX+0xf00,_=>AUX+i as u64*16}
         }else{AUX+i as u64*16};
         let stub=[0xb8,i as u8,0,0,0,0xcd,0x81,0xc3];ptr::copy_nonoverlapping(stub.as_ptr(),d.add(i*16),stub.len());
         image[slot as usize..slot as usize+8].copy_from_slice(&target.to_le_bytes());

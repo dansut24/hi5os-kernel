@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     report["rebase"]={"image_bytes":size,"base":hex(base),"dir64_count":count,"crc32":hex(zlib.crc32(image))}
     (ROOT/"dist"/"7zip-imports.json").write_text(json.dumps(report,indent=2)+"\n")
     print(f"PASS: real 7-Zip inert image at {base:#x}, {count} relocations, exact mapped-image CRC32 matched reference")
-    assert "H5K: TRIAL_FAULT_RECOVERED" in log and "H5K: TRIAL_TIMEOUT_RECOVERED" in log
+    assert "H5K: TRIAL_RAMFS_OK" in log and "H5K: TRIAL_FAULT_RECOVERED" in log and "H5K: TRIAL_TIMEOUT_RECOVERED" in log
     assert "H5K: TRIAL_ENTER_7ZIP" in log and "H5K: TRIAL_RETURNED" in log
     report["execution"]="help-qualified" if "H5K: SEVENZIP_HELP_OK" in log else "startup attempted; help not qualified"
     report["trial_status"]=re.findall(r"TRIAL_RESULT=(0x[0-9a-f]+)",log)
