@@ -100,7 +100,7 @@ fn decode(b:&[u8;512])->Option<(u32,bool,usize)>{
 // V2 download banks: sectors 64..2112 and 2113..4161, inside the original 16 MiB disk.
 const BANK_A:u32=64;
 const BANK_B:u32=2113;
-const DL_CAP:usize=crate::net::MAX_BODY;
+pub const DL_CAP:usize=1024*1024;
 #[derive(Clone,Copy)]pub struct Download{pub len:usize,pub url:[u8;128],pub url_len:usize,gen:u32,sum:u32}
 pub struct Store{port:Option<Port>,generation:u32,slot:u32,file:usize}
 impl Store{

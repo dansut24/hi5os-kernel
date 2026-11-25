@@ -84,7 +84,7 @@ pub fn stage_test()->bool{
 }
 
 // Only the CI-built, image-embedded program is eligible for execution. No browser/file input.
-const HELLO:&[u8]=include_bytes!("../target/hi5-fixture/hello.exe");
+pub const HELLO:&[u8]=include_bytes!("../target/hi5-fixture/hello.exe");
 pub fn stage_hello(out:&mut[u8],shim:u64)->Result<Image,&'static str>{
     let b=HELLO;let image=stage(b,out,true)?;
     if image.preferred_base!=0x1_0000_0000||image.size!=0x3000||image.entry!=0x1000{return Err("Unexpected fixture image layout");}

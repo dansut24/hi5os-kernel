@@ -12,14 +12,15 @@ def fixture():
     b[512]=0xc3
     return bytes(b)
 MODE=sys.argv[1] if len(sys.argv)>1 else "length"
-assert MODE in ("length","close","chunked","large")
-PAYLOAD=fixture()+ (bytes(range(256))*4092 if MODE=="large" else b"")
+assert MODE in ("length","close","chunked","large","sevenzip")
+PAYLOAD=pathlib.Path(sys.argv[2]).read_bytes() if MODE=="sevenzip" else fixture()+ (bytes(range(256))*4092 if MODE=="large" else b"")
+assert len(PAYLOAD)<=4*1024*1024
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         if self.path!="/hello.exe":self.send_error(404);return
         self.send_response(200);self.send_header("Content-Type","application/octet-stream")
-        if MODE in ("length","large"):self.send_header("Content-Length",str(len(PAYLOAD)))
+        if MODE in ("length","large","sevenzip"):self.send_header("Content-Length",str(len(PAYLOAD)))
         elif MODE=="chunked":self.send_header("Transfer-Encoding","chunked")
         self.send_header("Connection","close");self.end_headers()
         if MODE=="chunked":
@@ -35,7 +36,7 @@ def main():
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
         vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/f"network-{MODE}.log";log.unlink(missing_ok=True)
-        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.7.img"
+        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.1.8.img"
         # Close-delimited test uses real SLIRP host-loopback TCP, in CI network namespace.
         net="user,id=n0" if MODE=="close" else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:8080-tcp:127.0.0.1:{server.server_port}"
         capture=ROOT/"dist"/f"network-{MODE}.pcap"
@@ -43,7 +44,7 @@ def main():
         "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
         "-drive",f"if=none,id=os,format=raw,readonly=on,file={system}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
         "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
-        "-netdev",net,"-device","e1000,netdev=n0,mac=52:54:00:12:34:56","-object",f"filter-dump,id=cap,netdev=n0,file={capture}",
+        "-netdev",net,"-device","e1000,netdev=n0,mac=52:54:00:12:34:56",*([] if MODE=="sevenzip" else ["-object",f"filter-dump,id=cap,netdev=n0,file={capture}"]),
         "-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
         proc=subprocess.Popen(cmd)
         def wait(marker,seconds=30):
@@ -71,10 +72,18 @@ def main():
                     key("ctrl-l")
                     for ch in f"http://10.0.2.2:{server.server_port}/hello.exe":
                         key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
-                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",120 if MODE=="large" else 20)
+                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",240 if MODE in ("large","sevenzip") else 20)
                 wait(f"HTTP_DOWNLOAD_BYTES=0x{len(PAYLOAD):016x}".encode(),2)
-                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK"}[MODE],2)
+                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK","sevenzip":b"HTTP_LENGTH_OK"}[MODE],2)
                 if MODE=="close":wait(b"HTTP_FIN_BYTES=",2)
+                if MODE=="sevenzip":
+                    key("esc");key("4");wait(b"GUI_TERMINAL_OPEN",5)
+                    for ch in "peinfo":key(ch)
+                    key("ret");wait(b"SHELL_PEINFO_OK",30)
+                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-imports-512m.ppm")});call("quit")
+                    proc.wait(timeout=10)
+                    print("PASS: original 7-Zip PE downloaded to RAM and import inventory generated; execution disabled")
+                    return
                 key("f9");wait(b"DOWNLOAD_SAVED",90 if MODE=="large" else 10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
                 key("f10");wait(b"GUI_DOWNLOAD_REOPENED",90 if MODE=="large" else 5)

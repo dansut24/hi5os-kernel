@@ -5,7 +5,7 @@ use core::{ptr,sync::atomic::{fence,Ordering}};
 const N:usize=16;
 const B:usize=2048;
 const ZERO:[u8;4]=[0;4];
-pub const MAX_BODY:usize=1024*1024;
+pub const MAX_BODY:usize=4*1024*1024;
 pub const MAX_RESPONSE:usize=MAX_BODY+128*1024;
 #[repr(C,align(128))]struct Descs([u8;N*16]);
 #[repr(C,align(4096))]struct Buffers([u8;N*B]);
@@ -183,7 +183,7 @@ impl Nic{
         let mut req=[0u8;256];let mut k=0;
         for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
         let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;
-        let overall=p::ticks()+12000;let mut used=0;let mut next_log=65536;
+        let overall=p::ticks()+24000;let mut used=0;let mut next_log=65536;
         let mut buf=[0u8;B];
         loop{
             let (n,fin)=tcp.read(&mut buf,overall)?;

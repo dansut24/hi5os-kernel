@@ -20,7 +20,7 @@ fn header(b:&[u8])->Result<Option<(usize,Frame)>,&'static str>{
         let l=line.strip_suffix(b"\r").unwrap_or(line);
         let col=l.iter().position(|x|*x==b':').ok_or("Invalid HTTP header")?;
         let key=&l[..col];let value=trim(&l[col+1..]);
-        if key.eq_ignore_ascii_case(b"content-length"){if length.is_some(){return Err("Duplicate Content-Length");}length=Some(number(value,10).ok_or("Invalid length or over 1 MiB")?);}
+        if key.eq_ignore_ascii_case(b"content-length"){if length.is_some(){return Err("Duplicate Content-Length");}length=Some(number(value,10).ok_or("Invalid length or over 4 MiB")?);}
         if key.eq_ignore_ascii_case(b"transfer-encoding"){if chunk||!value.eq_ignore_ascii_case(b"chunked"){return Err("Unsupported transfer encoding");}chunk=true;}
         if key.eq_ignore_ascii_case(b"content-encoding")&&!value.eq_ignore_ascii_case(b"identity"){return Err("Compressed response unsupported");}
     }
@@ -43,7 +43,7 @@ fn chunks(b:&[u8])->Result<Option<usize>,&'static str>{
                 trailers+=e+2;if trailers>512||!b[p..p+e].contains(&b':'){return Err("Invalid chunk trailer");}p+=e+2;
             }
         }
-        total+=size;if total>MAX_BODY{return Err("Body exceeds 1 MiB");}
+        total+=size;if total>MAX_BODY{return Err("Body exceeds 4 MiB");}
         if p+size+2>b.len(){return Ok(None);}
         if &b[p+size..p+size+2]!=b"\r\n"{return Err("Invalid chunk terminator");}p+=size+2;
     }
@@ -54,7 +54,7 @@ pub fn complete(b:&mut[u8],used:usize,fin:bool)->Result<Option<(usize,u8)>,&'sta
     let count=used-start;
     match fr{
         Frame::Length(len)=>{if count>len{return Err("Unexpected trailing bytes");}if count<len{return if fin{Err("Incomplete HTTP body")}else{Ok(None)};}b.copy_within(start..used,0);Ok(Some((len,0)))},
-        Frame::Close=>{if count>MAX_BODY{return Err("Body exceeds 1 MiB");}if !fin{return Ok(None);}b.copy_within(start..used,0);Ok(Some((count,1)))},
+        Frame::Close=>{if count>MAX_BODY{return Err("Body exceeds 4 MiB");}if !fin{return Ok(None);}b.copy_within(start..used,0);Ok(Some((count,1)))},
         Frame::Chunked=>{let Some(total)=chunks(&b[start..used])?else{return if fin{Err("Incomplete chunked body")}else{Ok(None)};};
             let mut p=start;let mut dst=0;
             loop{let e=b[p..used].windows(2).position(|w|w==b"\r\n").ok_or("Invalid chunk")?;

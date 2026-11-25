@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.1.7 — native software GUI; single foreground window.
+//! Hi5Desktop v0.1.8 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};
@@ -16,7 +16,7 @@ impl Terminal{fn new()->Self{Self{buf:[0;48],len:0,last:[0;48],last_len:0,result
 const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
 // The large response buffer is image-owned static memory, not the 64 KiB kernel stack.
 static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
-struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
+struct Ui{c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
 impl Ui{
     fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{unsafe{ptr::write_volatile((self.c.fb.base as *mut u32).add((self.my+y)*self.c.fb.stride+self.mx+x),self.saved[y*16+x]);}}}}self.saved_valid=false;}
     fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{self.saved[y*16+x]=unsafe{ptr::read_volatile((self.c.fb.base as *const u32).add((self.my+y)*self.c.fb.stride+self.mx+x))};if x<=y/2&&y<14{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}}}self.saved_valid=true;}
@@ -113,7 +113,7 @@ impl Ui{
                         if let Ok(t)=core::str::from_utf8(name){if !t.is_empty(){c.text_limit(x,y+188,t,q.ink,false,right);}}
                     }
                     self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);
-                }else{c.text_limit(x,y+120,"Plain HTTP - no TLS. Max 1 MiB.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
+                }else{c.text_limit(x,y+120,"HTTP only. Preview 4 MiB; save 1 MiB.",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
             }
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
@@ -150,7 +150,7 @@ impl Ui{
                 c.text_limit(x,y+29,"Type help for available commands.",fg,false,right);
                 if self.term.last_len>0{c.text(x,y+63,">",green);if let Ok(t)=core::str::from_utf8(&self.term.last[..self.term.last_len]){c.text_limit(x+16,y+63,t,fg,false,right);}}
                 match self.term.result{
-                    1=>{c.text_limit(x,y+91,"help mem ver ls compat security sheet winhello",fg,false,right);}
+                    1=>{c.text_limit(x,y+91,"help mem ver ls compat winhello pehello peinfo",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
                     3=>c.text(x,y+91,concat!("Hi5OS ",env!("CARGO_PKG_VERSION")),fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
@@ -161,7 +161,9 @@ impl Ui{
                     10=>{c.text(x,y+91,"Cell value:",fg);let v=self.sheet_result;if v<0{c.text(x+105,y+91,"-",green);}c.num(x+119,y+91,v.unsigned_abs(),green);},
                     11=>c.text_limit(x,y+91,"Invalid cell, formula, cycle or overflow",fg,false,right),
                     12=>{c.text_limit(x,y+91,"Windows PE64 fixture exited successfully",fg,false,right);c.text(x,y+111,"ExitProcess result: 42",green);},
-                    13=>c.text_limit(x,y+91,"Windows PE fixture failed",fg,false,right),_=>{}
+                    13=>c.text_limit(x,y+91,"Windows PE fixture failed",fg,false,right),
+                    14=>{c.text(x,y+91,"Imported DLLs:",fg);c.num(x+150,y+91,self.pe_report.dlls as u64,green);c.text(x+230,y+91,"Functions:",fg);c.num(x+330,y+91,self.pe_report.functions as u64,green);c.text_limit(x,y+111,"Read-only inventory; external execution blocked",fg,false,right);},
+                    15=>c.text_limit(x,y+91,"No valid PE64 download or unsupported imports",fg,false,right),_=>{}
                 }
                 c.text(x,y+133,">",green);
                 if let Ok(t)=core::str::from_utf8(&self.term.buf[..self.term.len]){c.text_limit(x+16,y+133,t,fg,false,right);}
@@ -198,9 +200,9 @@ impl Ui{
     fn terminal_key(&mut self,key:u8){
         match key{
             0x1c=>{
-                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
+                let cmd=&self.term.buf[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
                 self.term.last=self.term.buf;self.term.last_len=if result==0{0}else{self.term.len};self.term.len=0;self.term.result=result;
-                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",_=>"H5K: SHELL_UNKNOWN"});
+                serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",14=>"H5K: SHELL_PEINFO_OK",15=>"H5K: SHELL_PEINFO_FAILED",_=>"H5K: SHELL_UNKNOWN"});
                 if result==10{serial::metric("H5K: SHEET_RESULT=",self.sheet_result as u64);}
                 if result==5{self.theme();}else{self.draw();}
             }
@@ -222,7 +224,7 @@ impl Ui{
         if let Some(nic)=&mut self.nic{match nic.get(&self.url[..self.url_len],self.web){Ok(n)=>{self.web_len=n;self.web_ok=true;self.source=self.url;self.source_len=self.url_len;self.web_msg="Download complete - not authenticated";},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}else{self.web_msg="No supported E1000 network adapter";}
         self.draw();
     }
-    fn save_web(&mut self){if self.web_ok{self.web_msg=if self.store.save_download(&self.web[..self.web_len],&self.source[..self.source_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
+    fn save_web(&mut self){if self.web_ok{if self.web_len>crate::disk::DL_CAP{self.web_msg="Save limit 1 MiB - preview only";self.draw();return;}self.web_msg=if self.store.save_download(&self.web[..self.web_len],&self.source[..self.source_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
     fn browser_key(&mut self,key:u8){
         if key==0x1c{self.fetch_web();return;}if key==0x43{self.save_web();return;}if key==0x44{self.reopen_web();return;}
         if self.ctrl{if key==0x26{self.url_len=0;self.draw();}return;}
@@ -308,7 +310,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
     let _=store.load(0);
     let mut url=[0;128];let default=b"http://10.0.2.100:8080/hello.exe";url[..default.len()].copy_from_slice(default);
-    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
+    let mut ui=Ui{c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",pe_report:crate::imports::Report::default(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");

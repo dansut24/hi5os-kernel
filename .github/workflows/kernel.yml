@@ -8,11 +8,11 @@ permissions:
 jobs:
   build-and-boot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Install VM and image tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools dosfstools python3-pil fonts-dejavu-core clang lld
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools dosfstools python3-pil fonts-dejavu-core clang lld p7zip-full python3-pefile
       - name: Set up pinned Rust
         run: |
           rustup show
@@ -42,13 +42,15 @@ jobs:
         run: python3 scripts/network.py chunked
       - name: One MiB HTTP binary download and exact disk verification
         run: python3 scripts/network.py large
+      - name: Official 7-Zip PE64 download and import inventory comparison
+        run: /usr/bin/python3 scripts/sevenzip.py
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
         run: python3 scripts/routed.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.1.7-vm-evidence
+          name: hi5os-v0.1.8-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
