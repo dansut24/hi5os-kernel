@@ -7,3 +7,5 @@ Build52 correction: boot marker order matches kernel. Build51 diagnostic showed 
 Build54 diagnostics narrowed the shared archive blocker to the second WideCharToMultiByte call. Corrected legacy default-character handling and CP437/1252 mapping; direct two-pass, substitution flag and UTF8 tests required. General Windows NLS/best-fit and malformed-input behavior are not fully implemented. No C++ exception bypass.
 
 Build55: genuine supported-format listing qualified and now mandatory. Archive creation stops at file-open parameter error; next patch corrects 32-bit stack argument decoding and extends bounded private-file flags, adds direct file ABI test and actual open diagnostics. ZIP/7z round trip still outstanding.
+
+Build56 confirms original archive output handles open. Added real DOS/FILETIME/SYSTEMTIME conversion and bounded synchronous I/O supporting read requests larger than the underlying private file. Regression tests preserve timestamp and EOF behavior. Full round trip remains unqualified pending CI.

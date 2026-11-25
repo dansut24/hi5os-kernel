@@ -45,6 +45,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             assert b"TRIAL_HEAP_REUSE_OK" in log.read_bytes()
             assert b"TRIAL_NLS_CONVERSION_OK" in log.read_bytes()
             assert b"TRIAL_FILE_ABI_OK" in log.read_bytes()
+            assert b"TRIAL_ARCHIVE_IO_TIME_OK" in log.read_bytes()
             def command(s,marker=b"SHELL_7ZIP_RETURNED"):
                 prior=len(log.read_bytes())
                 for ch in s:key({" ":"spc","-":"minus",".":"dot","=":"equal","/":"slash"}.get(ch,ch))

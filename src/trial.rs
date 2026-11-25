@@ -586,6 +586,70 @@ unsafe fn file_abi_test()->bool{
     if !write64(st+48,0x40000080){return false;}create_file(&mut frame,name,0x80000000,1,0);
     frame.rax==u64::MAX&&LAST==87
 }
+// Windows FILETIME is UTC 100ns ticks since 1601-01-01. The private
+// compatibility environment uses UTC for its local time zone.
+const FT_SECOND:u64=10_000_000;
+fn leap(y:u32)->bool{y%4==0&&(y%100!=0||y%400==0)}
+fn month_days(y:u32,m:u32)->Option<u32>{match m{1|3|5|7|8|10|12=>Some(31),4|6|9|11=>Some(30),2=>Some(if leap(y){29}else{28}),_=>None}}
+fn time_fields(ft:u64)->Option<[u16;8]>{
+    // SYSTEMTIME supports year 1601 through 30827; bound the loop.
+    let secs=ft/FT_SECOND;let mut days=secs/86400;let weekday=((days+1)%7)as u16;let mut year=1601u32;
+    while year<=30827{let n=if leap(year){366}else{365};if days<n{break;}days-=n;year+=1;}
+    if year>30827{return None;}let mut month=1u32;
+    while month<=12{let n=month_days(year,month)?as u64;if days<n{break;}days-=n;month+=1;}
+    if month>12{return None;}
+    Some([year as u16,month as u16,weekday,(days+1)as u16,((secs/3600)%24)as u16,((secs/60)%60)as u16,(secs%60)as u16,((ft%FT_SECOND)/10000)as u16])
+}
+fn fields_time(v:[u16;8])->Option<u64>{
+    let (year,month,day)=(v[0]as u32,v[1]as u32,v[3]as u32);
+    if !(1601..=30827).contains(&year)||day==0||day>month_days(year,month)?||v[4]>=24||v[5]>=60||v[6]>=60||v[7]>=1000{return None;}
+    let mut days=0u64;for y in 1601..year{days+=if leap(y){366}else{365};}for m in 1..month{days+=month_days(year,m)?as u64;}days+=day as u64-1;
+    let secs=days*86400+v[4]as u64*3600+v[5]as u64*60+v[6]as u64;
+    secs.checked_mul(FT_SECOND)?.checked_add(v[7]as u64*10000)
+}
+fn to_dos(ft:u64)->Option<(u16,u16)>{
+    let v=time_fields(ft)?;if !(1980..=2107).contains(&v[0]){return None;}
+    Some((((v[0]-1980)<<9)|(v[1]<<5)|v[3],(v[4]<<11)|(v[5]<<5)|(v[6]/2)))
+}
+fn from_dos(d:u16,t:u16)->Option<u64>{
+    fields_time([1980+(d>>9),(d>>5)&15,0,d&31,t>>11,(t>>5)&63,(t&31)*2,0])
+}
+unsafe fn calendar_api(f:&mut Frame,kind:u8,x:u64,y:u64,z:u64){
+    f.rax=0;let result=(||{
+        match kind{
+            119=>{let p=phys(x,8,false)?;let (date,time)=to_dos(ptr::read_unaligned(p.cast::<u64>()))?;let q=phys(y,2,true)?;let r=phys(z,2,true)?;if y<z+2&&z<y+2{return None;}ptr::write_unaligned(q.cast::<u16>(),date);ptr::write_unaligned(r.cast::<u16>(),time);},
+            120=>{let ft=from_dos(x as u16,y as u16)?;if !write64(z,ft){return None;}},
+            121=>{let p=phys(x,8,false)?;let v=time_fields(ptr::read_unaligned(p.cast::<u64>()))?;let q=phys(y,16,true)?;for(i,n)in v.iter().enumerate(){ptr::write_unaligned(q.add(i*2).cast::<u16>(),*n);}},
+            122=>{let p=phys(x,16,false)?;let mut v=[0u16;8];for(i,n)in v.iter_mut().enumerate(){*n=ptr::read_unaligned(p.add(i*2).cast::<u16>());}if !write64(y,fields_time(v)?){return None;}},
+            _=>return None
+        }Some(())
+    })();if result.is_some(){f.rax=1;}else{LAST=87;}
+}
+unsafe fn archive_io_time_test()->bool{
+    // Known epoch and leap-day cases; reject invalid DOS date and pre-1980.
+    let epoch=116444736000000000u64;
+    if time_fields(epoch)!=Some([1970,1,4,1,0,0,0,0])||to_dos(epoch).is_some()||fields_time([1900,2,0,29,0,0,0,0]).is_some(){return false;}
+    let v=[2024,2,0,29,23,59,59,123];let Some(ft)=fields_time(v)else{return false;};
+    let Some((date,time))=to_dos(ft)else{return false;};
+    if date!=((44<<9)|(2<<5)|29)||time!=((23<<11)|(59<<5)|29)||from_dos(date,time)!=fields_time([2024,2,0,29,23,59,58,0])||from_dos(0,0).is_some(){return false;}
+    let src=ENV+0x800;let dd=ENV+0x810;let dt=ENV+0x812;let st=STACK+0x100;let count=ENV+0x820;
+    let mut frame=Frame{rax:0,rcx:0,rdx:0,r8:0,r9:0,rip:0,cs:0,flags:0,rsp:st,ss:0};
+    if !write64(src,ft){return false;}calendar_api(&mut frame,119,src,dd,dt);
+    let (Some(pd),Some(pt))=(phys(dd,2,false),phys(dt,2,false))else{return false;};
+    if frame.rax!=1||ptr::read_unaligned(pd.cast::<u16>())!=date||ptr::read_unaligned(pt.cast::<u16>())!=time{return false;}
+    calendar_api(&mut frame,120,date as u64,time as u64,src);if frame.rax!=1{return false;}
+    let Some(p)=phys(src,8,false)else{return false;};if Some(ptr::read_unaligned(p.cast::<u64>()))!=from_dos(date,time){return false;}
+    // Real 1 MiB read request against a tiny file; confirm short read, EOF and untouched tail.
+    let Some(path)=crate::trialfs::Path::parse(b"short-read.txt")else{return false;};
+    if !fs().put(path,b"abc"){return false;}let Ok((h,_))=fs().open(path,0x80000000,1,3)else{return false;};
+    let buffer=allocate(1024*1024);if buffer==0{return false;}let Some(p)=phys(buffer,1024*1024,true)else{return false;};ptr::write_bytes(p,0x5a,4);
+    if !write64(st+40,0){return false;}frame.rax=0;read_write(&mut frame,false,h,buffer,1024*1024,count);
+    let Some(c)=phys(count,4,false)else{return false;};
+    if frame.rax!=1||ptr::read_unaligned(c.cast::<u32>())!=3||core::slice::from_raw_parts(p,4)!=b"abcZ"{return false;}
+    frame.rax=0;read_write(&mut frame,false,h,buffer,1024*1024,count);
+    if frame.rax!=1||ptr::read_unaligned(c.cast::<u32>())!=0{return false;}
+    fs().close(h).is_ok()&&release(buffer)
+}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -772,6 +836,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         116=>{if write32(y,fs().size(x).unwrap_or(0)){if fs().size(x).is_ok()&&write32(y+4,0){f.rax=1;}else{LAST=6;}}else{LAST=87;}},
         117=>{let r=path(x).ok_or(123u32).and_then(|p|fs().info(p).ok_or(2u32));match r{Ok(e)=>{if y!=0{LAST=87;return;}let Some(p)=phys(z,36,true)else{LAST=87;return;};ptr::write_bytes(p,0,36);ptr::write_unaligned(p.cast::<u32>(),e.attrs);for j in 0..3{ptr::write_unaligned(p.add(4+j*8).cast::<u64>(),e.times[j]);}ptr::write_unaligned(p.add(32).cast::<u32>(),e.size);f.rax=1;},Err(e)=>LAST=e}},
         118=>format_message(f,x,y,z,w),
+        119..=122=>calendar_api(f,a.kind,x,y,z),
         _=>{if &a.name[..a.nn]==b"_CxxThrowException"{serial::metric("H5K: TRIAL_CXX_OBJECT=",x);serial::metric("H5K: TRIAL_CXX_THROWINFO=",y);serial::metric("H5K: TRIAL_CXX_LAST_ERROR=",LAST as u64);if let Some(p)=phys(f.rsp,8,false){serial::metric("H5K: TRIAL_CXX_RETURN=",ptr::read_unaligned(p.cast::<u64>()));}}abort_import(id)}
     }
 }
@@ -785,11 +850,17 @@ unsafe fn arg(f:&Frame,off:u64)->Option<u64>{Some(ptr::read_unaligned(phys(f.rsp
 unsafe fn bool_result(f:&mut Frame,r:Result<(),u32>){match r{Ok(())=>f.rax=1,Err(e)=>{LAST=e;f.rax=0;}}}
 unsafe fn read_write(f:&mut Frame,write:bool,x:u64,y:u64,z:u64,w:u64){
     let n=z as u32 as usize;
-    if arg(f,40)!=Some(0)||phys(w,4,true).is_none()||n>65536{LAST=87;return;}
-    if n==0{let r=if write{fs().write(x,&[])}else{fs().read(x,&mut [])};match r{Ok(k)=>{write32(w,k as u32);f.rax=1;},Err(e)=>LAST=e}return;}
-    let Some(p)=phys(y,n,!write)else{LAST=87;return;};
-    let r=if write{fs().write(x,core::slice::from_raw_parts(p,n))}else{fs().read(x,core::slice::from_raw_parts_mut(p,n))};
-    match r{Ok(k)=>{write32(w,k as u32);f.rax=1;},Err(e)=>LAST=e}
+    let result=(||{
+        if arg(f,40)!=Some(0)||phys(w,4,true).is_none(){return Err(87u32);}
+        // A synchronous read may request more than the entire file. The filesystem
+        // returns only bytes available up to EOF, rather than rejecting the request.
+        if n>HEAP_BYTES{return Err(87);}
+        if n==0{return if write{fs().write(x,&[])}else{fs().read(x,&mut [])};}
+        let p=phys(y,n,!write).ok_or(87u32)?;
+        if write{fs().write(x,core::slice::from_raw_parts(p,n))}
+        else{fs().read(x,core::slice::from_raw_parts_mut(p,n))}
+    })();
+    match result{Ok(k)=>{write32(w,k as u32);f.rax=1;},Err(e)=>{LAST=e;write32(w,0);serial::metric("H5K: TRIAL_IO_REQUEST=",n as u64);serial::metric("H5K: TRIAL_IO_WRITE=",write as u64);serial::metric("H5K: TRIAL_IO_ERROR=",e as u64);}}
 }
 unsafe fn realloc(v:u64,n:usize)->u64{
     if v==0{return allocate(n);}if n==0{release(v);return 0;}
@@ -805,7 +876,7 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
     }None
 }
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,_=>0}}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,"FileTimeToDosDateTime"=>119,"DosDateTimeToFileTime"=>120,"FileTimeToSystemTime"=>121,"SystemTimeToFileTime"=>122,_=>0}}
     else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
 }
 unsafe fn init_env(){
@@ -912,6 +983,7 @@ pub fn self_test()->bool{unsafe{
     serial::line("H5K: TRIAL_HEAP_REUSE_OK");
     reset();if !nls_test(){return false;}serial::line("H5K: TRIAL_NLS_CONVERSION_OK");
     reset();if !file_abi_test(){return false;}serial::line("H5K: TRIAL_FILE_ABI_OK");
+    reset();if !archive_io_time_test(){return false;}serial::line("H5K: TRIAL_ARCHIVE_IO_TIME_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
