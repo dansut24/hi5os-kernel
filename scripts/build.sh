@@ -19,11 +19,11 @@ cp target/hi5-fixture/runtime.exe dist/hi5-winruntime.exe
 cp target/hi5-fixture/console.exe dist/hi5-winconsole.exe
 cp target/x86_64-unknown-uefi/release/hi5kernel.efi dist/BOOTX64.EFI
 # A removable UEFI FAT32 image, not a physical-machine installer or an ISO.
-rm -f dist/hi5os-v0.2.1.img
-truncate -s 64M dist/hi5os-v0.2.1.img
-mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.2.1.img
-mmd -i dist/hi5os-v0.2.1.img ::/EFI ::/EFI/BOOT
-mcopy -i dist/hi5os-v0.2.1.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+rm -f dist/hi5os-v0.2.2.img
+truncate -s 64M dist/hi5os-v0.2.2.img
+mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.2.2.img
+mmd -i dist/hi5os-v0.2.2.img ::/EFI ::/EFI/BOOT
+mcopy -i dist/hi5os-v0.2.2.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 rm -f dist/hi5os-data-v1.img
 python3 scripts/data_image.py dist/hi5os-data-v1.img
-(cd dist && sha256sum hi5-winhello.exe hi5-winruntime.exe hi5-winconsole.exe BOOTX64.EFI hi5os-v0.2.1.img hi5os-data-v1.img > SHA256SUMS)
+(cd dist && sha256sum hi5-winhello.exe hi5-winruntime.exe hi5-winconsole.exe BOOTX64.EFI hi5os-v0.2.2.img hi5os-data-v1.img > SHA256SUMS)

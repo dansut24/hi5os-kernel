@@ -36,9 +36,9 @@ def main():
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
         vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/f"network-{MODE}.log";log.unlink(missing_ok=True)
-        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.2.1.img"
+        qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.2.2.img"
         # Close-delimited test uses real SLIRP host-loopback TCP, in CI network namespace.
-        net="user,id=n0" if MODE=="close" else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.100:8080-tcp:127.0.0.1:{server.server_port}"
+        net="user,id=n0" if MODE=="close" else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.200:8080-tcp:127.0.0.1:{server.server_port}"
         capture=ROOT/"dist"/f"network-{MODE}.pcap"
         cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1",
         "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
@@ -87,11 +87,28 @@ def main():
                     call("screendump",{"filename":str(ROOT/"dist"/"7zip-relocated-512m.ppm")})
                     for ch in "winfault":key(ch)
                     key("ret");wait(b"SHELL_WINFAULT_OK",30)
+                    for ch in "install7zip":key(ch)
+                    key("ret");wait(b"SHELL_INSTALL7ZIP_OK",120)
+                    # Reboot with same data disk and no fresh browser download.
+                    prior=log.read_bytes().count(b"H5K: KERNEL_READY")
+                    call("system_reset")
+                    end=time.monotonic()+90
+                    while time.monotonic()<end:
+                        if log.read_bytes().count(b"H5K: KERNEL_READY")>prior:break
+                        if proc.poll() is not None:raise RuntimeError("Guest exited during reboot")
+                        time.sleep(.1)
+                    else:raise RuntimeError("No second boot")
+                    key("4");time.sleep(.5)
                     for ch in "7za -h":key({" ":"spc","-":"minus"}.get(ch,ch))
-                    key("ret");wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
+                    key("ret");wait(b"APP_7ZIP_LOADED",120);wait(b"TRIAL_ENTER_7ZIP",30);wait(b"SHELL_7ZIP_RETURNED",30)
                     call("screendump",{"filename":str(ROOT/"dist"/"7zip-trial-512m.ppm")});call("quit")
                     proc.wait(timeout=10)
-                    print("PASS: original 7-Zip PE downloaded, inspected, relocated and startup probe returned (help qualification separate)")
+                    with data.open("rb") as fh:
+                        fh.seek(8192*512);h=fh.read(512);body=fh.read(len(PAYLOAD))
+                    assert h[:8]==b"H5APP001" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
+                    assert struct.unpack_from("<I",h,508)[0]==zlib.crc32(h[:508])
+                    assert body==PAYLOAD
+                    print("PASS: exact original 7-Zip installed on disk and loaded after reboot; startup probe returned (help qualification separate)")
                     return
                 key("f9");wait(b"DOWNLOAD_SAVED",90 if MODE=="large" else 10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
@@ -102,7 +119,7 @@ def main():
                 fh.seek(64*512);h=fh.read(512);body=fh.read(len(PAYLOAD))
             assert h[:8]==b"H5DL0002" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
             assert body==PAYLOAD
-            url=(f"http://10.0.2.2:{server.server_port}/hello.exe" if MODE=="close" else "http://10.0.2.100:8080/hello.exe").encode()
+            url=(f"http://10.0.2.2:{server.server_port}/hello.exe" if MODE=="close" else "http://10.0.2.200:8080/hello.exe").encode()
             assert struct.unpack_from("<I",h,20)[0]==len(url) and h[24:24+len(url)]==url
             assert struct.unpack_from("<I",h,508)[0]==zlib.crc32(h[:508])
             print(f"PASS: {MODE} HTTP downloaded binary and saved byte-exact fixture to dedicated data image")

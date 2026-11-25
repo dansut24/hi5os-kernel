@@ -41,6 +41,9 @@ static mut BLOCKS:[Block;128]=[FREE;128];
 static mut NEXT:u64=HEAP;
 static mut FS:crate::trialfs::Fs=crate::trialfs::Fs::new();
 static mut MATH_HANDLER:u64=0;
+static mut CALLS:u64=0;
+static mut LAST_API:usize=usize::MAX;
+static mut HELP_OK:bool=false;
 #[repr(C)]struct Frame{rax:u64,rcx:u64,rdx:u64,r8:u64,r9:u64,rip:u64,cs:u64,flags:u64,rsp:u64,ss:u64}
 global_asm!(r#"
 .text
@@ -203,7 +206,8 @@ unsafe fn capture(v:u64,n:usize)->bool{
     ptr::copy_nonoverlapping(p,ptr::addr_of_mut!(OUT).cast::<u8>().add(OUT_LEN),n);OUT_LEN+=n;true
 }
 #[no_mangle]unsafe extern "efiapi" fn h5_trial_dispatch(f:*mut Frame){
-    let f=&mut *f;let id=f.rax as usize;if id>=N{H5_TRIAL_STATUS=4;return;}
+    let f=&mut *f;let id=f.rax as usize;if id==256{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;return;}if id>=N{H5_TRIAL_STATUS=4;return;}
+    CALLS+=1;LAST_API=id;
     let a=ptr::addr_of!(APIS).cast::<Api>().add(id).read();
     let (x,y,z,w)=(f.rcx,f.rdx,f.r8,f.r9);f.rax=0;
     match a.kind{
@@ -246,6 +250,16 @@ unsafe fn capture(v:u64,n:usize)->bool{
         36=>{let stdout=ENV+0x700+48;let stderr=ENV+0x700+96;if y!=stdout&&y!=stderr{abort_import(id);return;}let Some(n)=c_len(x,false)else{abort_import(id);return;};if capture(x,n){f.rax=0;}else{f.rax=u32::MAX as u64;}},
         37=>{let stdout=ENV+0x700+48;let stderr=ENV+0x700+96;if y!=stdout&&y!=stderr{abort_import(id);return;}if OUT_LEN<8192{ptr::addr_of_mut!(OUT).cast::<u8>().add(OUT_LEN).write(x as u8);OUT_LEN+=1;f.rax=x as u8 as u64;}else{f.rax=u32::MAX as u64;}},
         38=>{if x!=0&&x!=ENV+0x700+48&&x!=ENV+0x700+96{abort_import(id);}},
+        39=>f.rax=0, // GetLargePageMinimum: large pages not supported
+        40=>f.rax=437, // narrow OEM code page
+        41=>{if !matches!(x,1|2)||!write32(y,0){LAST=87;}else{f.rax=1;}},
+        42=>{if matches!(x,1|2)&&y==0{f.rax=1;}else{LAST=87;}},
+        43=>{if x==0{LAST=87;}else{f.rax=0;LAST=126;}}, // no external DLL loader
+        44=>{if !write64(x,100){LAST=87;}else{f.rax=1;}},
+        45=>{if !write64(x,platform::ticks()){LAST=87;}else{f.rax=1;}},
+        46=>{if x!=u64::MAX||!write64(y,1)||!write64(z,1){LAST=87;}else{f.rax=1;}},
+        47=>{if x!=u64::MAX||y!=1{LAST=87;}else{f.rax=1;}},
+        48=>{if x!=0{let Some(p)=phys(x,48,true)else{LAST=87;return;};ptr::write_bytes(p,0,48);ptr::write_unaligned(p.cast::<u16>(),9);ptr::write_unaligned(p.add(4).cast::<u32>(),4096);ptr::write_unaligned(p.add(8).cast::<u64>(),BASE);ptr::write_unaligned(p.add(16).cast::<u64>(),AUX+LIMIT as u64-1);ptr::write_unaligned(p.add(24).cast::<u64>(),1);ptr::write_unaligned(p.add(32).cast::<u32>(),1);ptr::write_unaligned(p.add(36).cast::<u32>(),8664);ptr::write_unaligned(p.add(40).cast::<u32>(),65536);}else{abort_import(id);}},
         _=>abort_import(id)
     }
 }
@@ -279,7 +293,7 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
     }None
 }
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,_=>0}}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"=>48,_=>0}}
     else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,_=>0}}else{0}
 }
 unsafe fn init_env(){
@@ -299,7 +313,7 @@ unsafe fn init_env(){
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    fs().reset();MATH_HANDLER=0;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    fs().reset();MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
@@ -322,7 +336,14 @@ unsafe fn enter(ip:u64,budget:u64)->u64{
     asm!("mov cr4,{}",in(reg)(cr4&!((1<<16)|(1<<18))),options(nostack));
     set_msr(0xc0000101,ENV);set_msr(0xc0000100,0);
     pd.write(ptr::addr_of!(PT0)as u64|7);pd.add(1).write(ptr::addr_of!(PT1)as u64|7);flush();
-    H5_TRIAL_BUDGET=budget;H5_TRIAL_ACTIVE=1;h5_trial_enter(ip,TOP-8);H5_TRIAL_ACTIVE=0;
+    // Windows x64 entry requires a return address and 32-byte caller home area.
+    let sp=TOP-40;
+    let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
+    ptr::write_unaligned(d.add((sp-AUX)as usize).cast::<u64>(),AUX+0xe00);
+    // Return trampoline: propagate the entry point's EAX as exit status.
+    let ret=[0x89u8,0xc1,0xb8,0x00,0x01,0x00,0x00,0xcd,0x81,0x0f,0x0b];
+    ptr::copy_nonoverlapping(ret.as_ptr(),d.add(0xe00),ret.len());
+    H5_TRIAL_BUDGET=budget;H5_TRIAL_ACTIVE=1;h5_trial_enter(ip,sp);H5_TRIAL_ACTIVE=0;
     pd.write(a);pd.add(1).write(b);flush();set_msr(0xc0000101,oldgs);set_msr(0xc0000100,oldfs);set_msr(0xc0000080,efer);
     asm!("mov cr4,{}",in(reg)cr4,options(nostack));
     H5_TRIAL_STATUS
@@ -333,10 +354,18 @@ pub fn self_test()->bool{unsafe{
     reset();let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();ptr::copy_nonoverlapping([0x0fu8,0x0b].as_ptr(),d,2);
     if enter(AUX,50)!=2{return false;}serial::line("H5K: TRIAL_FAULT_RECOVERED");
     reset();ptr::copy_nonoverlapping([0xebu8,0xfe].as_ptr(),d,2);
-    if enter(AUX,10)!=3{return false;}serial::line("H5K: TRIAL_TIMEOUT_RECOVERED");true
+    if enter(AUX,10)!=3{return false;}serial::line("H5K: TRIAL_TIMEOUT_RECOVERED");
+    reset();
+    // Store into all four x64 home slots, then return 42 through the entry trampoline.
+    let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
+    ptr::copy_nonoverlapping(code.as_ptr(),d,code.len());
+    if enter(AUX,50)!=1||EXIT!=42{return false;}serial::line("H5K: TRIAL_WIN64_ENTRY_OK");true
 }}
+pub const PACKAGE_SIZE:usize=1328640;
+pub fn verified(b:&[u8])->bool{b.len()==PACKAGE_SIZE&&sha256(b)==*PIN}
+pub fn help_ok()->bool{unsafe{HELP_OK}}
 pub fn run(b:&[u8])->Result<u64,&'static str>{unsafe{
-    if sha256(b)!=*PIN{return Err("Only the pinned official 7-Zip executable is allowed");}
+    if !verified(b){return Err("Only the pinned official 7-Zip executable is allowed");}
     if !self_test(){return Err("Trial containment checks failed");}
     reset();
     let image=&mut *ptr::addr_of_mut!(IMAGE.0);let r=relocate::map_at(b,image,&mut *ptr::addr_of_mut!(SEEN),Some(BASE))?;
@@ -353,7 +382,7 @@ pub fn run(b:&[u8])->Result<u64,&'static str>{unsafe{
     let start=h5_initterm_start as usize;let end=h5_initterm_end as usize;let len=end.checked_sub(start).ok_or("CRT stub layout")?;
     if len>256{return Err("CRT stub too large");}ptr::copy_nonoverlapping(start as *const u8,d.add(0xf00),len);
     let report=imports::inspect_slots(b,|dll,s,slot|{
-        let i=N;if i>=256||dll.len()>48||slot as usize+8>r.size||slot%8!=0{ok=false;return;}
+        let i=N;if i>=224||dll.len()>48||slot as usize+8>r.size||slot%8!=0{ok=false;return;}
         let mut a=EMPTY;a.dn=dll.len();a.dll[..a.dn].copy_from_slice(dll.as_bytes());
         match s{imports::Symbol::Name(n)=>{if n.len()>128{ok=false;return;}a.nn=n.len();a.name[..a.nn].copy_from_slice(n.as_bytes());a.kind=kind(dll,n);},imports::Symbol::Ordinal(n)=>{a.name[0]=b'#';for j in 0..4{a.name[1+j]=b"0123456789abcdef"[((n>>(12-j*4))&15)as usize];}a.nn=5;}}
         ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);N+=1;if a.kind!=0||dll.eq_ignore_ascii_case("msvcrt.dll")&&matches!(&a.name[..a.nn],b"_initterm"){implemented+=1;}
@@ -369,11 +398,13 @@ pub fn run(b:&[u8])->Result<u64,&'static str>{unsafe{
     let status=enter(BASE+entry,300);
     serial::metric("H5K: TRIAL_RESULT=",status);serial::metric("H5K: TRIAL_EXIT=",EXIT as u64);
     serial::metric("H5K: TRIAL_FAULT_ADDRESS=",H5_TRIAL_FAULT);serial::metric("H5K: TRIAL_FAULT_RIP=",H5_TRIAL_RIP);
+    serial::metric("H5K: TRIAL_API_CALLS=",CALLS);
+    if LAST_API<N{let a=ptr::addr_of!(APIS).cast::<Api>().add(LAST_API).read();serial::write("H5K: TRIAL_LAST_API|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
     let bytes=core::slice::from_raw_parts(ptr::addr_of!(OUT).cast::<u8>(),OUT_LEN);
     serial::line("H5K: TRIAL_OUTPUT_BEGIN");for line in bytes.split(|c|*c==10){if let Ok(s)=core::str::from_utf8(line){if s.bytes().all(|c|c==13||c==9||(32..127).contains(&c)){serial::line(s);}}}
     serial::line("H5K: TRIAL_OUTPUT_END");
     let help=status==1&&EXIT==0&&bytes.windows(5).any(|w|w==b"7-Zip")&&bytes.windows(6).any(|w|w==b"Usage:");
-    if help{serial::line("H5K: SEVENZIP_HELP_OK");}else{serial::line("H5K: SEVENZIP_HELP_NOT_QUALIFIED");}
+    HELP_OK=help;if help{serial::line("H5K: SEVENZIP_HELP_OK");}else{serial::line("H5K: SEVENZIP_HELP_NOT_QUALIFIED");}
     serial::line("H5K: TRIAL_RETURNED");Ok(status)
 }}
 pub fn output(out:&mut[u8])->usize{unsafe{let n=OUT_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(OUT).cast::<u8>(),out.as_mut_ptr(),n);n}}

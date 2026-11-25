@@ -35,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if lba>4161||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if (lba>4161&&!(8192..=16383).contains(&lba))||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -183,6 +183,33 @@ impl Store{
         let Some(d)=Self::v2_header(p,base)else{self.port=None;return false;};
         if d.gen!=gen||d.len!=data.len()||d.sum!=sum||&d.url[..d.url_len]!=url||!Self::v2_read(p,base,d,None,Some(data)){self.port=None;return false;}
         serial::metric("H5K: DOWNLOAD_SAVED_CRC=",sum as u64);serial::metric("H5K: DOWNLOAD_URL_CRC=",crc(url)as u64);serial::line("H5K: DOWNLOAD_SAVED");true
+    }
+    // Separate application bank, never overlaps the legacy notes/download sectors.
+    // Single pinned package; immutable contents and idempotent reinstallation.
+    fn app_header(p:Port,base:u32)->Option<Download>{
+        let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=b"H5APP001"||get(&h,508)!=crc(&h[..508]){return None;}
+        let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len!=crate::trial::PACKAGE_SIZE{return None;}
+        Some(Download{len,gen,sum:get(&h,16),url:[0;128],url_len:0})
+    }
+    pub fn install_7zip(&mut self,data:&[u8])->bool{
+        let Some(p)=self.port else{return false;};if !crate::trial::verified(data){return false;}
+        let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}
+        let a=Self::app_header(p,8192);let b=Self::app_header(p,12288);
+        // An exact existing valid copy need not be rewritten.
+        for (base,v) in [(8192,a),(12288,b)]{if let Some(v)=v{if Self::v2_read(p,base,v,None,Some(data)){serial::line("H5K: APP_7ZIP_INSTALLED");return true;}}}
+        let (base,gen)=if a.map_or(0,|x|x.gen)>b.map_or(0,|x|x.gen){(12288,a.unwrap().gen)}else{(8192,b.map_or(0,|x|x.gen))};
+        let Some(gen)=gen.checked_add(1)else{return false;};
+        for (i,part) in data.chunks(512).enumerate(){let mut block=[0;512];block[..part.len()].copy_from_slice(part);if !p.write(base+1+i as u32,&mut block){return false;}}
+        if !p.flush(){return false;}
+        h.fill(0);h[..8].copy_from_slice(b"H5APP001");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let sum=crc(&h[..508]);put(&mut h,508,sum);
+        if !p.write(base,&mut h)||!p.flush(){return false;}
+        let Some(v)=Self::app_header(p,base)else{return false;};if v.gen!=gen||!Self::v2_read(p,base,v,None,Some(data)){return false;}
+        serial::line("H5K: APP_7ZIP_INSTALLED");true
+    }
+    pub fn load_7zip(&mut self,out:&mut[u8])->Option<usize>{
+        let p=self.port?;let a=Self::app_header(p,8192);let b=Self::app_header(p,12288);
+        let order=if b.map_or(0,|x|x.gen)>a.map_or(0,|x|x.gen){[(12288,b),(8192,a)]}else{[(8192,a),(12288,b)]};
+        for(base,v)in order{if let Some(v)=v{if Self::v2_read(p,base,v,Some(out),None)&&crate::trial::verified(&out[..v.len]){serial::line("H5K: APP_7ZIP_LOADED");return Some(v.len);}}}None
     }
     pub fn save(&mut self,present:bool,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};

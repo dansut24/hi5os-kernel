@@ -42,7 +42,7 @@ jobs:
         run: python3 scripts/network.py chunked
       - name: One MiB HTTP binary download and exact disk verification
         run: python3 scripts/network.py large
-      - name: Official 7-Zip PE64 download and import inventory comparison
+      - name: Official 7-Zip install, reboot, PE inspection and startup probe
         run: /usr/bin/python3 scripts/sevenzip.py
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
         run: python3 scripts/routed.py
@@ -50,7 +50,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.2.1-vm-evidence
+          name: hi5os-v0.2.2-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
