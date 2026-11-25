@@ -42,7 +42,8 @@ pub fn self_test()->bool{
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct Image{pub entry:usize,pub size:usize,pub preferred_base:u64}
 fn u64at(b:&[u8],i:usize)->Option<u64>{Some(u64::from_le_bytes(b.get(i..i.checked_add(8)?)?.try_into().ok()?))}
-pub fn stage_pe64(b:&[u8],out:&mut[u8])->Result<Image,&'static str>{
+pub fn stage_pe64(b:&[u8],out:&mut[u8])->Result<Image,&'static str>{stage(b,out,false)}
+fn stage(b:&[u8],out:&mut[u8],fixture_import:bool)->Result<Image,&'static str>{
     if classify(b)!=Kind::Pe64{return Err("Not a validated PE64 candidate");}
     let pe=u32at(b,60).unwrap()as usize;let opt=pe+24;
     let flags=u16at(b,pe+22).unwrap();if flags&0x2000!=0{return Err("DLL unsupported");}
@@ -54,7 +55,7 @@ pub fn stage_pe64(b:&[u8],out:&mut[u8])->Result<Image,&'static str>{
     if u16at(b,opt+68)!=Some(3){return Err("Only console PE64 fixtures supported");}
     let dirs=u32at(b,opt+108).unwrap()as usize;
     if dirs>16||112+dirs*8>opts{return Err("Invalid data directory table");}
-    for i in 0..dirs{if u32at(b,opt+112+i*8)!=Some(0)||u32at(b,opt+116+i*8)!=Some(0){return Err("Imports, relocations or other directories unsupported");}}
+    for i in 0..dirs{if fixture_import&&matches!(i,1|12){continue;}if u32at(b,opt+112+i*8)!=Some(0)||u32at(b,opt+116+i*8)!=Some(0){return Err("Imports, relocations or other directories unsupported");}}
     let mut ranges=[(0usize,0usize);96];let mut exec=false;
     for i in 0..sections{
         let s=opt+opts+i*40;let vs=u32at(b,s+8).unwrap()as usize;let va=u32at(b,s+12).unwrap()as usize;
@@ -80,4 +81,27 @@ pub fn stage_test()->bool{
     if stage_pe64(&b,&mut out)!=Ok(Image{entry:4096,size:8192,preferred_base:0x400000})||out[4096]!=0xc3||out[512]!=0||out[8191]!=0{return false;}
     put32(&mut b,236,0xe0000020);if stage_pe64(&b,&mut out).is_ok(){return false;}
     put32(&mut b,236,0x60000020);put32(&mut b,104,512);stage_pe64(&b,&mut out).is_err()
+}
+
+// Only the CI-built, image-embedded program is eligible for execution. No browser/file input.
+const HELLO:&[u8]=include_bytes!("../target/hi5-fixture/hello.exe");
+pub fn stage_hello(out:&mut[u8],shim:u64)->Result<Image,&'static str>{
+    let b=HELLO;let image=stage(b,out,true)?;
+    if image.preferred_base!=0x1_0000_0000||image.size!=0x3000||image.entry!=0x1000{return Err("Unexpected fixture image layout");}
+    let opt=u32at(b,60).ok_or("PE offset")? as usize+24;
+    let imp=u32at(b,opt+120).ok_or("Import directory")?as usize;
+    let imp_size=u32at(b,opt+124).ok_or("Import size")?as usize;
+    let iat=u32at(b,opt+112+12*8).ok_or("IAT")?as usize;
+    let iat_size=u32at(b,opt+116+12*8).ok_or("IAT size")?as usize;
+    let mem=&mut out[..image.size];
+    if imp_size!=40||iat_size!=16||!(0x2000..=0x2fd8).contains(&imp)||!(0x2000..=0x2ff0).contains(&iat){return Err("Unexpected import layout");}
+    if mem[imp+20..imp+40].iter().any(|v|*v!=0)||u32at(mem,imp+4)!=Some(0)||u32at(mem,imp+8)!=Some(0){return Err("Multiple or bound imports unsupported");}
+    let ilt=u32at(mem,imp).ok_or("ILT")?as usize;let name=u32at(mem,imp+12).ok_or("DLL name")?as usize;
+    if u32at(mem,imp+16)!=Some(iat as u32)||!(0x2000..=0x2ff0).contains(&ilt)||!(0x2000..=0x2ff3).contains(&name){return Err("Import pointer out of range");}
+    if !mem.get(name..name+13).is_some_and(|v|v.eq_ignore_ascii_case(b"KERNEL32.dll\0")){return Err("Unsupported DLL");}
+    let thunk=u64at(mem,ilt).ok_or("Import thunk")?;
+    if !(0x2000..=0x2ff0).contains(&thunk)||u64at(mem,ilt+8)!=Some(0)||u64at(mem,iat)!=Some(thunk)||u64at(mem,iat+8)!=Some(0){return Err("Unsupported import thunk");}
+    let name=thunk as usize+2;
+    if mem.get(name..name+12)!=Some(b"ExitProcess\0".as_slice()){return Err("Unsupported Win32 API");}
+    mem[iat..iat+8].copy_from_slice(&shim.to_le_bytes());Ok(image)
 }

@@ -50,6 +50,7 @@ pub fn on_stack(info:BootInfo)->! {
     serial::line("H5K: COMPAT_FORMAT_PROBE_OK");
     if !crate::compat::stage_test(){fail(&mut screen,"PE_STAGE_TEST");}
     serial::line("H5K: PE_STAGE_OK");
+    if !crate::platform::run_pe_fixture(){fail(&mut screen,"PE_EXECUTION_TEST");}
     let nics=services::network_probe();
     let (store,loaded)=crate::disk::Store::open();
     if let Some((present,data,len))=loaded {if present{files.write(&data[..len]);}else{files.remove();}}

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-for tool in cargo mkfs.vfat mmd mcopy; do command -v "$tool" >/dev/null || { echo "Missing $tool" >&2; exit 1; }; done
+for tool in cargo mkfs.vfat mmd mcopy clang lld-link; do command -v "$tool" >/dev/null || { echo "Missing $tool" >&2; exit 1; }; done
 /usr/bin/python3 scripts/fontgen.py
+mkdir -p target/hi5-fixture
+clang --target=x86_64-pc-windows-msvc -c fixtures/hello.s -o target/hi5-fixture/hello.obj
+lld-link /lib /def:fixtures/kernel32.def /machine:x64 /out:target/hi5-fixture/kernel32.lib
+lld-link /entry:hi5_entry /subsystem:console /nodefaultlib /fixed /base:0x100000000 /filealign:512 /timestamp:0 /out:target/hi5-fixture/hello.exe target/hi5-fixture/hello.obj target/hi5-fixture/kernel32.lib
 cargo build --release --locked --target x86_64-unknown-uefi
 mkdir -p dist
+cp target/hi5-fixture/hello.exe dist/hi5-winhello.exe
 cp target/x86_64-unknown-uefi/release/hi5kernel.efi dist/BOOTX64.EFI
 # A removable UEFI FAT32 image, not a physical-machine installer or an ISO.
 rm -f dist/hi5os-v0.1.7.img
@@ -14,4 +19,4 @@ mmd -i dist/hi5os-v0.1.7.img ::/EFI ::/EFI/BOOT
 mcopy -i dist/hi5os-v0.1.7.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 rm -f dist/hi5os-data-v1.img
 python3 scripts/data_image.py dist/hi5os-data-v1.img
-(cd dist && sha256sum BOOTX64.EFI hi5os-v0.1.7.img hi5os-data-v1.img > SHA256SUMS)
+(cd dist && sha256sum hi5-winhello.exe BOOTX64.EFI hi5os-v0.1.7.img hi5os-data-v1.img > SHA256SUMS)

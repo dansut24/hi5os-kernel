@@ -10,7 +10,7 @@ import socket
 import json
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-REQUIRED = [b'H5K: BOOT v0.1.7', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: HEAP_ALLOC_FREE_OK', b'H5K: SECURITY_FOUNDATIONS_OK', b'H5K: SHEET_FORMULAS_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: COMPAT_FORMAT_PROBE_OK', b'H5K: PE_STAGE_OK', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: NET_FORMAT_TEST_OK', b'H5K: KERNEL_READY']
+REQUIRED = [b'H5K: BOOT v0.1.7', b'H5K: GOP_FOUND', b'H5K: EXIT_BOOT_SERVICES_OK', b'H5K: KERNEL_ENTERED', b'H5K: STACK_OK', b'H5K: MEMORY_MAP_OK', b'H5K: ALLOCATOR_OK', b'H5K: FRAME_RW_REUSE_OK', b'H5K: STACK_CANARY_OK', b'H5K: CPUID_MAX=', b'H5K: GDT_IDT_BREAKPOINT_OK', b'H5K: OWN_PAGING_OK', b'H5K: GUARD_FAULT_OK', b'H5K: USER_SYSCALL_OK', b'H5K: HEAP_ALLOC_FREE_OK', b'H5K: SECURITY_FOUNDATIONS_OK', b'H5K: SHEET_FORMULAS_OK', b'H5K: COOPERATIVE_SCHEDULER_OK', b'H5K: RAMFS_OK', b'H5K: COMPAT_FORMAT_PROBE_OK', b'H5K: PE_STAGE_OK', b'H5K: PE_IMPORT_KERNEL32_EXITPROCESS_RESOLVED', b'H5K: PE_EXIT_CODE=0x000000000000002a', b'H5K: PE_WINDOWS_FIXTURE_EXECUTED', b'H5K: PCI_SCAN_OK', b'H5K: DOUBLE_BUFFER_OK', b'H5K: FRAMEBUFFER_OK', b'H5K: DESKTOP_READY', b'H5K: TIMER_IRQ_OK', b'H5K: NET_FORMAT_TEST_OK', b'H5K: KERNEL_READY']
 
 def validate(data):
     pos = 0
@@ -98,6 +98,8 @@ def main():
                                     call('human-monitor-command',{'command-line':'sendkey '+key});time.sleep(.18)
                                 call('human-monitor-command',{'command-line':'sendkey ret'});time.sleep(.3)
                             type_command('security')
+                            type_command('winhello')
+                            if b'SHELL_WINHELLO_OK' not in log.read_bytes():raise RuntimeError('Windows fixture interactive execution failed')
                             type_command('set a1 12')
                             type_command('set a2 30')
                             type_command('set b1 =sum(a1:a2)')

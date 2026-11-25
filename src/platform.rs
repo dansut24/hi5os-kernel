@@ -12,6 +12,11 @@ static mut USER_PT:Table=Table([0;512]);
 static mut USER_CODE:Table=Table([0;512]);
 static mut USER_STACK:Table=Table([0;512]);
 const USER_VA:u64=0x1_0000_0000;
+#[repr(C,align(4096))]struct PeImage([u8;12288]);
+static mut PE_IMAGE:PeImage=PeImage([0;12288]);
+static mut PE_SHIM:Table=Table([0;512]);
+#[no_mangle] static mut H5_PE_ACTIVE:u64=0;
+#[no_mangle] static mut H5_PE_EXIT:u64=u64::MAX;
 #[repr(C,packed)]
 struct Dtr {limit:u16,base:u64}
 #[repr(C,align(16))]
@@ -79,6 +84,17 @@ h5_bad:
     ud2
 .global h5_syscall
 h5_syscall:
+    cmp qword ptr [rsp + 8], 0x23
+    jne h5_bad
+    cmp qword ptr [rip + H5_PE_ACTIVE], 1
+    jne h5_old_probe
+    cmp eax, 0x483550
+    jne h5_bad
+    mov eax, ecx
+    mov qword ptr [rip + H5_PE_EXIT], rax
+    mov rsp, qword ptr [rip + H5_SAVED_RSP]
+    jmp h5_user_return
+h5_old_probe:
     cmp eax, 0x48354b
     jne h5_bad
     cmp qword ptr [rsp + 8], 0x23
@@ -88,6 +104,8 @@ h5_syscall:
     jmp h5_user_return
 .global h5_run_user
 h5_run_user:
+    pushfq
+    cli
     mov qword ptr [rip + H5_SAVED_RSP], rsp
     push 0x1b
     push rdx
@@ -96,6 +114,7 @@ h5_run_user:
     push rcx
     iretq
 h5_user_return:
+    popfq
     ret
 "#);
 extern "efiapi" {
@@ -194,3 +213,35 @@ pub fn timer_init(){
 }
 pub fn ticks()->u64{unsafe{ptr::read_volatile(ptr::addr_of!(H5_TICKS))}}
 pub fn wait_tick(){unsafe{asm!("hlt",options(nomem,nostack));}}
+
+/// Execute only the embedded, independently assembled PE test. Fixed pages, no arbitrary apps.
+/// Existing kernel mappings are supervisor-only. No process isolation/fault recovery claim.
+pub fn run_pe_fixture()->bool{
+    unsafe{
+        let img=ptr::addr_of_mut!(PE_IMAGE.0);let shim=ptr::addr_of_mut!(PE_SHIM.0).cast::<u8>();
+        let base=img as u64;
+        if base+12288>1<<32||shim as u64+4096>1<<32||!(0..3).all(|i|cpu::writable_identity(base+i*4096))||!cpu::writable_identity(shim as u64){return false;}
+        let shim_va=USER_VA+0x10000;
+        let image=match crate::compat::stage_hello(&mut *img,shim_va){Ok(v)=>v,Err(e)=>{serial::line(e);return false;}};
+        serial::line("H5K: PE_IMPORT_KERNEL32_EXITPROCESS_RESOLVED");
+        let code=[0xb8u8,0x50,0x35,0x48,0,0xcd,0x80,0x0f,0x0b];
+        ptr::write_bytes(shim,0,4096);ptr::copy_nonoverlapping(code.as_ptr(),shim,code.len());
+        let pt=ptr::addr_of_mut!(USER_PT.0).cast::<u64>();
+        let old0=pt.read();let old1=pt.add(1).read();
+        ptr::write_bytes(ptr::addr_of_mut!(USER_STACK.0).cast::<u8>(),0,4096);
+        for i in 0..3usize{pt.add(i).write((base+i as u64*4096)|5);}
+        pt.add(16).write(shim as u64|5);
+        pt.add(17).write(addr(ptr::addr_of!(USER_STACK))|7);
+        // Flush stale translations before entering the trusted fixture.
+        let cr3=cpu::cr3();asm!("mov cr3, {}",in(reg)cr3,options(nostack,preserves_flags));
+        ptr::write_volatile(ptr::addr_of_mut!(H5_PE_ACTIVE),1);ptr::write_volatile(ptr::addr_of_mut!(H5_PE_EXIT),u64::MAX);
+        h5_run_user(USER_VA+image.entry as u64,USER_VA+0x12000-8);
+        let exit=ptr::read_volatile(ptr::addr_of!(H5_PE_EXIT));
+        ptr::write_volatile(ptr::addr_of_mut!(H5_PE_ACTIVE),0);
+        pt.write(old0);pt.add(1).write(old1);pt.add(2).write(0);pt.add(16).write(0);pt.add(17).write(0);
+        asm!("mov cr3, {}",in(reg)cr3,options(nostack,preserves_flags));
+        ptr::write_bytes(img.cast::<u8>(),0,12288);ptr::write_bytes(shim,0,4096);
+        serial::metric("H5K: PE_EXIT_CODE=",exit);
+        if exit==42{serial::line("H5K: PE_WINDOWS_FIXTURE_EXECUTED");true}else{false}
+    }
+}
