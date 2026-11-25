@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-7zip-") as tmp:
     assert "H5K: TRIAL_RAMFS_OK" in log and "H5K: TRIAL_FAULT_RECOVERED" in log and "H5K: TRIAL_TIMEOUT_RECOVERED" in log
     assert "H5K: TRIAL_ENTER_7ZIP" in log and "H5K: TRIAL_RETURNED" in log
     assert "H5K: TRIAL_WIN64_ENTRY_OK" in log and "H5K: APP_7ZIP_INSTALLED" in log and "H5K: APP_7ZIP_LOADED" in log
-    assert "H5K: TRIAL_CPU_FEATURES_OK" in log and "H5K: TRIAL_CRITICAL_SECTION_OK" in log and "H5K: TRIAL_VERSION_INFO_OK" in log
+    assert "H5K: TRIAL_CPU_FEATURES_OK" in log and "H5K: TRIAL_CRITICAL_SECTION_OK" in log and "H5K: TRIAL_VERSION_INFO_OK" in log and "H5K: TRIAL_RESTRICTED_TOKEN_OK" in log
     report["portable_install"]="byte-exact disk and verified reload after reboot"
     report["execution"]="help-qualified" if "H5K: SEVENZIP_HELP_OK" in log else "startup attempted; help not qualified"
     report["trial_status"]=re.findall(r"TRIAL_RESULT=(0x[0-9a-f]+)",log)
