@@ -25,6 +25,7 @@ static mut PT1:platform::Table=platform::Table([0;512]);
 #[no_mangle]static mut H5_TRIAL_FAULT:u64=0;
 #[no_mangle]static mut H5_TRIAL_RIP:u64=0;
 const PIN:&[u8;32]=include_bytes!("../target/hi5-fixture/7zip.sha256");
+pub const BUNDLED:&[u8]=include_bytes!("../target/hi5-fixture/7za.exe");
 #[derive(Clone,Copy)]struct Api{dll:[u8;48],dn:usize,name:[u8;128],nn:usize,kind:u8}
 const EMPTY:Api=Api{dll:[0;48],dn:0,name:[0;128],nn:0,kind:0};
 static mut APIS:[Api;256]=[EMPTY;256];
@@ -44,6 +45,12 @@ static mut MATH_HANDLER:u64=0;
 static mut CALLS:u64=0;
 static mut LAST_API:usize=usize::MAX;
 static mut HELP_OK:bool=false;
+static mut DETAIL:[u8;192]=[0;192];
+static mut DETAIL_LEN:usize=0;
+static mut ONEXIT:[u64;64]=[0;64];
+static mut ONEXIT_LEN:usize=0;
+const MODULES:[&str;5]=["kernel32.dll","msvcrt.dll","advapi32.dll","oleaut32.dll","user32.dll"];
+const MOD_BASE:u64=0x60000000;
 #[repr(C)]struct Frame{rax:u64,rcx:u64,rdx:u64,r8:u64,r9:u64,rip:u64,cs:u64,flags:u64,rsp:u64,ss:u64}
 global_asm!(r#"
 .text
@@ -188,19 +195,60 @@ unsafe fn phys(v:u64,n:usize,write:bool)->Option<*mut u8>{
     for i in start/4096..=last/4096{let e=table.add(i).read();if e&5!=5||write&&e&2==0{return None;}}
     Some(raw.add(start))
 }
+unsafe fn executable(v:u64)->bool{
+    if v<BASE||v>=BASE+IMAGE_SIZE as u64{return false;}
+    let i=((v-BASE)/4096)as usize;let p=ptr::addr_of!(PT0.0).cast::<u64>().add(i).read();p&5==5&&p&NX==0
+}
 unsafe fn write32(v:u64,x:u32)->bool{if let Some(p)=phys(v,4,true){ptr::write_unaligned(p.cast(),x);true}else{false}}
 unsafe fn write64(v:u64,x:u64)->bool{if let Some(p)=phys(v,8,true){ptr::write_unaligned(p.cast(),x);true}else{false}}
 unsafe fn c_len(v:u64,wide:bool)->Option<usize>{let step=if wide{2}else{1};for n in 0..65536usize{let p=phys(v.checked_add((n*step)as u64)?,step,false)?;if if wide{ptr::read_unaligned(p.cast::<u16>())==0}else{*p==0}{return Some(n);}}None}
-unsafe fn allocate(n:usize)->u64{
+unsafe fn allocate(n:usize)->u64{allocate_aligned(n,16)}
+unsafe fn allocate_aligned(n:usize,align:u64)->u64{
     let Some(n)=n.max(1).checked_add(15).map(|x|x&!15)else{return 0;};
     let blocks=&mut *ptr::addr_of_mut!(BLOCKS);
-    if let Some(b)=blocks.iter_mut().find(|b|!b.used&&b.at!=0&&b.len>=n){b.used=true;return b.at;}
-    let Some(b)=blocks.iter_mut().find(|b|b.at==0)else{return 0;};let at=NEXT;
+    if let Some(b)=blocks.iter_mut().find(|b|!b.used&&b.at!=0&&b.len>=n&&b.at%align==0){b.used=true;return b.at;}
+    let Some(b)=blocks.iter_mut().find(|b|b.at==0)else{return 0;};let Some(at)=NEXT.checked_add(align-1).map(|v|v&!(align-1))else{return 0;};
     if at.checked_add(n as u64).map_or(true,|x|x>HEAP_END){return 0;}
     NEXT=at+n as u64;*b=Block{at,len:n,used:true};at
 }
 unsafe fn release(v:u64)->bool{if v==0{return true;}if let Some(b)=(&mut *ptr::addr_of_mut!(BLOCKS)).iter_mut().find(|b|b.at==v&&b.used){b.used=false;true}else{false}}
-unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
+unsafe fn detail(d:&[u8],n:&[u8]){
+    let p=ptr::addr_of_mut!(DETAIL).cast::<u8>();let a=d.len().min(48);let b=n.len().min(128);
+    ptr::copy_nonoverlapping(d.as_ptr(),p,a);p.add(a).write(b'!');ptr::copy_nonoverlapping(n.as_ptr(),p.add(a+1),b);DETAIL_LEN=a+1+b;
+}
+unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
+pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
+unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
+    let step=if wide{2}else{1};for (i,c) in out.iter_mut().enumerate(){
+        let p=phys(v.checked_add((i*step)as u64)?,step,false)?;
+        let n=if wide{ptr::read_unaligned(p.cast::<u16>())}else{*p as u16};
+        if n==0{return Some(i);}if !(32..127).contains(&n){return None;}*c=n as u8;
+    }None
+}
+fn module_id(s:&[u8])->Option<usize>{
+    MODULES.iter().position(|m|s.eq_ignore_ascii_case(m.as_bytes())||s.eq_ignore_ascii_case(m.as_bytes().strip_suffix(b".dll").unwrap()))
+}
+unsafe fn module_handle(v:u64,wide:bool)->u64{
+    if v==0{return BASE;}let mut b=[0u8;128];let Some(n)=read_ascii(v,wide,&mut b)else{LAST=87;return 0;};
+    let s=&b[..n];if s.eq_ignore_ascii_case(b"7za.exe"){return BASE;}
+    if let Some(i)=module_id(s){return MOD_BASE+0x10000*i as u64;}
+    LAST=126;serial::write("H5K: TRIAL_MODULE_MISSING|");serial::line(core::str::from_utf8(s).unwrap_or("?"));0
+}
+unsafe fn proc_address(h:u64,v:u64)->u64{
+    let Some(i)=h.checked_sub(MOD_BASE).filter(|n|n%0x10000==0).map(|n|(n/0x10000)as usize).filter(|i|*i<MODULES.len())else{LAST=6;return 0;};
+    let dll=MODULES[i];let mut b=[0u8;128];let Some(n)=read_ascii(v,false,&mut b)else{LAST=127;return 0;};
+    let name=core::str::from_utf8(&b[..n]).unwrap_or("");
+    serial::write("H5K: TRIAL_DYNAMIC|");serial::write(dll);serial::write("|");serial::line(name);
+    // Return only implemented exports, never a successful result for an unknown API.
+    for j in 0..N{let a=ptr::addr_of!(APIS).cast::<Api>().add(j).read();
+        if a.dll[..a.dn].eq_ignore_ascii_case(dll.as_bytes())&&a.name[..a.nn]==b[..n]&&a.kind!=0{return AUX+j as u64*16;}
+    }
+    let k=kind(dll,name);if k==0||N>=224{LAST=127;return 0;}
+    let mut a=EMPTY;a.dn=dll.len();a.dll[..a.dn].copy_from_slice(dll.as_bytes());a.nn=n;a.name[..n].copy_from_slice(&b[..n]);a.kind=k;
+    let j=N;N+=1;ptr::addr_of_mut!(APIS).cast::<Api>().add(j).write(a);
+    let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();let stub=[0xb8,j as u8,0,0,0,0xcd,0x81,0xc3];
+    ptr::copy_nonoverlapping(stub.as_ptr(),d.add(j*16),stub.len());AUX+j as u64*16
+}
 unsafe fn capture(v:u64,n:usize)->bool{
     if n==0{return true;}if n>8192-OUT_LEN{return false;}let Some(p)=phys(v,n,false)else{return false;};
     ptr::copy_nonoverlapping(p,ptr::addr_of_mut!(OUT).cast::<u8>().add(OUT_LEN),n);OUT_LEN+=n;true
@@ -211,7 +259,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
     let a=ptr::addr_of!(APIS).cast::<Api>().add(id).read();
     let (x,y,z,w)=(f.rcx,f.rdx,f.r8,f.r9);f.rax=0;
     match a.kind{
-        1=>{EXIT=x as u32;H5_TRIAL_STATUS=1;},
+        1=>{if &a.name[..a.nn]==b"exit"&&ONEXIT_LEN!=0{abort_import(id);}else{EXIT=x as u32;H5_TRIAL_STATUS=1;}},
         2=>f.rax=1,
         3=>LAST=x as u32,
         4=>f.rax=LAST as u64,
@@ -228,7 +276,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         14=>{if phys(x,4,true).is_some()&&phys(y,8,true).is_some()&&phys(z,8,true).is_some(){write32(x,2);write64(y,ENV+0x600);write64(z,ENV+0x620);f.rax=0;}else{abort_import(id);}},
         15=>f.rax=platform::ticks().wrapping_mul(10)as u32 as u64,
         16=>f.rax=u64::MAX,
-        17=>{if x==0{f.rax=BASE;}else{abort_import(id);}},
+        17=>f.rax=module_handle(x,&a.name[..a.nn]==b"GetModuleHandleW"),
         18=>{if z<=LIMIT as u64{if z==0{return;}if let (Some(a),Some(b))=(phys(x,z as usize,false),phys(y,z as usize,false)){for i in 0..z as usize{let d=*a.add(i)as i32-*b.add(i)as i32;if d!=0{f.rax=d as u32 as u64;break;}}}else{abort_import(id);}}else{abort_import(id);}},
         19=>f.rax=realloc(x,y as usize),
         20|21=>{if let Some(d)=text_cmp(x,y,a.kind==21){f.rax=d as u32 as u64;}else{abort_import(id);}},
@@ -254,12 +302,24 @@ unsafe fn capture(v:u64,n:usize)->bool{
         40=>f.rax=437, // narrow OEM code page
         41=>{if !matches!(x,1|2)||!write32(y,0){LAST=87;}else{f.rax=1;}},
         42=>{if matches!(x,1|2)&&y==0{f.rax=1;}else{LAST=87;}},
-        43=>{if x==0{LAST=87;}else{f.rax=0;LAST=126;}}, // no external DLL loader
+        43=>{if x==0{LAST=87;}else{f.rax=module_handle(x,true);}}, // built-in namespace only
         44=>{if !write64(x,100){LAST=87;}else{f.rax=1;}},
         45=>{if !write64(x,platform::ticks()){LAST=87;}else{f.rax=1;}},
         46=>{if x!=u64::MAX||!write64(y,1)||!write64(z,1){LAST=87;}else{f.rax=1;}},
         47=>{if x!=u64::MAX||y!=1{LAST=87;}else{f.rax=1;}},
         48=>{if x!=0{let Some(p)=phys(x,48,true)else{LAST=87;return;};ptr::write_bytes(p,0,48);ptr::write_unaligned(p.cast::<u16>(),9);ptr::write_unaligned(p.add(4).cast::<u32>(),4096);ptr::write_unaligned(p.add(8).cast::<u64>(),BASE);ptr::write_unaligned(p.add(16).cast::<u64>(),AUX+LIMIT as u64-1);ptr::write_unaligned(p.add(24).cast::<u64>(),1);ptr::write_unaligned(p.add(32).cast::<u32>(),1);ptr::write_unaligned(p.add(36).cast::<u32>(),8664);ptr::write_unaligned(p.add(40).cast::<u32>(),65536);}else{abort_import(id);}},
+        49=>f.rax=proc_address(x,y),
+        50=>{if MODULES.iter().enumerate().any(|(i,_)|x==MOD_BASE+0x10000*i as u64){f.rax=1;}else{LAST=6;}},
+        51=>f.rax=platform::ticks().wrapping_mul(10),
+        52=>{let path=b"C:\\7za.exe";let n=path.len();if x!=0&&x!=BASE{LAST=6;return;}let cap=z as u32 as usize;if cap==0{LAST=122;return;}let m=n.min(cap-1);
+            if let Some(p)=phys(y,(m+1)*2,true){for(i,c)in path[..m].iter().enumerate(){ptr::write_unaligned(p.add(2*i).cast::<u16>(),*c as u16);}ptr::write_unaligned(p.add(m*2).cast::<u16>(),0);f.rax=if m<n{LAST=122;cap as u64}else{m as u64};}else{LAST=87;}},
+        53=>{let Some(sec)=crate::security::now()else{abort_import(id);return;};let ft=sec.checked_add(11644473600).and_then(|v|v.checked_mul(10000000));if ft.is_none()||!write64(x,ft.unwrap()){abort_import(id);}},
+        54=>f.rax=1, // GetActiveProcessorCount: one virtual CPU
+        55=>{if x==u64::MAX&&write32(y,0){f.rax=1;}else{LAST=87;}},
+        56=>{if x==0||ONEXIT_LEN>=64||!executable(x){f.rax=0;}else{ptr::addr_of_mut!(ONEXIT).cast::<u64>().add(ONEXIT_LEN).write(x);ONEXIT_LEN+=1;f.rax=x;}},
+        57=>{if ONEXIT_LEN==0{}else{abort_import(id);}}, // no skipped registered destructors
+        58=>{if x==0&&y!=0&&(z as u32&!0x3000)==0&&z as u32&0x1000!=0&&w==4{let n=(y as usize).checked_add(4095).map(|v|v&!4095);if let Some(n)=n{f.rax=allocate_aligned(n,4096);if f.rax!=0{ptr::write_bytes(phys(f.rax,n,true).unwrap(),0,n);}}}if f.rax==0{LAST=8;}},
+        59=>{if y==0&&z==0x8000&&x%4096==0&&release(x){f.rax=1;}else{LAST=87;}},
         _=>abort_import(id)
     }
 }
@@ -293,8 +353,8 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
     }None
 }
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"=>48,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,_=>0}}else{0}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,_=>0}}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
@@ -313,7 +373,7 @@ unsafe fn init_env(){
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    fs().reset();MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    fs().reset();MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;BLOCKS=[FREE;128];NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
@@ -355,6 +415,15 @@ pub fn self_test()->bool{unsafe{
     if enter(AUX,50)!=2{return false;}serial::line("H5K: TRIAL_FAULT_RECOVERED");
     reset();ptr::copy_nonoverlapping([0xebu8,0xfe].as_ptr(),d,2);
     if enter(AUX,10)!=3{return false;}serial::line("H5K: TRIAL_TIMEOUT_RECOVERED");
+    reset();
+    // Exercise module name lookup and absent export behavior without relying on 7-Zip.
+    let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
+    ptr::copy_nonoverlapping(b"kernel32.dll\0".as_ptr(),d.add(0x1800),13);
+    ptr::copy_nonoverlapping(b"GetTickCount64\0".as_ptr(),d.add(0x1820),15);
+    ptr::copy_nonoverlapping(b"NotARealExport\0".as_ptr(),d.add(0x1840),15);
+    let h=module_handle(ENV+0x800,false);
+    if h!=MOD_BASE||proc_address(h,ENV+0x820)!=AUX||proc_address(h,ENV+0x840)!=0||LAST!=127{return false;}
+    serial::line("H5K: TRIAL_DLL_RESOLVER_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
@@ -399,6 +468,7 @@ pub fn run(b:&[u8])->Result<u64,&'static str>{unsafe{
     serial::metric("H5K: TRIAL_RESULT=",status);serial::metric("H5K: TRIAL_EXIT=",EXIT as u64);
     serial::metric("H5K: TRIAL_FAULT_ADDRESS=",H5_TRIAL_FAULT);serial::metric("H5K: TRIAL_FAULT_RIP=",H5_TRIAL_RIP);
     serial::metric("H5K: TRIAL_API_CALLS=",CALLS);
+    if DETAIL_LEN==0&&status==2{detail(b"CPU",b"application fault");}else if DETAIL_LEN==0&&status==3{detail(b"CPU",b"execution timeout");}
     if LAST_API<N{let a=ptr::addr_of!(APIS).cast::<Api>().add(LAST_API).read();serial::write("H5K: TRIAL_LAST_API|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
     let bytes=core::slice::from_raw_parts(ptr::addr_of!(OUT).cast::<u8>(),OUT_LEN);
     serial::line("H5K: TRIAL_OUTPUT_BEGIN");for line in bytes.split(|c|*c==10){if let Ok(s)=core::str::from_utf8(line){if s.bytes().all(|c|c==13||c==9||(32..127).contains(&c)){serial::line(s);}}}

@@ -76,7 +76,7 @@ def main():
         listener.bind(("127.0.0.1",0));listener.listen(1);listener.settimeout(40)
         seen=set();errors=[];threading.Thread(target=peer,args=(listener,seen,errors),daemon=True).start()
         t=pathlib.Path(td);vars=t/"vars.fd";shutil.copyfile(var,vars);qmp=t/"qmp.sock";log=ROOT/"dist"/"routed-network.log";log.unlink(missing_ok=True)
-        cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1","-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}","-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.2.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1","-netdev",f"socket,id=n0,connect=127.0.0.1:{listener.getsockname()[1]}","-device","e1000,netdev=n0,mac=52:54:00:12:34:56","-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
+        cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1","-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}","-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.3.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1","-netdev",f"socket,id=n0,connect=127.0.0.1:{listener.getsockname()[1]}","-device","e1000,netdev=n0,mac=52:54:00:12:34:56","-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
         proc=subprocess.Popen(cmd)
         def wait(marker,seconds=30):
             end=time.monotonic()+seconds

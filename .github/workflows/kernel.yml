@@ -8,7 +8,7 @@ permissions:
 jobs:
   build-and-boot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install VM and image tools
@@ -44,13 +44,15 @@ jobs:
         run: python3 scripts/network.py large
       - name: Official 7-Zip install, reboot, PE inspection and startup probe
         run: /usr/bin/python3 scripts/sevenzip.py
+      - name: Offline bundled 7-Zip installation and startup test
+        run: python3 scripts/offline7zip.py
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
         run: python3 scripts/routed.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.2.2-vm-evidence
+          name: hi5os-v0.2.3-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
