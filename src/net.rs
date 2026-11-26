@@ -176,7 +176,7 @@ impl Nic{
         if !connected{return Err("TCP connect timeout");}
         self.seq=self.seq.wrapping_add(1);if !self.packet(mac,ip,port,self.seq,remote,0x10,&[]){return Err("ACK failed");}
         serial::line("H5K: NET_TCP_OK");
-        Ok(Tcp{nic:self,mac,ip,port,remote,closed:false})
+        Ok(Tcp{nic:self,mac,ip,port,remote,closed:false,peer_fin:false})
     }
     pub fn get_follow(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<(usize,[u8;128],usize),&'static str>{
         if url.starts_with(b"https://"){return Err("HTTPS requires TLS - not supported yet");}if url.len()>128{return Err("URL too long");}let mut current=[0;128];current[..url.len()].copy_from_slice(url);let mut n=url.len();
@@ -196,10 +196,10 @@ impl Nic{
             response[used..used+n].copy_from_slice(&buf[..n]);used+=n;
             if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}
             if fin{serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
-            if let Some(location)=crate::http::redirect(&response[..used])?{let mut next=[0;128];let n=crate::http::resolve_url(url,location,&mut next).ok_or("Redirect unsupported - HTTPS or invalid URL")?;return Ok(Err((next,n)));}
+            if let Some(location)=crate::http::redirect(&response[..used])?{let mut next=[0;128];let n=crate::http::resolve_url(url,location,&mut next).ok_or("Redirect unsupported - HTTPS or invalid URL")?;tcp.finish();return Ok(Err((next,n)));}
             if let Some((len,mode))=crate::http::complete(response,used,fin)?{
                 serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
-                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(Ok(len));
+                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);tcp.finish();serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(Ok(len));
             }
             if fin{return Err("Incomplete HTTP body");}
         }
@@ -207,15 +207,39 @@ impl Nic{
 }
 /// Bounded, single-outstanding-write transport. Not yet a general TCP socket:
 /// no congestion control, write retransmission, partial ACKs or reassembly.
-pub struct Tcp<'a>{nic:&'a mut Nic,mac:[u8;6],ip:[u8;4],port:u16,remote:u32,closed:bool}
+pub struct Tcp<'a>{nic:&'a mut Nic,mac:[u8;6],ip:[u8;4],port:u16,remote:u32,closed:bool,peer_fin:bool}
 impl Tcp<'_>{
     pub fn write_request(&mut self,data:&[u8])->Result<(),&'static str>{
         if self.closed||data.is_empty()||data.len()>1000{return Err("TCP write bounds");}
         if !self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x18,data){return Err("Request failed");}
         self.nic.seq=self.nic.seq.wrapping_add(data.len()as u32);Ok(())
     }
+    // Complete a normal HTTP connection instead of unconditionally resetting it.
+    // Bound the close wait; no close failure can manufacture a successful HTTP body.
+    fn finish(&mut self){
+        if self.closed{return;}
+        let seq=self.nic.seq;
+        if !self.nic.packet(self.mac,self.ip,self.port,seq,self.remote,0x11,&[]){return;}
+        self.nic.seq=seq.wrapping_add(1);
+        let end=p::ticks()+100;let mut rx=[0;B];let mut acked=false;
+        while before(end){
+            let n=self.nic.recv(&mut rx);if n==0{p::wait_tick();continue;}self.nic.answer_arp(&rx[..n]);
+            if let Some((s,a,f,data))=self.nic.segment(&rx[..n],self.ip,self.port){
+                if f&4!=0{self.closed=true;return;}
+                if f&16!=0&&a==self.nic.seq{acked=true;}
+                if s==self.remote&&!self.peer_fin{
+                    self.remote=self.remote.wrapping_add(data.len()as u32);
+                    if f&1!=0{self.remote=self.remote.wrapping_add(1);self.peer_fin=true;}
+                    if !data.is_empty()||f&1!=0{let _=self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x10,&[]);}
+                }
+                if acked&&self.peer_fin{self.closed=true;serial::line("H5K: NET_TCP_CLOSE_OK");return;}
+            }
+        }
+        serial::line("H5K: NET_TCP_CLOSE_TIMEOUT");
+        // Drop sends an abort only if graceful close did not complete.
+    }
     pub fn read(&mut self,out:&mut[u8;B],overall:u64)->Result<(usize,bool),&'static str>{
-        if self.closed{return Ok((0,true));}
+        if self.closed||self.peer_fin{return Ok((0,true));}
         let end=p::ticks()+1000;let mut rx=[0;B];
         while before(end)&&before(overall){
             let n=self.nic.recv(&mut rx);if n==0{p::wait_tick();continue;}self.nic.answer_arp(&rx[..n]);
@@ -224,7 +248,7 @@ impl Tcp<'_>{
                 if s!=self.remote{let _=self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x10,&[]);continue;}
                 let fin=f&1!=0;if data.is_empty()&&!fin{continue;}
                 out[..data.len()].copy_from_slice(data);self.remote=self.remote.wrapping_add(data.len()as u32);
-                if fin{self.remote=self.remote.wrapping_add(1);}
+                if fin{self.remote=self.remote.wrapping_add(1);self.peer_fin=true;}
                 if !self.nic.packet(self.mac,self.ip,self.port,self.nic.seq,self.remote,0x10,&[]){return Err("TCP ACK failed");}
                 return Ok((data.len(),fin));
             }

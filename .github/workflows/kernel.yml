@@ -39,7 +39,7 @@ jobs:
       - name: Restricted native HTTP binary download test
         run: python3 scripts/network.py
       - name: Hi5Browser HTML link, redirect and byte-exact EXE download (required)
-        run: python3 scripts/network.py browse
+        run: sudo -n unshare --net bash -c 'ip link set lo up; exec runuser -u "$1" -- python3 scripts/network.py browse' bash "$USER"
       - name: HTTP close-delimited binary download
         run: sudo -n unshare --net bash -c 'ip link set lo up; exec runuser -u "$1" -- python3 scripts/network.py close' bash "$USER"
       - name: HTTP chunked binary download

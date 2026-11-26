@@ -37,13 +37,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection=True
 def main():
     code,var=firmware()
-    with http.server.HTTPServer(("127.0.0.1",0),Handler) as server,tempfile.TemporaryDirectory(prefix="hi5os-net-") as td:
+    with http.server.ThreadingHTTPServer(("127.0.0.1",0),Handler) as server,tempfile.TemporaryDirectory(prefix="hi5os-net-") as td:
         threading.Thread(target=server.serve_forever,daemon=True).start()
         tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
         vars=tmp/"vars.fd";shutil.copyfile(var,vars);log=ROOT/"dist"/f"network-{MODE}.log";log.unlink(missing_ok=True)
         qmp=tmp/"qmp.sock";system=ROOT/"dist/hi5os-v0.3.4.img"
         # Close-delimited test uses real SLIRP host-loopback TCP, in CI network namespace.
-        net="user,id=n0" if MODE=="close" else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.200:8080-tcp:127.0.0.1:{server.server_port}"
+        net="user,id=n0" if MODE in ("close","browse") else f"user,id=n0,restrict=on,guestfwd=tcp:10.0.2.200:8080-tcp:127.0.0.1:{server.server_port}"
         capture=ROOT/"dist"/f"network-{MODE}.pcap"
         cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","qemu64","-m","512","-smp","1",
         "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
@@ -80,7 +80,7 @@ def main():
                         key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
                 if MODE=="browse":
                     key("ctrl-l")
-                    for ch in "http://10.0.2.200:8080/index.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    for ch in f"http://10.0.2.2:{server.server_port}/index.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
                     key("ret");wait(b"BROWSER_PAGE_RENDERED",30);wait(b"BROWSER_LINKS=0x0000000000000001",5)
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-page-512m.ppm")})
                     key("ctrl-1");wait(b"BROWSER_LINK_OPENED",5);wait(b"HTTP_REDIRECT_FOLLOWED",30)
@@ -138,6 +138,8 @@ def main():
                     assert body==PAYLOAD
                     print("PASS: exact original 7-Zip installed on disk and loaded after reboot; startup probe returned (help qualification separate)")
                     return
+                if MODE=="browse":
+                    assert log.read_bytes().count(b"HTTP_DOWNLOAD_OK")>=2 and log.read_bytes().count(b"NET_TCP_OK")>=3,"Missing independent page, redirect or download connection"
                 key("f9");wait(b"DOWNLOAD_SAVED",90 if MODE=="large" else 10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
                 key("f10");wait(b"GUI_DOWNLOAD_REOPENED",90 if MODE=="large" else 5)
@@ -147,7 +149,7 @@ def main():
                 fh.seek(64*512);h=fh.read(512);body=fh.read(len(PAYLOAD))
             assert h[:8]==b"H5DL0002" and struct.unpack_from("<I",h,12)[0]==len(PAYLOAD)
             assert body==PAYLOAD
-            url=(f"http://10.0.2.2:{server.server_port}/hello.exe" if MODE=="close" else "http://10.0.2.200:8080/hello.exe").encode()
+            url=(f"http://10.0.2.2:{server.server_port}/hello.exe" if MODE in ("close","browse") else "http://10.0.2.200:8080/hello.exe").encode()
             assert struct.unpack_from("<I",h,20)[0]==len(url) and h[24:24+len(url)]==url
             assert struct.unpack_from("<I",h,508)[0]==zlib.crc32(h[:508])
             print(f"PASS: {MODE} HTTP downloaded binary and saved byte-exact fixture to dedicated data image")
