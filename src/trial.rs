@@ -688,6 +688,75 @@ unsafe fn user_text_test()->bool{
     if char_upper(0x61)!=Some(0x41)||char_upper(a)!=Some(a){return false;}
     ptr::read_unaligned(p.cast::<u16>())==0x41&&ptr::read_unaligned(p.add(2).cast::<u16>())==0xc9&&ptr::read_unaligned(p.add(4).cast::<u16>())==0&&ptr::read_unaligned(p.add(6).cast::<u16>())==0x5a
 }
+static mut GUI:crate::winwindow::Desktop=crate::winwindow::Desktop::new();
+static mut GUI_ACTIVE:bool=false;
+static mut GUI_RECT:Option<(u32,u32,u32,u32)>=None;
+static mut GUI_DC:u64=0;
+pub fn gui_rect()->Option<(u32,u32,u32,u32)>{unsafe{GUI_RECT}}
+unsafe fn gui_api(f:&mut Frame,k:u8,x:u64,y:u64,z:u64,w:u64){
+    if !GUI_ACTIVE{LAST=50;return;}
+    let g=&mut *ptr::addr_of_mut!(GUI);
+    match k{
+        125=>{let Some(p)=phys(x,72,false)else{LAST=87;return;};let proc=ptr::read_unaligned(p.add(8).cast::<u64>());let name=ptr::read_unaligned(p.add(64).cast::<u64>());let mut b=[0u8;64];let Some(n)=read_ascii(name,true,&mut b)else{LAST=87;return;};if !executable(proc){LAST=87;return;}f.rax=g.register(&b[..n],proc).unwrap_or(0)as u64;},
+        126=>{let mut b=[0u8;64];let Some(n)=read_ascii(y,true,&mut b)else{LAST=87;return;};let Some(atom)=g.atom(&b[..n])else{LAST=87;return;};
+            let (Some(px),Some(py),Some(ww),Some(hh),Some(parent),Some(menu),Some(instance),Some(param))=(arg(f,40),arg(f,48),arg(f,56),arg(f,64),arg(f,72),arg(f,80),arg(f,88),arg(f,96))else{LAST=87;return;};
+            if x as u32!=0||w as u32!=0||menu!=0||instance!=0||param!=0||c_len(z,true).is_none(){LAST=87;return;}
+            f.rax=g.create(atom,parent,[px as i32,py as i32,ww as i32,hh as i32]).unwrap_or(0);},
+        127=>{let old=g.visible(x);if !g.show(x,y as u32!=0){LAST=6;return;}f.rax=old as u64;},
+        128=>{if !g.visible(x)||GUI_DC!=0{LAST=6;return;}GUI_DC=x;f.rax=0x40000+x;},
+        129=>{if GUI_DC==x&&x!=0&&y==0x40000+x{GUI_DC=0;f.rax=1;}else{LAST=6;}},
+        130=>{if GUI_DC==0||x!=0x40000+GUI_DC{LAST=6;return;}let Some(bottom)=arg(f,40).map(|v|v as i32)else{LAST=87;return;};let (l,top,r)=(y as i32,z as i32,w as i32);let Some(rect)=g.rect(GUI_DC)else{LAST=6;return;};if l<0||top<0||r<=l||bottom<=top||r>rect[2]||bottom>rect[3]{LAST=87;return;}GUI_RECT=Some((l as u32,top as u32,(r-l)as u32,(bottom-top)as u32));f.rax=1;},
+        131=>{f.rax=g.post(crate::winwindow::Message{hwnd:x,id:y as u32,wparam:z,lparam:w})as u64;},
+        132=>{let Some(remove)=arg(f,40).map(|v|v as u32)else{LAST=87;return;};if y!=0||z as u32!=0||w as u32!=0||remove>1{LAST=87;return;}let Some(p)=phys(x,48,true)else{LAST=87;return;};if let Some(m)=g.peek(remove==1){ptr::write_bytes(p,0,48);ptr::write_unaligned(p.cast::<u64>(),m.hwnd);ptr::write_unaligned(p.add(8).cast::<u32>(),m.id);ptr::write_unaligned(p.add(16).cast::<u64>(),m.wparam);ptr::write_unaligned(p.add(24).cast::<u64>(),m.lparam);f.rax=1;}},
+        _=>LAST=50
+    }
+}
+unsafe fn map_fixture_pages(file:&[u8],offset:usize,size:usize)->bool{
+    let Some(pe)=u32at(file,60).map(|v|v as usize)else{return false;};let opt=pe+24;
+    let n=u16at(file,pe+6).unwrap_or(0)as usize;let opts=u16at(file,pe+20).unwrap_or(0)as usize;
+    let headers=u32at(file,opt+60).unwrap_or(0)as usize;let raw=ptr::addr_of!(IMAGE)as u64;
+    if offset+size>LIMIT||offset%4096!=0{return false;}
+    let table=ptr::addr_of_mut!(PT0.0).cast::<u64>();
+    for i in 0..headers.div_ceil(4096){let j=offset/4096+i;table.add(j).write(raw+j as u64*4096|5|NX);}
+    for i in 0..n{let s=opt+opts+i*40;let va=u32at(file,s+12).unwrap_or(u32::MAX)as usize;let span=u32at(file,s+8).unwrap_or(0).max(u32at(file,s+16).unwrap_or(0))as usize;let attr=u32at(file,s+36).unwrap_or(0);
+        if va.checked_add(span).is_none_or(|v|v>size){return false;}
+        let flags=5|if attr&0x80000000!=0{2}else{0}|if attr&0x20000000==0{NX}else{0};
+        for i in va/4096..(va+span).div_ceil(4096){let j=offset/4096+i;table.add(j).write(raw+j as u64*4096|flags);}
+    }true
+}
+pub fn run_gui_fixture()->bool{unsafe{
+    const EXE:&[u8]=include_bytes!("../target/hi5-fixture/h5gui.exe");
+    const DLL:&[u8]=include_bytes!("../target/hi5-fixture/h5dll.dll");
+    const OFF:usize=1024*1024;
+    GUI_RECT=None;GUI_DC=0;GUI_ACTIVE=false;GUI=crate::winwindow::Desktop::new();
+    if !supported()||!crate::pegraph::no_special_dirs(EXE)||!crate::pegraph::no_special_dirs(DLL){serial::line("H5K: GUI_FIXTURE_LAYOUT");return false;}
+    reset();
+    let image=&mut *ptr::addr_of_mut!(IMAGE.0);let seen=&mut *ptr::addr_of_mut!(SEEN);
+    let (exe,dll)=image.split_at_mut(OFF);
+    let er=match relocate::map_at(EXE,exe,seen,Some(BASE)){Ok(r)=>r,Err(e)=>{serial::line(e);return false;}};
+    let dr=match relocate::map_dll(DLL,dll,seen,BASE+OFF as u64){Ok(r)=>r,Err(e)=>{serial::line(e);return false;}};
+    if imports::inspect(DLL,|_,_|{}).map_or(true,|r|r.functions!=0||r.delayed){return false;}
+    let mut ok=true;let mut linked=0;let data=ptr::addr_of_mut!(DATA.0).cast::<u8>();
+    let report=imports::inspect_slots(EXE,|module,symbol,slot|{
+        let at=slot as usize;if at+8>er.size||at%8!=0{ok=false;return;}
+        let target=if module.eq_ignore_ascii_case("h5dll.dll"){
+            if let Some(v)=crate::pegraph::export(&dll[..dr.size],symbol){linked+=1;BASE+OFF as u64+v as u64}else{ok=false;return;}
+        }else{
+            let imports::Symbol::Name(name)=symbol else{ok=false;return;};let k=kind(module,name);let i=N;
+            if !(125..=132).contains(&k)||i>=208||module.len()>48||name.len()>128{ok=false;return;}
+            let mut a=EMPTY;a.dn=module.len();a.dll[..a.dn].copy_from_slice(module.as_bytes());a.nn=name.len();a.name[..a.nn].copy_from_slice(name.as_bytes());a.kind=k;
+            ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);N+=1;let stub=[0xb8,i as u8,0,0,0,0xcd,0x81,0xc3];ptr::copy_nonoverlapping(stub.as_ptr(),data.add(i*16),stub.len());AUX+i as u64*16
+        };
+        exe[at..at+8].copy_from_slice(&target.to_le_bytes());
+    });
+    if !ok||linked!=1||report.map_or(true,|r|r.delayed)||!map_fixture_pages(EXE,0,er.size)||!map_fixture_pages(DLL,OFF,dr.size){serial::line("H5K: GUI_FIXTURE_BIND_FAILED");return false;}
+    IMAGE_SIZE=OFF+dr.size;let Some(entry)=crate::pegraph::entry(EXE)else{return false;};
+    GUI_ACTIVE=true;let status=enter(BASE+entry as u64,300);GUI_ACTIVE=false;
+    serial::metric("H5K: GUI_PE_EXIT=",EXIT as u64);serial::metric("H5K: GUI_PE_STATUS=",status);serial::metric("H5K: GUI_PE_FAULT=",H5_TRIAL_FAULT);
+    let passed=status==1&&EXIT==42&&GUI_RECT==Some((8,8,172,70))&&GUI_DC==0;
+    if passed{serial::line("H5K: GUI_PE_DLL_EXECUTED");}else{GUI_RECT=None;}
+    passed
+}}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -877,6 +946,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         119..=122=>calendar_api(f,a.kind,x,y,z),
         123=>{match char_prev(x as u16 as u32,y,z,w as u32){Some(v)=>f.rax=v,None=>{LAST=87;f.rax=0;}}},
         124=>{match char_upper(x){Some(v)=>f.rax=v,None=>{LAST=87;f.rax=0;}}},
+        125..=132=>gui_api(f,a.kind,x,y,z,w),
         _=>{if &a.name[..a.nn]==b"_CxxThrowException"{serial::metric("H5K: TRIAL_CXX_OBJECT=",x);serial::metric("H5K: TRIAL_CXX_THROWINFO=",y);serial::metric("H5K: TRIAL_CXX_LAST_ERROR=",LAST as u64);if let Some(p)=phys(f.rsp,8,false){serial::metric("H5K: TRIAL_CXX_RETURN=",ptr::read_unaligned(p.cast::<u64>()));}}abort_import(id)}
     }
 }
@@ -917,7 +987,7 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
 }
 fn kind(d:&str,n:&str)->u8{
     if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,"FileTimeToDosDateTime"=>119,"DosDateTimeToFileTime"=>120,"FileTimeToSystemTime"=>121,"SystemTimeToFileTime"=>122,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,"RegisterClassW"=>125,"CreateWindowExW"=>126,"ShowWindow"=>127,"GetDC"=>128,"ReleaseDC"=>129,"PostMessageW"=>131,"PeekMessageW"=>132,_=>0}}else if d.eq_ignore_ascii_case("gdi32.dll"){match n{"Rectangle"=>130,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();

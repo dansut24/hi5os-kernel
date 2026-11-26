@@ -12,7 +12,9 @@ fn u64at(b:&[u8],p:usize)->Option<u64>{Some(u64::from_le_bytes(b.get(p..p.checke
 #[derive(Clone,Copy)]struct Section{va:usize,end:usize,raw:usize,rp:usize,attr:u32}
 const EMPTY:Section=Section{va:0,end:0,raw:0,rp:0,attr:0};
 fn map(b:&[u8],out:&mut[u8],seen:&mut[u8])->Result<Report,&'static str>{map_at(b,out,seen,None)}
-pub fn map_at(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>)->Result<Report,&'static str>{
+pub fn map_at(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>)->Result<Report,&'static str>{map_image(b,out,seen,new_base,false)}
+pub fn map_dll(b:&[u8],out:&mut[u8],seen:&mut[u8],base:u64)->Result<Report,&'static str>{map_image(b,out,seen,Some(base),true)}
+fn map_image(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>,dll:bool)->Result<Report,&'static str>{
     if compat::classify(b)!=compat::Kind::Pe64{return Err("Invalid PE64");}
     let pe=u32at(b,60).ok_or("PE offset")?as usize;let opt=pe+24;
     let opts=u16at(b,pe+20).ok_or("Optional header")?as usize;
@@ -21,7 +23,7 @@ pub fn map_at(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>)->Result<R
     let entry=u32at(b,opt+16).ok_or("Entry")?as usize;let preferred=u64at(b,opt+24).ok_or("Image base")?;
     let sa=u32at(b,opt+32).ok_or("Alignment")?as usize;let fa=u32at(b,opt+36).ok_or("File alignment")?as usize;
     let flags=u16at(b,pe+22).ok_or("Flags")?;
-    if flags&0x2001!=0||size==0||size>out.len()||size>CAP||size%4096!=0||seen.len()<size.div_ceil(8)||sa!=4096||!fa.is_power_of_two()||!(512..=4096).contains(&fa)||headers>size||headers%fa!=0||preferred==0||preferred%65536!=0{return Err("Unsupported relocatable image layout");}
+    if flags&1!=0||(flags&0x2000!=0)!=dll||size==0||size>out.len()||size>CAP||size%4096!=0||seen.len()<size.div_ceil(8)||sa!=4096||!fa.is_power_of_two()||!(512..=4096).contains(&fa)||headers>size||headers%fa!=0||preferred==0||preferred%65536!=0{return Err("Unsupported relocatable image layout");}
     let base=match new_base{Some(v)=>v,None=>preferred.checked_add(0x10000000).ok_or("Base overflow")?};
     if base.checked_add(size as u64).map_or(true,|v|v>0x0000_8000_0000_0000){return Err("Noncanonical image range");}
     let dirs=u32at(b,opt+108).ok_or("Directories")?as usize;if !(6..=16).contains(&dirs)||112+dirs*8>opts{return Err("Invalid directories");}
@@ -38,7 +40,7 @@ pub fn map_at(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>)->Result<R
         if attr&0x20000000!=0&&entry>=va&&entry<va+vs.min(raw){exec=true;}
         sections[i]=Section{va,end,raw,rp,attr};
     }
-    if !exec{return Err("Invalid entry");}
+    if !exec&&!(dll&&entry==0){return Err("Invalid entry");}
     let sec=sections[..n].iter().find(|s|rr>=s.va&&re<=s.va+s.raw).ok_or("Relocations not file-backed")?;
     let table=b.get(sec.rp+rr-sec.va..sec.rp+re-sec.va).ok_or("Relocation table bounds")?;
     out[..size].fill(0);seen[..size.div_ceil(8)].fill(0);out[..headers].copy_from_slice(&b[..headers]);

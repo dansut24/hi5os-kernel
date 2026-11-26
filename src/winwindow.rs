@@ -12,6 +12,8 @@ impl Desktop{
         if name.is_empty()||name.len()>64||!name.iter().all(|c|(32..127).contains(c))||proc==0||self.classes.iter().any(|c|c.atom!=0&&c.name[..c.len].eq_ignore_ascii_case(name)){return None;}
         let i=self.classes.iter().position(|c|c.atom==0)?;let atom=(i+1)as u16;let c=&mut self.classes[i];c.atom=atom;c.proc=proc;c.len=name.len();c.name[..name.len()].copy_from_slice(name);Some(atom)
     }
+    pub fn atom(&self,name:&[u8])->Option<u16>{self.classes.iter().find(|c|c.atom!=0&&c.name[..c.len].eq_ignore_ascii_case(name)).map(|c|c.atom)}
+    pub fn visible(&self,h:u64)->bool{self.window(h).is_some_and(|i|self.windows[i].visible)}
     fn window(&self,h:u64)->Option<usize>{if h==0{return None;}self.windows.iter().position(|w|w.handle==h)}
     pub fn create(&mut self,atom:u16,parent:u64,rect:[i32;4])->Option<u64>{
         if atom==0||!self.classes.iter().any(|c|c.atom==atom)||parent!=0&&self.window(parent).is_none()||rect[2]<=0||rect[3]<=0||rect[2]>16384||rect[3]>16384||self.len==128{return None;}

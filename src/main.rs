@@ -20,6 +20,7 @@ mod trialfs;
 mod winwindow;
 mod msi;
 mod procman;
+mod pegraph;
 mod net;
 mod http;
 mod heap;
