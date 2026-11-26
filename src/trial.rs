@@ -888,8 +888,8 @@ unsafe fn capture(v:u64,n:usize)->bool{
     ptr::copy_nonoverlapping(p,ptr::addr_of_mut!(OUT).cast::<u8>().add(OUT_LEN),n);OUT_LEN+=n;true
 }
 #[no_mangle]unsafe extern "efiapi" fn h5_trial_dispatch(f:*mut Frame){
-    let f=&mut *f;let raw=f.rax as usize;let id=if raw>=1232&&raw<1024+API_LIMIT{raw-1024}else{raw};if id==256{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;return;}
-    if id==257{if !CLEANUP_ACTIVE||ONEXIT_LEN!=0{H5_TRIAL_STATUS=4;return;}CLEANUP_ACTIVE=false;if f.rdx==1{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;}else{f.rax=0;}return;}if id>=N||raw>=208&&raw<256||raw>=258&&raw<1232{H5_TRIAL_STATUS=4;return;}
+    let f=&mut *f;let raw=f.rax as usize;let id=if raw>=1232&&raw<1024+API_LIMIT{raw-1024}else{raw};if raw==256{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;return;}
+    if raw==257{if !CLEANUP_ACTIVE||ONEXIT_LEN!=0{H5_TRIAL_STATUS=4;return;}CLEANUP_ACTIVE=false;if f.rdx==1{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;}else{f.rax=0;}return;}if id>=N||raw>=208&&raw<256||raw>=258&&raw<1232{H5_TRIAL_STATUS=4;return;}
     CALLS+=1;LAST_API=id;
     let a=ptr::addr_of!(APIS).cast::<Api>().add(id).read();
     if CALLS<=4096{serial::write("H5K: TRIAL_CALL|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
@@ -1189,6 +1189,9 @@ pub fn self_test()->bool{unsafe{
     reset();if !file_abi_test(){return false;}serial::line("H5K: TRIAL_FILE_ABI_OK");
     reset();if !archive_io_time_test(){return false;}serial::line("H5K: TRIAL_ARCHIVE_IO_TIME_OK");
     reset();if !user_text_test(){return false;}serial::line("H5K: TRIAL_USER_TEXT_OK");
+    // The second RX stub page must not collide with the reserved exit/cleanup IDs.
+    for i in [256usize,257,API_LIMIT-1]{reset();N=i+1;let mut a=EMPTY;a.kind=2;ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);let entry=api_stub(i);if enter(entry,50)!=1||EXIT!=1{return false;}}
+    serial::line("H5K: TRIAL_EXTENDED_STUBS_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
