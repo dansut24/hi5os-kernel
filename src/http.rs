@@ -1,5 +1,7 @@
 //! Bounded HTTP body framing. Never treats an incomplete close-delimited response as complete.
 use crate::net::MAX_BODY;
+const HEADER_LIMIT:usize=16*1024;
+pub fn status_code(b:&[u8])->Option<u16>{let l=b.split(|v|*v==10).next()?;if !(l.starts_with(b"HTTP/1.0 ")||l.starts_with(b"HTTP/1.1 "))||l.get(12).is_some_and(|v|!matches!(*v,b' '|b'\r')){return None;}let n=l.get(9..12)?;if !n.iter().all(u8::is_ascii_digit){return None;}let code=(n[0]-48)as u16*100+(n[1]-48)as u16*10+(n[2]-48)as u16;(100..600).contains(&code).then_some(code)}
 #[derive(Clone,Copy)]enum Frame{Length(usize),Close,Chunked}
 fn trim(mut b:&[u8])->&[u8]{while b.first().is_some_and(|c|*c==b' '||*c==b'\t'){b=&b[1..];}while b.last().is_some_and(|c|*c==b' '||*c==b'\t'){b=&b[..b.len()-1];}b}
 fn number(b:&[u8],base:usize)->Option<usize>{
@@ -9,12 +11,12 @@ fn number(b:&[u8],base:usize)->Option<usize>{
     Some(n)
 }
 fn header(b:&[u8])->Result<Option<(usize,Frame)>,&'static str>{
-    let Some(i)=b.windows(4).position(|w|w==b"\r\n\r\n")else{if b.len()>2048{return Err("HTTP header too large");}return Ok(None);};
-    if i>2048{return Err("HTTP header too large");}
+    let Some(i)=b.windows(4).position(|w|w==b"\r\n\r\n")else{if b.len()>HEADER_LIMIT{return Err("HTTP header too large");}return Ok(None);};
+    if i>HEADER_LIMIT{return Err("HTTP header too large");}
     let mut lines=b[..i].split(|x|*x==10);let status=lines.next().ok_or("Missing HTTP status")?;
-    if !(status.starts_with(b"HTTP/1.0 200 ")||status.starts_with(b"HTTP/1.1 200 ")){
-        if status.get(9)==Some(&b'3'){return Err("Redirect - not yet supported");}return Err("HTTP status not 200");
-    }
+    let code=status_code(status).ok_or("Invalid HTTP status")?;
+    if code<200||code==304{return Err("Unsupported HTTP status");}
+    if code==204{return Ok(Some((i+4,Frame::Length(0))));}
     let mut length=None;let mut chunk=false;
     for line in lines{
         let l=line.strip_suffix(b"\r").unwrap_or(line);
@@ -103,12 +105,12 @@ pub fn self_test()->bool{
 pub fn resolve_url(base:&[u8],href:&[u8],out:&mut[u8;128])->Option<usize>{
     let href=trim(href);if href.is_empty()||href[0]==b'#'||href.iter().any(|b|!(33..127).contains(b)||matches!(*b,b'<'|b'>'|b'"'|b'\''|b'\\')){return None;}
     let href=href.split(|b|*b==b'#').next()?;if href.is_empty(){return None;}
-    let origin=base.strip_prefix(b"http://")?;let end=origin.iter().position(|b|matches!(*b,b'/'|b'?')).unwrap_or(origin.len())+7;
-    let prefix=if href.starts_with(b"http://"){b"".as_slice()}else if href.starts_with(b"//"){b"http:".as_slice()}else if href.split(|b|*b==b'/').next()?.contains(&b':'){return None;}else if href[0]==b'/'{&base[..end]}else if href[0]==b'?'{base.split(|b|*b==b'?').next()?}else{let path=base.split(|b|*b==b'?').next()?;if path.len()==end{let n=base.len().checked_add(1)?.checked_add(href.len())?;if n>out.len(){return None;}out[..base.len()].copy_from_slice(base);out[base.len()]=b'/';out[base.len()+1..n].copy_from_slice(href);return Some(n);}let slash=path.iter().rposition(|b|*b==b'/')?;&path[..slash+1]};
+    let (scheme,origin)=if let Some(v)=base.strip_prefix(b"https://"){(b"https:".as_slice(),v)}else{(b"http:".as_slice(),base.strip_prefix(b"http://")?)};let end=origin.iter().position(|b|matches!(*b,b'/'|b'?')).unwrap_or(origin.len())+scheme.len()+2;
+    let prefix=if href.starts_with(b"http://")||href.starts_with(b"https://"){b"".as_slice()}else if href.starts_with(b"//"){scheme}else if href.split(|b|*b==b'/').next()?.contains(&b':'){return None;}else if href[0]==b'/'{&base[..end]}else if href[0]==b'?'{base.split(|b|*b==b'?').next()?}else{let path=base.split(|b|*b==b'?').next()?;if path.len()==end{let n=base.len().checked_add(1)?.checked_add(href.len())?;if n>out.len(){return None;}out[..base.len()].copy_from_slice(base);out[base.len()]=b'/';out[base.len()+1..n].copy_from_slice(href);return Some(n);}let slash=path.iter().rposition(|b|*b==b'/')?;&path[..slash+1]};
     let n=prefix.len().checked_add(href.len())?;if n>out.len(){return None;}out[..prefix.len()].copy_from_slice(prefix);out[prefix.len()..n].copy_from_slice(href);Some(n)
 }
 pub fn redirect(b:&[u8])->Result<Option<&[u8]>,&'static str>{
-    let Some(end)=b.windows(4).position(|w|w==b"\r\n\r\n")else{return Ok(None);};if end>2048{return Err("HTTP header too large");}
+    let Some(end)=b.windows(4).position(|w|w==b"\r\n\r\n")else{return Ok(None);};if end>HEADER_LIMIT{return Err("HTTP header too large");}
     let mut lines=b[..end].split(|x|*x==10);let status=lines.next().ok_or("Missing HTTP status")?;
     if ![b"301".as_slice(),b"302",b"303",b"307",b"308"].iter().any(|v|status.get(9..12)==Some(*v)){return Ok(None);}
     let mut loc=None;for line in lines{let Some(i)=line.iter().position(|b|*b==b':')else{return Err("Invalid redirect header");};if line[..i].eq_ignore_ascii_case(b"location"){if loc.is_some(){return Err("Duplicate redirect Location");}loc=Some(trim(line[i+1..].strip_suffix(b"\r").unwrap_or(&line[i+1..])));}}
@@ -124,4 +126,4 @@ pub fn links(src:&[u8],base:&[u8],out:&mut[Link;8])->usize{
         }
     }n
 }
-pub fn navigation_test()->bool{let mut a=[0;128];let base=b"http://example.test/dir/index.html";let mut l=[EMPTY_LINK;8];resolve_url(base,b"/setup.exe",&mut a).is_some_and(|n|&a[..n]==b"http://example.test/setup.exe")&&resolve_url(base,b"https://example.test/setup.exe",&mut a).is_none()&&resolve_url(base,b"other.msi",&mut a).is_some_and(|n|&a[..n]==b"http://example.test/dir/other.msi")&&redirect(b"HTTP/1.1 302 Found\r\nLocation: /setup.exe\r\n\r\n")==Ok(Some(b"/setup.exe".as_slice()))&&links(b"<a href='/setup.exe'>EXE</a><a href=\"other.msi\">MSI</a><script><a href='/bad'></script>",base,&mut l)==2}
+pub fn navigation_test()->bool{let mut a=[0;128];let base=b"http://example.test/dir/index.html";let mut l=[EMPTY_LINK;8];resolve_url(base,b"/setup.exe",&mut a).is_some_and(|n|&a[..n]==b"http://example.test/setup.exe")&&resolve_url(base,b"https://example.test/setup.exe",&mut a).is_some_and(|n|&a[..n]==b"https://example.test/setup.exe")&&resolve_url(b"https://example.test/a",b"//example.test/b",&mut a).is_some_and(|n|&a[..n]==b"https://example.test/b")&&resolve_url(base,b"other.msi",&mut a).is_some_and(|n|&a[..n]==b"http://example.test/dir/other.msi")&&redirect(b"HTTP/1.1 302 Found\r\nLocation: /setup.exe\r\n\r\n")==Ok(Some(b"/setup.exe".as_slice()))&&links(b"<a href='/setup.exe'>EXE</a><a href=\"other.msi\">MSI</a><script><a href='/bad'></script>",base,&mut l)==2}

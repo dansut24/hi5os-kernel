@@ -178,28 +178,29 @@ impl Nic{
         serial::line("H5K: NET_TCP_OK");
         Ok(Tcp{nic:self,mac,ip,port,remote,closed:false,peer_fin:false})
     }
-    pub fn get_follow(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<(usize,[u8;128],usize),&'static str>{
-        if url.starts_with(b"https://"){return Err("HTTPS requires TLS - not supported yet");}if url.len()>128{return Err("URL too long");}let mut current=[0;128];current[..url.len()].copy_from_slice(url);let mut n=url.len();
-        for _ in 0..5{match self.get_once(&current[..n],response)?{Ok(size)=>return Ok((size,current,n)),Err((next,len))=>{if next[..len]==current[..n]{return Err("HTTP redirect loop");}current=next;n=len;serial::line("H5K: HTTP_REDIRECT_FOLLOWED");}}}Err("HTTP redirect limit")
+    pub fn get_follow(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<(usize,[u8;128],usize,u16),&'static str>{
+        if url.len()>128{return Err("URL too long");}let mut current=[0;128];current[..url.len()].copy_from_slice(url);let mut n=url.len();
+        for _ in 0..5{match self.get_once(&current[..n],response)?{Ok((size,status))=>return Ok((size,current,n,status)),Err((next,len))=>{if current[..n].starts_with(b"https://")&&!next[..len].starts_with(b"https://"){return Err("HTTPS downgrade blocked");}if next[..len]==current[..n]{return Err("HTTP redirect loop");}current=next;n=len;serial::line("H5K: HTTP_REDIRECT_FOLLOWED");}}}Err("HTTP redirect limit")
     }
-    pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{self.get_follow(url,response).map(|v|v.0)}
-    fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<Result<usize,([u8;128],usize)>,&'static str>{
-        let (host,port,path)=parse_url(url).ok_or("Use http://host:port/path")?;
-        let mut req=[0u8;256];let mut k=0;
-        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
-        let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;
-        let overall=p::ticks()+24000;let mut used=0;let mut next_log=65536;
+    pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{self.get_follow(url,response).and_then(|v|if v.3==200{Ok(v.0)}else{Err("HTTP response not successful")})}
+    fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<Result<(usize,u16),([u8;128],usize)>,&'static str>{
+        let secure=url.starts_with(b"https://");let (host,port,path)=parse_url(url).ok_or("Use http:// or https://host/path")?;let scheme=if secure{8}else{7};
+        let mut req=[0u8;512];let mut k=0;
+        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[scheme..url.iter().enumerate().skip(scheme).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nUser-Agent: Hi5Browser/0.3.5\r\nAccept: text/html,application/xhtml+xml,application/octet-stream,*/*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
+        let mut stream=if secure{if numeric(host).is_some(){return Err("HTTPS requires a DNS hostname");}let mut seed=[0;48];if !crate::security::random(&mut seed){return Err("HTTPS requires hardware entropy");}let epoch=crate::security::now().ok_or("HTTPS requires a valid UTC clock")?;let mut name=[0u8;254];name[..host.len()].copy_from_slice(host);let tcp=self.connect(host,port)?;let mut tls=TlsSocket{tcp,stash:[0;B],pos:0,len:0,deadline:p::ticks()+24000};let code=unsafe{hi5_tls_request((&mut tls as *mut TlsSocket).cast(),name.as_ptr(),epoch,seed.as_ptr(),req.as_ptr(),k)};crate::account::wipe(&mut seed);if code!=0{serial::metric("H5K: TLS_ERROR=",code as u64);return Err("TLS handshake or certificate verification failed");}serial::line("H5K: TLS_VERIFIED");WebStream::Secure(tls)}else{let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;WebStream::Plain(tcp)};
+        let overall=p::ticks()+24000;let mut used=0;let mut next_log=65536;let mut status=0u16;
         let mut buf=[0u8;B];
         loop{
-            let (n,fin)=tcp.read(&mut buf,overall)?;
+            let (n,fin)=stream.read(&mut buf,overall)?;
             if used+n>response.len(){return Err("Response exceeds preview limit");}
             response[used..used+n].copy_from_slice(&buf[..n]);used+=n;
             if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}
             if fin{serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
-            if let Some(location)=crate::http::redirect(&response[..used])?{let mut next=[0;128];let n=crate::http::resolve_url(url,location,&mut next).ok_or("Redirect unsupported - HTTPS or invalid URL")?;tcp.finish();return Ok(Err((next,n)));}
+            if status==0&&response[..used].windows(2).any(|w|w==b"\r\n"){status=crate::http::status_code(&response[..used]).ok_or("Invalid HTTP status")?;serial::metric("H5K: HTTP_STATUS=",status as u64);}
+            if let Some(location)=crate::http::redirect(&response[..used])?{let mut next=[0;128];let n=crate::http::resolve_url(url,location,&mut next).ok_or("Redirect invalid or too long")?;stream.finish();return Ok(Err((next,n)));}
             if let Some((len,mode))=crate::http::complete(response,used,fin)?{
                 serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
-                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);tcp.finish();serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(Ok(len));
+                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);stream.finish();if status==200{serial::line("H5K: HTTP_DOWNLOAD_OK");}else{serial::line("H5K: HTTP_ERROR_PAGE");}return Ok(Ok((len,status)));
             }
             if fin{return Err("Incomplete HTTP body");}
         }
@@ -261,9 +262,9 @@ impl Drop for Tcp<'_>{fn drop(&mut self){if !self.closed{let _=self.nic.packet(s
 fn valid(ip:[u8;4])->bool{ip[0]!=0&&ip[0]!=127&&ip[0]<224}
 fn numeric(s:&[u8])->Option<[u8;4]>{let mut it=s.split(|b|*b==b'.');let mut ip=[0;4];for x in &mut ip{*x=decimal(it.next()?,255)? as u8;}if it.next().is_some(){return None;}Some(ip)}
 fn parse_url(url:&[u8])->Option<(&[u8],u16,&[u8])>{
-    let r=url.strip_prefix(b"http://")?;let i=r.iter().position(|b|*b==b'/').unwrap_or(r.len());let path=if i==r.len(){b"/".as_slice()}else{&r[i..]};
+    let (r,default_port)=if let Some(r)=url.strip_prefix(b"https://"){(r,443)}else{(url.strip_prefix(b"http://")?,80)};let i=r.iter().position(|b|*b==b'/').unwrap_or(r.len());let path=if i==r.len(){b"/".as_slice()}else{&r[i..]};
     if path.len()>120||!path.iter().all(|b|(33..127).contains(b)&&*b!=b'#'){return None;}
-    let mut s=r[..i].split(|b|*b==b':');let h=s.next()?;let p=match s.next(){Some(v)=>decimal(v,65535)? as u16,None=>80};
+    let mut s=r[..i].split(|b|*b==b':');let h=s.next()?;let p=match s.next(){Some(v)=>decimal(v,65535)? as u16,None=>default_port};
     if p==0||s.next().is_some()||h.len()>253||!h.split(|b|*b==b'.').all(|l|!l.is_empty()&&l.len()<=63&&l[0]!=b'-'&&l[l.len()-1]!=b'-'&&l.iter().all(|b|b.is_ascii_alphanumeric()||*b==b'-')){return None;}
     if let Some(ip)=numeric(h){if !valid(ip){return None;}}Some((h,p,path))
 }
@@ -308,9 +309,34 @@ fn dns_answer(b:&[u8],q:&[u8])->Option<[u8;4]>{
 }
 fn decimal(b:&[u8],max:usize)->Option<usize>{if b.is_empty(){return None;}let mut n=0usize;for x in b{if !x.is_ascii_digit(){return None;}n=n.checked_mul(10)?.checked_add((x-b'0')as usize)?;if n>max{return None;}}Some(n)}
 pub fn self_test()->bool{
-    if parse_url(b"http://10.0.2.100:8080/a")!=Some((b"10.0.2.100".as_slice(),8080,b"/a".as_slice()))||parse_url(b"https://example.com/").is_some()||parse_url(b"http://127.0.0.1/").is_some()||parse_url(b"http://example.com/").is_none(){return false;}
+    if parse_url(b"http://10.0.2.100:8080/a")!=Some((b"10.0.2.100".as_slice(),8080,b"/a".as_slice()))||parse_url(b"https://example.com/")!=Some((b"example.com".as_slice(),443,b"/".as_slice()))||parse_url(b"http://127.0.0.1/").is_some()||parse_url(b"http://example.com/").is_none(){return false;}
     if !crate::http::self_test(){return false;}
     let q=b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03lab\x04test\x00\x00\x01\x00\x01";
     let mut r=[0;64];r[..q.len()].copy_from_slice(q);r[2]=0x81;r[3]=0x80;r[7]=1;let o=q.len();let ans=[0xc0,12,0,1,0,1,0,0,0,60,0,4,192,0,2,77];r[o..o+ans.len()].copy_from_slice(&ans);
     dns_answer(&r[..o+ans.len()],q)==Some([192,0,2,77])&&dns_answer(&r[..o+5],q).is_none()
+}
+
+// Native TLS transport: BearSSL owns record and X.509 processing. No proxy, no verification bypass.
+// One synchronous TLS session at a time, matching the existing single-socket browser.
+#[link(name="hi5tls",kind="static")]
+extern "C" {
+    fn hi5_tls_request(ctx:*mut core::ffi::c_void,host:*const u8,epoch:u64,seed:*const u8,request:*const u8,len:usize)->i32;
+    fn hi5_tls_read(ctx:*mut core::ffi::c_void,out:*mut u8,len:usize)->i32;
+    fn hi5_tls_close(ctx:*mut core::ffi::c_void);
+}
+struct TlsSocket<'a>{tcp:Tcp<'a>,stash:[u8;B],pos:usize,len:usize,deadline:u64}
+#[no_mangle]
+unsafe extern "C" fn hi5_tls_recv(ctx:*mut core::ffi::c_void,dst:*mut u8,len:usize)->i32{
+    let s=&mut *ctx.cast::<TlsSocket>();if len==0{return 0;}
+    if s.pos==s.len{match s.tcp.read(&mut s.stash,s.deadline){Ok((n,_))if n>0=>{s.pos=0;s.len=n;},_=>return -1}}
+    let n=(s.len-s.pos).min(len);ptr::copy_nonoverlapping(s.stash.as_ptr().add(s.pos),dst,n);s.pos+=n;n as i32
+}
+#[no_mangle]
+unsafe extern "C" fn hi5_tls_send(ctx:*mut core::ffi::c_void,src:*const u8,len:usize)->i32{
+    let s=&mut *ctx.cast::<TlsSocket>();let n=len.min(1000);if n==0{return 0;}if s.tcp.write_request(core::slice::from_raw_parts(src,n)).is_ok(){n as i32}else{-1}
+}
+enum WebStream<'a>{Plain(Tcp<'a>),Secure(TlsSocket<'a>)}
+impl WebStream<'_>{
+    fn read(&mut self,out:&mut[u8;B],deadline:u64)->Result<(usize,bool),&'static str>{match self{Self::Plain(t)=>t.read(out,deadline),Self::Secure(s)=>{s.deadline=deadline;let n=unsafe{hi5_tls_read((s as *mut TlsSocket).cast(),out.as_mut_ptr(),out.len())};if n<0{serial::metric("H5K: TLS_READ_ERROR=",(-n)as u64);Err("TLS response incomplete or invalid")}else{Ok((n as usize,n==0))}}}}
+    fn finish(&mut self){match self{Self::Plain(t)=>t.finish(),Self::Secure(s)=>{s.deadline=p::ticks()+100;unsafe{hi5_tls_close((s as *mut TlsSocket).cast());}s.tcp.finish();}}}
 }

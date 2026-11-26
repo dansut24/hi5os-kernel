@@ -19,7 +19,8 @@ clang --target=x86_64-pc-windows-msvc -ffreestanding -fno-stack-protector -O1 -c
 lld-link /lib /def:fixtures/user32-gui.def /machine:x64 /out:target/hi5-fixture/user32-gui.lib
 lld-link /lib /def:fixtures/gdi32-gui.def /machine:x64 /out:target/hi5-fixture/gdi32-gui.lib
 lld-link /entry:hi5_entry /subsystem:windows /nodefaultlib /dynamicbase /base:0x140000000 /timestamp:0 /out:target/hi5-fixture/h5gui.exe target/hi5-fixture/h5gui.obj target/hi5-fixture/h5dll.lib target/hi5-fixture/user32-gui.lib target/hi5-fixture/gdi32-gui.lib
-cargo build --release --locked --target x86_64-unknown-uefi
+/usr/bin/python3 scripts/prepare_tls.py
+RUSTFLAGS="-Lnative=$PWD/target/hi5-tls" cargo build --release --locked --target x86_64-unknown-uefi
 mkdir -p dist
 cp target/hi5-fixture/gui-package.json dist/7zip-gui-package.json
 cp target/hi5-fixture/h5gui.exe dist/hi5-wingui.exe
@@ -30,6 +31,7 @@ cp target/hi5-fixture/console.exe dist/hi5-winconsole.exe
 cp target/x86_64-unknown-uefi/release/hi5kernel.efi dist/BOOTX64.EFI
 rm -rf dist/7zip-notices
 cp -r target/hi5-fixture/7zip-notices dist/7zip-notices
+cp target/hi5-tls/bearssl-0.6/LICENSE.txt dist/BEARSSL-LICENSE.txt
 # A removable UEFI FAT32 image, not a physical-machine installer or an ISO.
 rm -f dist/hi5os-v0.3.4.img
 truncate -s 64M dist/hi5os-v0.3.4.img

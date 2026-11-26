@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install VM and image tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools dosfstools python3-pil fonts-dejavu-core clang lld p7zip-full python3-pefile python3-olefile msitools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools dosfstools python3-pil fonts-dejavu-core clang lld p7zip-full python3-pefile python3-olefile python3-cryptography ca-certificates curl msitools
       - name: Set up pinned Rust
         run: |
           rustup show
@@ -36,6 +36,8 @@ jobs:
         run: python3 scripts/persistence.py
       - name: First-run setup, cold login and lock (required)
         run: python3 scripts/account_setup.py
+      - name: Native HTTPS certificate and hostname qualification (required)
+        run: /usr/bin/python3 scripts/tls_qualify.py
       - name: Restricted native HTTP binary download test
         run: python3 scripts/network.py
       - name: Hi5Browser HTML link, redirect and byte-exact EXE download (required)
@@ -60,6 +62,10 @@ jobs:
         run: /usr/bin/python3 scripts/gui_inventory.py
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
         run: python3 scripts/routed.py
+      - name: Public BBC website diagnostic (non-blocking external network)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: python3 scripts/public_web.py
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -77,6 +83,7 @@ jobs:
           path: |
             dist/hi5os-v0.3.4.img
             dist/hi5os-setup-data.img
+            dist/BEARSSL-LICENSE.txt
           compression-level: 6
           if-no-files-found: error
           retention-days: 14
