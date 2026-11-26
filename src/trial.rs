@@ -51,6 +51,7 @@ static mut GUI_STARTUP_RESULT:u64=0;
 static mut LIVE_REQUEST:bool=false;
 static mut LIVE:bool=false;
 static mut LIVE_ROOT:u64=0;
+static mut LIVE_LAST_CLICK:(u64,usize,u64)=(0,0,0);
 static mut LIVE_MENU:u64=0;
 #[derive(Clone,Copy)]struct GuiTimer{h:u64,id:u64,period:u64,due:u64}
 const GUI_TIMER:GuiTimer=GuiTimer{h:0,id:0,period:0,due:0};
@@ -1536,12 +1537,16 @@ pub fn live_active()->bool{unsafe{LIVE}}
 pub fn live_tick(){unsafe{if !LIVE{return;}let now=platform::ticks();let mut sent=false;for t in &mut *ptr::addr_of_mut!(GUI_TIMERS){if t.h!=0&&now.wrapping_sub(t.due)<(1u64<<63){t.due=now.wrapping_add(t.period);if GUI.rect(t.h).is_some(){sent|=GUI.post(crate::winwindow::Message{hwnd:t.h,id:0x113,wparam:t.id,lparam:0});}else{*t=GUI_TIMER;}}}if sent{live_pump();}}}
 pub fn live_close(){unsafe{if LIVE{LIVE=false;LIVE_REQUEST=false;ORIGINAL_GUI=false;GUI_ACTIVE=false;H5_RESUME=0;serial::line("H5K: ORIGINAL_GUI_SESSION_DISCARDED");}}}
 fn live_pump(){unsafe{if !LIVE{return;}H5_RESUME=1;let status=enter(0,100);if status!=5{serial::metric("H5K: ORIGINAL_GUI_LIVE_END=",status);live_close();}}}
-pub fn live_key(vk:u32,ch:Option<u8>){unsafe{if !LIVE{return;}let h=if GUI.focus()!=0{GUI.focus()}else{LIVE_ROOT};GUI.post(crate::winwindow::Message{hwnd:h,id:0x100,wparam:vk as u64,lparam:1});if let Some(ch)=ch{GUI.post(crate::winwindow::Message{hwnd:h,id:0x102,wparam:ch as u64,lparam:1});}GUI.post(crate::winwindow::Message{hwnd:h,id:0x101,wparam:vk as u64,lparam:0xc0000001});live_pump();}}
+pub fn live_key(vk:u32,ch:Option<u8>){unsafe{if !LIVE{return;}if let Some(h)=live_list(){let n=PANELS.count(h);if n>0&&matches!(vk,13|35|36|38|40){let old=PANELS.selected(h);if vk==13{if let Some(i)=old{list_notify(h,i,-4,3,3);}}else{let i=match vk{35=>n-1,36=>0,38=>old.unwrap_or(0).saturating_sub(1),_=>old.map_or(0,|v|(v+1).min(n-1))};list_select(h,i);}return;}}let h=if GUI.focus()!=0{GUI.focus()}else{LIVE_ROOT};GUI.post(crate::winwindow::Message{hwnd:h,id:0x100,wparam:vk as u64,lparam:1});if let Some(ch)=ch{GUI.post(crate::winwindow::Message{hwnd:h,id:0x102,wparam:ch as u64,lparam:1});}GUI.post(crate::winwindow::Message{hwnd:h,id:0x101,wparam:vk as u64,lparam:0xc0000001});live_pump();}}
+unsafe fn live_list()->Option<u64>{(0..32).filter_map(|i|GUI.handle_at(i)).find(|h|GUI.visible(*h)&&PANELS.kind(*h)==Some(crate::winpanel::LIST))}
+// A real NMHDR/NMLISTVIEW or NMITEMACTIVATE, in guest-owned scratch, delivered through the existing message pump.
+unsafe fn list_notify(h:u64,i:usize,code:i32,old:u32,new:u32){if !LIVE{return;}let Some(row)=PANELS.row(h,i)else{return;};let Some(parent)=GUI.parent(h)else{return;};let id=GUI.id(h).unwrap_or(0);let addr=allocate(80);if addr==0{return;}let Some(p)=phys(addr,80,true)else{return;};ptr::write_bytes(p,0,80);ptr::write_unaligned(p.cast::<u64>(),h);ptr::write_unaligned(p.add(8).cast::<u64>(),id);ptr::write_unaligned(p.add(16).cast::<i32>(),code);ptr::write_unaligned(p.add(24).cast::<i32>(),i as i32);ptr::write_unaligned(p.add(32).cast::<u32>(),new);ptr::write_unaligned(p.add(36).cast::<u32>(),old);ptr::write_unaligned(p.add(40).cast::<u32>(),8);ptr::write_unaligned(p.add(56).cast::<u64>(),row.data);if GUI.post(crate::winwindow::Message{hwnd:parent,id:0x4e,wparam:id,lparam:addr}){serial::metric("H5K: GUI_LIST_NOTIFY=",code as u32 as u64);live_pump();}if LIVE{release(addr);}}
+unsafe fn list_select(h:u64,i:usize){let old=PANELS.selected(h);if !PANELS.select(h,i){return;}GUI.set_focus(h);if old!=Some(i){if let Some(j)=old{list_notify(h,j,-101,3,0);}list_notify(h,i,-101,0,3);}if LIVE{serial::metric("H5K: GUI_LIST_SELECTED=",i as u64);}}
 fn label_ascii(src:&[u16],out:&mut[u8])->usize{let mut n=0;for &v in src{if n==out.len(){break;}if v==38{continue;}out[n]=if (32..127).contains(&v){v as u8}else{b'?'};n+=1;}n}
 pub fn live_draw(c:&crate::ui::Canvas,x:usize,y:usize,width:usize,height:usize){unsafe{
     if !LIVE{return;}let right=x.saturating_add(width);let bottom=y.saturating_add(height);c.rect(x,y,width,height,[245,245,245]);
     let menu=GUI.menu(LIVE_ROOT).unwrap_or(0);
-    for i in 0..MENUS.count(menu).unwrap_or(0).min(width/75){if let Some(v)=MENUS.get(menu,i as u32,true){let mut b=[0;128];let n=label_ascii(&v.text[..v.len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(x+i*75+4,y,t,[0,0,0],false,right);}}}
+    for i in 0..MENUS.count(menu).unwrap_or(0).min(width/100){if let Some(v)=MENUS.get(menu,i as u32,true){let mut b=[0;128];let n=label_ascii(&v.text[..v.len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(x+i*100+4,y,t,[0,0,0],false,right);}}}
     if let Some(h)=CONTROLS.bar_at(0){for i in 0..CONTROLS.button_count(h).unwrap_or(0).min(width/64){if let Some((v,img))=CONTROLS.button(h,i){
         let bx=x+i*64;let by=y+30;c.rect(bx,by,62,66,[224,224,224]);
         if let Some(img)=img{if img.offset.checked_add(img.len).is_some_and(|e|e<=IMAGE_SIZE){let data=core::slice::from_raw_parts(ptr::addr_of!(IMAGE.0).cast::<u8>().add(img.offset),img.len);if let Some((w,h))=crate::wincontrols::dib_size(data){for yy in 0..h.min(36)as usize{for xx in 0..w.min(48)as usize{if let Some(rgb)=crate::wincontrols::dib_pixel(data,xx,yy){let mask=(rgb[0]as u32)|((rgb[1]as u32)<<8)|((rgb[2]as u32)<<16);if mask!=img.mask&&by+yy+2<bottom{c.pixel(bx+6+xx,by+yy+2,rgb);}}}}}}}
@@ -1557,9 +1562,10 @@ pub fn live_draw(c:&crate::ui::Canvas,x:usize,y:usize,width:usize,height:usize){
 }}
 pub fn live_click(x:usize,y:usize){unsafe{
     if !LIVE{return;}let root=LIVE_ROOT;
-    if y<30{LIVE_MENU=MENUS.get(GUI.menu(root).unwrap_or(0),(x/75)as u32,true).map_or(0,|v|v.sub);return;}
+    if y<30{LIVE_MENU=MENUS.get(GUI.menu(root).unwrap_or(0),(x/100)as u32,true).map_or(0,|v|v.sub);return;}
     if LIVE_MENU!=0{let menu=LIVE_MENU;LIVE_MENU=0;if x<320{if let Some(v)=MENUS.get(menu,((y-30)/25)as u32,true){if v.sub!=0{LIVE_MENU=v.sub;return;}if v.typ&0x800==0&&v.state&3==0{GUI.post(crate::winwindow::Message{hwnd:root,id:0x111,wparam:v.id as u64,lparam:0});live_pump();}}}return;}
     if (30..96).contains(&y){if let Some(h)=CONTROLS.bar_at(0){if let Some((v,_))=CONTROLS.button(h,x/64){if v.state&4!=0{GUI.post(crate::winwindow::Message{hwnd:root,id:0x111,wparam:v.command as u16 as u64,lparam:0});live_pump();}return;}}}
+    if let Some(h)=live_list(){let combo=(0..32).any(|i|GUI.handle_at(i).is_some_and(|a|GUI.visible(a)&&PANELS.kind(a)==Some(crate::winpanel::COMBO)));let top=if combo{124}else{96};if y>=top+24{let i=(y-top-24)/24;if i<PANELS.count(h){let now=platform::ticks();let double=LIVE_LAST_CLICK.0==h&&LIVE_LAST_CLICK.1==i&&now.wrapping_sub(LIVE_LAST_CLICK.2)<=50;LIVE_LAST_CLICK=(h,i,now);list_select(h,i);if double&&LIVE{LIVE_LAST_CLICK=(0,0,0);list_notify(h,i,-3,3,3);}return;}}}
     let lp=((x.min(32767)as u64)&0xffff)|((y.min(32767)as u64)<<16);GUI.post(crate::winwindow::Message{hwnd:root,id:0x201,wparam:1,lparam:lp});GUI.post(crate::winwindow::Message{hwnd:root,id:0x202,wparam:0,lparam:lp});live_pump();
 }}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
@@ -1907,7 +1913,7 @@ unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
     WORK_ACTIVE=false;ORIGINAL_GUI=false;COMMON_INIT_SEEN=false;GUI_RESOURCES=[EMPTY_GUI_RESOURCE;64];GUI_RESOURCE_NEXT=0x51000000;GUI_CLASS_MENU=[0;16];GUI_CLASS_INFO=[[0;72];16];MENUS.reset();CONTROLS.reset();PANELS.reset();GUI_TIMERS=[GUI_TIMER;16];PANEL_CALL=None;SHELL_IDS=[SHELL_EMPTY;32];SHELL_TASK=[0;64];CREATIONS=[NO_CREATION;8];CREATION_DEPTH=0;CLIP_FORMATS=[EMPTY_FORMAT;32];PRNG=1;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;EVENTS=[EMPTY_EVENT;64];EVENT_NEXT=0x40000000;CLEANUP_ACTIVE=false;DLL_POLICY=0;ptr::write_bytes(ptr::addr_of_mut!(BLOCKS).cast::<Block>(),0,2048);NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
-    H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;H5_RESUME=0;LIVE_REQUEST=false;LIVE=false;LIVE_ROOT=0;LIVE_MENU=0;CODEC_READY=false;CODEC_SIZE=0;CODEC_PENDING=None;ptr::write_bytes(ptr::addr_of_mut!(CODEC_PT.0).cast::<u64>(),0,512);
+    H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;H5_RESUME=0;LIVE_REQUEST=false;LIVE=false;LIVE_ROOT=0;LIVE_LAST_CLICK=(0,0,0);LIVE_MENU=0;CODEC_READY=false;CODEC_SIZE=0;CODEC_PENDING=None;ptr::write_bytes(ptr::addr_of_mut!(CODEC_PT.0).cast::<u64>(),0,512);
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
     t.write(d|5);t.add(1).write(d+4096|7|NX);t.add(3).write(d+0x3000|5);

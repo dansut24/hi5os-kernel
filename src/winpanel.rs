@@ -37,6 +37,8 @@ impl Panels{
     pub fn insert_row(&mut self,h:u64,i:usize,v:Row)->Option<usize>{let k=self.idx(h)?;let c=&mut self.slots[k];if c.len==32{return None;}let i=i.min(c.len);c.rows.copy_within(i..c.len,i+1);c.rows[i]=v;c.len+=1;Some(i)}
     pub fn row(&self,h:u64,i:usize)->Option<Row>{let c=&self.slots[self.idx(h)?];if i>=c.len{return None;}Some(c.rows[i])}
     pub fn set_row(&mut self,h:u64,i:usize,v:Row)->bool{let Some(k)=self.idx(h)else{return false;};let c=&mut self.slots[k];if i>=c.len{return false;}c.rows[i]=v;true}
+    pub fn selected(&self,h:u64)->Option<usize>{let c=&self.slots[self.idx(h)?];c.rows[..c.len].iter().position(|r|r.state&2!=0)}
+    pub fn select(&mut self,h:u64,i:usize)->bool{let Some(k)=self.idx(h)else{return false;};let c=&mut self.slots[k];if i>=c.len{return false;}for (j,r) in c.rows[..c.len].iter_mut().enumerate(){r.state=(r.state&!3)|if j==i{3}else{0};}true}
     pub fn clear(&mut self,h:u64)->bool{let Some(k)=self.idx(h)else{return false;};self.slots[k].len=0;true}
     pub fn delete_row(&mut self,h:u64,i:usize)->bool{let Some(k)=self.idx(h)else{return false;};let c=&mut self.slots[k];if i>=c.len{return false;}c.rows.copy_within(i+1..c.len,i);c.len-=1;true}
     pub fn parts(&mut self,h:u64,parts:&[i32])->bool{let Some(k)=self.idx(h)else{return false;};if parts.len()>8{return false;}let c=&mut self.slots[k];c.parts[..parts.len()].copy_from_slice(parts);c.nparts=parts.len();c.part_text=[TEXT;8];true}
@@ -47,5 +49,5 @@ impl Panels{
 pub fn test(p:&mut Panels)->bool{
     p.reset();if !p.create(1,LIST)||p.create(1,EDIT)||p.unicode(1,Some(true))!=Some(false)||p.unicode(1,None)!=Some(true)||p.ex(1,0,Some(3))!=Some(0)||p.ex(1,1,Some(0))!=Some(3){return false;}
     let mut text=TEXT;text.buf[0]=65;text.len=1;let mut row=ROW;row.cells[0]=text;row.data=42;
-    let ok=p.insert_col(1,0,Column{text,width:120})==Some(0)&&p.insert_row(1,0,row)==Some(0)&&p.row(1,0).is_some_and(|r|r.data==42&&r.cells[0].buf[0]==65)&&p.insert_row(1,1,Row{data:99,..ROW})==Some(1)&&p.swap(1,0,1)&&p.row(1,0).is_some_and(|r|r.data==99)&&p.delete_row(1,0)&&p.delete_row(1,0)&&p.count(1)==0&&p.delete_col(1,0)&&p.cols(1)==0&&p.create(2,STATUS)&&p.parts(2,&[80,-1])&&p.part_count(2)==2&&p.part_edge(2,0)==Some(80)&&p.part_edge(2,1)==Some(-1)&&p.part_edge(2,2).is_none()&&p.part(2,1,Some(text)).is_some()&&p.part(2,1,None).is_some_and(|v|v.len==1);p.reset();ok
+    let ok=p.insert_col(1,0,Column{text,width:120})==Some(0)&&p.insert_row(1,0,row)==Some(0)&&p.row(1,0).is_some_and(|r|r.data==42&&r.cells[0].buf[0]==65)&&p.insert_row(1,1,Row{data:99,..ROW})==Some(1)&&p.select(1,1)&&p.selected(1)==Some(1)&&p.swap(1,0,1)&&p.selected(1)==Some(0)&&p.row(1,0).is_some_and(|r|r.data==99)&&p.delete_row(1,0)&&p.delete_row(1,0)&&p.count(1)==0&&p.delete_col(1,0)&&p.cols(1)==0&&p.create(2,STATUS)&&p.parts(2,&[80,-1])&&p.part_count(2)==2&&p.part_edge(2,0)==Some(80)&&p.part_edge(2,1)==Some(-1)&&p.part_edge(2,2).is_none()&&p.part(2,1,Some(text)).is_some()&&p.part(2,1,None).is_some_and(|v|v.len==1);p.reset();ok
 }

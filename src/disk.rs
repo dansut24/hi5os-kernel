@@ -130,6 +130,11 @@ impl Store{
         None
     }
     pub fn attached(&self)->bool{self.port.is_some()}
+    // Previously unused sectors 10 and 11; separate from notes, package and download banks.
+    fn display_record(p:Port,lba:u32)->Option<(u32,usize,usize)>{let mut b=[0;512];if !p.read(lba,&mut b)||&b[..8]!=b"H5DSP001"||get(&b,508)!=crc(&b[..508]){return None;}let g=get(&b,8);let m=get(&b,12)as usize;let s=get(&b,16)as usize;if g==0||m>=crate::display::MODES.len()||!matches!(s,100|125|150|175|200){return None;}Some((g,m,s))}
+    pub fn display_settings(&self)->Option<(usize,usize)>{let p=self.port?;[Self::display_record(p,10),Self::display_record(p,11)].into_iter().flatten().max_by_key(|v|v.0).map(|v|(v.1,v.2))}
+    pub fn save_display(&self,mode:usize,scale:usize)->bool{let Some(p)=self.port else{return false;};if mode>=crate::display::MODES.len()||!matches!(scale,100|125|150|175|200){return false;}let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}let a=Self::display_record(p,10).map_or(0,|v|v.0);let b=Self::display_record(p,11).map_or(0,|v|v.0);let Some(g)=a.max(b).checked_add(1)else{return false;};let lba=if a<=b{10}else{11};h.fill(0);h[..8].copy_from_slice(b"H5DSP001");put(&mut h,8,g);put(&mut h,12,mode as u32);put(&mut h,16,scale as u32);let sum=crc(&h[..508]);put(&mut h,508,sum);p.write(lba,&mut h)&&p.flush()&&Self::display_record(p,lba)==Some((g,mode,scale))}
+
     // Bank headers at 16 and 32; each bank has eight 512-byte payload sectors.
     // Never touches document slots 1..8. CRC checks detect incomplete writes.
     fn download_bank(p:Port,base:u32,out:&mut[u8;4096])->Option<(u32,usize)>{

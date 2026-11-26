@@ -41,6 +41,7 @@ def main():
                         call("qmp_capabilities")
                         def key(k):
                             call("human-monitor-command",{"command-line":"sendkey "+k});time.sleep(.25)
+                        key("f1");key("ctrl-6");wait(b"GRAPHICS_MODE_OK",10);key("ctrl-shift-3");wait(b"DISPLAY_SCALE=0x0000000000000096",10);wait(b"DISPLAY_SETTINGS_SAVED",5)
                         key("5");wait(b"GUI_NOTEPAD_OPEN",5)
                         for _ in range(len(b"WELCOME TO HI5OS")):key("backspace")
                         for k in "persist":key(k)
@@ -63,7 +64,8 @@ def main():
                     wait(f"H5K: DATA_CRC=0x{zlib.crc32(b'persist'):016x}".encode(),2)
                     wait(b"H5K: DATA_LENGTH=0x0000000000000007",2)
                     wait(f"H5K: DATA_CRC=0x{zlib.crc32(b'office'):016x}".encode(),2)
-                    print("PASS: two typed documents survived cold restart")
+                    wait(b"DISPLAY_SETTINGS_RESTORED",5);wait(b"DISPLAY_SCALE=0x0000000000000096",5)
+                    print("PASS: two typed documents and display preferences survived cold restart")
             finally:
                 if proc.poll() is None:
                     proc.terminate()

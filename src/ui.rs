@@ -10,9 +10,14 @@ static REG:&[u8;97280]=include_bytes!("generated/regular.bin");
 static BIG:&[u8;97280]=include_bytes!("generated/large.bin");
 static REG_ADV:&[u8;95]=include_bytes!("generated/regular-adv.bin");
 static BIG_ADV:&[u8;95]=include_bytes!("generated/large-adv.bin");
-pub struct Canvas{pub fb:Framebuffer,pub buffered:bool}
+pub struct Canvas{pub fb:Framebuffer,pub physical:Framebuffer,pub scale:usize,pub buffered:bool}
 impl Canvas{
-    pub fn new(fb:Framebuffer)->Self{Self{fb,buffered:fb.width.checked_mul(fb.height).map_or(false,|n|n<=MAX)}}
+    pub fn new(fb:Framebuffer)->Self{Self::scaled(fb,100)}
+    pub fn supported(fb:Framebuffer,scale:usize)->bool{matches!(scale,100|125|150|175|200)&&fb.width*100/scale>=640&&fb.height*100/scale>=480&&fb.width.checked_mul(fb.height).is_some_and(|n|n<=MAX)}
+    pub fn scaled(physical:Framebuffer,scale:usize)->Self{let scale=if Self::supported(physical,scale){scale}else{100};let mut fb=physical;fb.width=physical.width*100/scale;fb.height=physical.height*100/scale;Self{fb,physical,scale,buffered:fb.width.checked_mul(fb.height).is_some_and(|n|n<=MAX)}}
+    pub fn restore_pixel(&self,x:usize,y:usize){if self.buffered&&x<self.fb.width&&y<self.fb.height{let v=unsafe{ptr::read(self.target(x,y))};self.front_value(x,y,v);}}
+    fn front_value(&self,x:usize,y:usize,v:u32){let p=self.physical;let x0=x*p.width/self.fb.width;let x1=(x+1)*p.width/self.fb.width;let y0=y*p.height/self.fb.height;let y1=(y+1)*p.height/self.fb.height;unsafe{for yy in y0..y1{for xx in x0..x1{ptr::write_volatile((p.base as *mut u32).add(yy*p.stride+xx),v);}}}}
+    pub fn text_width(&self,t:&str)->usize{t.bytes().map(|b|REG_ADV[if (32..127).contains(&b){(b-32)as usize}else{31}]as usize).sum()}
     fn pack(&self,c:Color)->u32{if self.fb.format==0{u32::from_le_bytes([c[0],c[1],c[2],0])}else{u32::from_le_bytes([c[2],c[1],c[0],0])}}
     fn unpack(&self,v:u32)->Color{let b=v.to_le_bytes();if self.fb.format==0{[b[0],b[1],b[2]]}else{[b[2],b[1],b[0]]}}
     fn target(&self,x:usize,y:usize)->*mut u32{unsafe{if self.buffered{ptr::addr_of_mut!(BACK.0).cast::<u32>().add(y*self.fb.width+x)}else{(self.fb.base as *mut u32).add(y*self.fb.stride+x)}}}
@@ -57,7 +62,7 @@ impl Canvas{
     pub fn num(&self,x:usize,y:usize,mut n:u64,c:Color){let mut b=[b'0';20];let mut i=20;loop{i-=1;b[i]=b'0'+(n%10)as u8;n/=10;if n==0{break;}}if let Ok(t)=core::str::from_utf8(&b[i..]){self.text(x,y,t,c);}}
     pub fn present(&self){if !self.buffered{return;}unsafe{
         let src=ptr::addr_of!(BACK.0).cast::<u32>();let dst=self.fb.base as *mut u32;
-        for y in 0..self.fb.height{for x in 0..self.fb.width{ptr::write_volatile(dst.add(y*self.fb.stride+x),ptr::read(src.add(y*self.fb.width+x)));}}
+        if self.scale==100{for y in 0..self.fb.height{for x in 0..self.fb.width{ptr::write_volatile(dst.add(y*self.fb.stride+x),ptr::read(src.add(y*self.fb.width+x)));}}}else{for y in 0..self.fb.height{for x in 0..self.fb.width{self.front_value(x,y,ptr::read(src.add(y*self.fb.width+x)));}}}
     }}
-    pub fn front_pixel(&self,x:usize,y:usize,c:Color){if x<self.fb.width&&y<self.fb.height{unsafe{ptr::write_volatile((self.fb.base as *mut u32).add(y*self.fb.stride+x),self.pack(c));}}}
+    pub fn front_pixel(&self,x:usize,y:usize,c:Color){if x<self.fb.width&&y<self.fb.height{self.front_value(x,y,self.pack(c));}}
 }

@@ -18,22 +18,19 @@ const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
 static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
 static mut WORK_BUFFER:[u8;crate::trialfs::SNAP_CAP]=[0;crate::trialfs::SNAP_CAP];
 static mut APP_BUFFER:[u8;crate::trial::PACKAGE_SIZE]=[0;crate::trial::PACKAGE_SIZE];
-struct Ui{display_msg:&'static str,package_installed:bool,store_msg:&'static str,c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,rebase:crate::relocate::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
+#[derive(Clone,Copy)]struct WindowSlot{app:App,win:Rect,restore:Rect,maximized:bool,minimized:bool}
+struct Ui{background:[Option<WindowSlot>;9],display_msg:&'static str,package_installed:bool,store_msg:&'static str,c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,rebase:crate::relocate::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
 impl Ui{
-    fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{unsafe{ptr::write_volatile((self.c.fb.base as *mut u32).add((self.my+y)*self.c.fb.stride+self.mx+x),self.saved[y*16+x]);}}}}self.saved_valid=false;}
-    fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..16{for x in 0..16{if self.mx+x<self.c.fb.width&&self.my+y<self.c.fb.height{self.saved[y*16+x]=unsafe{ptr::read_volatile((self.c.fb.base as *const u32).add((self.my+y)*self.c.fb.stride+self.mx+x))};if x<=y/2&&y<14{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}}}self.saved_valid=true;}
+    fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{self.c.restore_pixel(self.mx+x,self.my+y);}}self.saved_valid=false;}
+    fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..14{for x in 0..=y/2{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}self.saved_valid=true;}
     fn bar_y(&self)->usize{self.c.fb.height.saturating_sub(52)}
     fn full_window(&self)->Rect{Rect{x:6,y:6,w:self.c.fb.width.saturating_sub(12),h:self.bar_y().saturating_sub(12)}}
-    fn apply_display(&mut self,i:usize){
-        self.cursor_hide();
-        if let Some(fb)=crate::display::set_mode(self.c.fb,i){
-            self.c=Canvas::new(fb);self.mx=self.mx.min(fb.width-1);self.my=self.my.min(fb.height-1);self.saved_valid=false;self.drag=None;
-            let w=560.min(fb.width.saturating_sub(108));let h=365.min(fb.height.saturating_sub(66));self.restore=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};
-            self.win=if self.maximized{self.full_window()}else{self.restore};
-            self.display_msg="Resolution applied - Ctrl+1 to Ctrl+6";
-            self.draw();serial::metric("H5K: GRAPHICS_WIDTH=",fb.width as u64);serial::metric("H5K: GRAPHICS_HEIGHT=",fb.height as u64);serial::line("H5K: GRAPHICS_MODE_OK");
-        }else{self.display_msg="Mode unavailable - previous resolution retained";self.draw();serial::line("H5K: GRAPHICS_MODE_UNAVAILABLE");}
-    }
+    fn save_display(&mut self){if let Some(i)=crate::display::MODES.iter().position(|m|m.0==self.c.physical.width&&m.1==self.c.physical.height){if self.store.save_display(i,self.c.scale){serial::line("H5K: DISPLAY_SETTINGS_SAVED");}}}
+    fn reflow(&mut self){let fb=self.c.fb;self.mx=self.mx.min(fb.width-1);self.my=self.my.min(fb.height-1);self.saved_valid=false;self.drag=None;let w=560.min(fb.width.saturating_sub(108));let h=365.min(fb.height.saturating_sub(66));self.restore=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};self.win=if self.maximized{self.full_window()}else{self.restore};let full=self.full_window();let restore=self.restore;for slot in self.background.iter_mut().flatten(){slot.restore=restore;slot.win=if slot.maximized{full}else{restore};}}
+    fn apply_display(&mut self,i:usize){self.cursor_hide();if let Some(fb)=crate::display::set_mode(self.c.physical,i){self.c=Canvas::scaled(fb,self.c.scale);self.reflow();self.save_display();self.display_msg="Resolution applied";self.draw();serial::metric("H5K: GRAPHICS_WIDTH=",fb.width as u64);serial::metric("H5K: GRAPHICS_HEIGHT=",fb.height as u64);serial::line("H5K: GRAPHICS_MODE_OK");}else{self.display_msg="Mode unavailable - previous resolution retained";self.draw();serial::line("H5K: GRAPHICS_MODE_UNAVAILABLE");}}
+    fn apply_scale(&mut self,scale:usize){if !Canvas::supported(self.c.physical,scale){self.display_msg="Scale needs a larger resolution";self.draw();return;}self.cursor_hide();self.c=Canvas::scaled(self.c.physical,scale);self.reflow();self.save_display();self.display_msg="Interface scale applied";self.draw();serial::metric("H5K: DISPLAY_SCALE=",scale as u64);}
+    fn park_window(&mut self){if let Some(a)=self.app{if a==App::WinLive{return;}let slot=WindowSlot{app:a,win:self.win,restore:self.restore,maximized:self.maximized,minimized:self.minimized};if let Some(i)=self.background.iter().position(|s|s.is_none()){self.background[i]=Some(slot);}}}
+    fn take_window(&mut self,a:App)->Option<WindowSlot>{let i=self.background.iter().position(|s|s.is_some_and(|v|v.app==a))?;let out=self.background[i];for j in i..8{self.background[j]=self.background[j+1];}self.background[8]=None;out}
     fn dock_x(&self)->usize{self.c.fb.width.saturating_sub(300)/2}
     fn menu_rect(&self)->Rect{Rect{x:8,y:self.bar_y().saturating_sub(358),w:270,h:352}}
     fn button(&self,r:Rect,t:&str,fill:Color,ink:Color){self.c.round(r.x,r.y,r.w,r.h,6,fill);self.c.text(r.x+9,r.y+5,t,ink);}
@@ -58,11 +55,11 @@ impl Ui{
         c.text(w.saturating_sub(202),54,concat!("Developer preview ",env!("CARGO_PKG_VERSION")),q.muted);
         for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser",App::Sheet=>"Sheet",App::Store=>"Store",App::WinDemo=>"WinDemo",App::WinLive=>"Windows"};c.text(18,y+35,label,q.ink);}
         if by>438{self.icon(App::Sheet,31,374);c.text(18,409,"Sheet",q.ink);}
-        if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
+        let saved=self.win;for i in 0..9{if let Some(s)=self.background[i]{if !s.minimized{self.win=s.win;self.draw_window(s.app,q);}}}self.win=saved;if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
         self.button(Rect{x:8,y:by+8,w:78,h:36},"Start",BLUE,WHITE);
         let dock=self.dock_x();
-        for(i,a)in APPS.iter().enumerate(){let x=dock+i*50;if self.app==Some(*a){c.round(x,by+5,46,42,7,q.sub);c.rect(x+14,by+47,18,3,BLUE);}self.icon(*a,x+6,by+10);}
+        for(i,a)in APPS.iter().enumerate(){let x=dock+i*50;if self.app==Some(*a)||self.background.iter().any(|s|s.is_some_and(|v|v.app==*a)){c.round(x,by+5,46,42,7,q.sub);c.rect(x+14,by+47,18,3,BLUE);}self.icon(*a,x+6,by+10);}
         c.text(w.saturating_sub(100),by+6,if self.nic.as_ref().map_or(false,|n|n.config().0!=[0;4]){"IPv4 ready"}else{"Offline"},q.muted);c.text(w.saturating_sub(100),by+25,"Hi5Kernel",q.ink);
         if self.menu{let r=self.menu_rect();c.round(r.x+3,r.y+4,r.w,r.h,12,q.edge);c.round(r.x,r.y,r.w,r.h,12,q.panel);c.title(r.x+16,r.y+10,"Start",q.ink);
             for(i,a)in APPS.iter().enumerate(){let y=r.y+49+i*40;self.icon(*a,r.x+14,y);c.text(r.x+60,y+6,a.title(),q.ink);}
@@ -90,27 +87,28 @@ impl Ui{
             }
             App::Store=>{
                 c.title(x,y,"Hi5Store - verified offline catalogue",q.ink);
-                c.text_limit(x,y+40,"7-Zip 26.06 x64 - portable console",q.ink,false,right);
+                c.text_limit(x,y+40,"7-Zip 26.06 x64 - File Manager and console",q.ink,false,right);
                 c.text_limit(x,y+65,if self.package_installed{"Installed - pinned SHA-256 verified"}else{"Not installed"},q.muted,false,right);
                 self.button(Rect{x,y:y+98,w:110,h:34},"Install",BLUE,WHITE);
                 self.button(Rect{x:x+120,y:y+98,w:110,h:34},"Uninstall",q.sub,q.ink);
-                self.button(Rect{x,y:y+144,w:230,h:34},"Open terminal",q.sub,q.ink);
+                self.button(Rect{x,y:y+144,w:230,h:34},"Open terminal",q.sub,q.ink);self.button(Rect{x:x+240,y:y+144,w:215,h:34},"Open File Manager",if self.package_installed{BLUE}else{q.sub},if self.package_installed{WHITE}else{q.muted});
                 c.text_limit(x,y+192,self.store_msg,q.muted,false,right);
-                c.text_limit(x,y+220,"I: install   U: uninstall   Enter: terminal",q.muted,false,right);
+                c.text_limit(x,y+220,"I: install   U: uninstall   G: File Manager",q.muted,false,right);
                 c.text_limit(x,y+246,"Original EXE/MSI installer not yet supported",q.muted,false,right);
             }
             App::System=>{
                 c.title(x,y,"Display settings",q.ink);
-                c.text(x,y+38,"Current resolution:",q.muted);c.num(x+170,y+38,c.fb.width as u64,q.ink);c.text(x+224,y+38,"x",q.muted);c.num(x+242,y+38,c.fb.height as u64,q.ink);
-                let native=crate::display::runtime_available(c.fb);
+                c.text(x,y+38,"Current resolution:",q.muted);c.num(x+170,y+38,c.physical.width as u64,q.ink);c.text(x+224,y+38,"x",q.muted);c.num(x+242,y+38,c.physical.height as u64,q.ink);
+                let native=crate::display::runtime_available(c.physical);
                 c.text_limit(x,y+67,if native{"Standard VGA / Bochs - 32-bit native modes"}else{"UEFI framebuffer - fixed mode on this adapter"},q.muted,false,right);
                 for (i,&(w,h,label)) in crate::display::MODES.iter().enumerate(){
-                    let active=w==c.fb.width&&h==c.fb.height;let enabled=crate::display::mode_available(c.fb,i);
+                    let active=w==c.physical.width&&h==c.physical.height;let enabled=crate::display::mode_available(c.physical,i);
                     self.button(Rect{x:x+(i%3)*142,y:y+96+(i/3)*38,w:134,h:34},label,if active{BLUE}else{q.sub},if active{WHITE}else if enabled{q.ink}else{q.muted});
                 }
                 c.text_limit(x,y+176,self.display_msg,q.muted,false,right);
-                c.text(x,y+202,"RAM (MiB)",q.muted);c.num(x+100,y+202,self.ram,q.ink);c.text_limit(x+175,y+202,concat!("Hi5Kernel ",env!("CARGO_PKG_VERSION")),q.ink,false,right);
-                self.button(Rect{x,y:y+231,w:180,h:34},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
+                c.text(x,y+202,"Interface scaling (Ctrl+Shift+1 to 5)",q.muted);
+                for (i,(scale,label)) in [(100,"100%"),(125,"125%"),(150,"150%"),(175,"175%"),(200,"200%")].into_iter().enumerate(){let active=scale==c.scale;self.button(Rect{x:x+i*83,y:y+228,w:79,h:32},label,if active{BLUE}else{q.sub},if active{WHITE}else if Canvas::supported(c.physical,scale){q.ink}else{q.muted});}
+                self.button(Rect{x,y:y+266,w:180,h:30},if self.dark{"Use light theme"}else{"Use dark theme"},q.sub,q.ink);
             }
             App::Files=>{
                 c.title(x,y,if self.store.attached(){"Hi5OS Data"}else{"RAM workspace"},q.ink);
@@ -230,7 +228,7 @@ impl Ui{
             }
         }
     }
-    fn select(&mut self,a:App){if self.app==Some(App::WinLive)&&a!=App::WinLive{crate::trial::live_close();}if a==App::WinLive&&!self.maximized{self.restore=self.win;self.win=self.full_window();self.maximized=true;}if a==App::WinDemo{self.store_msg=if crate::trial::run_gui_fixture(){"PE/DLL and Win32 drawing fixture passed"}else{"PE GUI fixture failed"};}if a==App::Store{let b=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};self.package_installed=self.store.load_7zip(b).is_some();}if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN",App::Browser=>"H5K: GUI_BROWSER_OPEN",App::Sheet=>"H5K: GUI_SHEET_OPEN",App::Store=>"H5K: GUI_STORE_OPEN",App::WinDemo=>"H5K: GUI_WINDEMO_OPEN",App::WinLive=>"H5K: GUI_WINLIVE_OPEN"});self.draw();}
+    fn select(&mut self,a:App){if self.app!=Some(a){let previous=self.app;if previous==Some(App::WinLive){crate::trial::live_close();}else{self.park_window();}if let Some(s)=self.take_window(a){self.win=s.win;self.restore=s.restore;self.maximized=s.maximized;}else{self.win=self.restore;self.win.x=(self.win.x+24).min(self.c.fb.width.saturating_sub(self.win.w));self.win.y=(self.win.y+18).min(self.bar_y().saturating_sub(self.win.h));self.restore=self.win;self.maximized=false;}serial::line("H5K: GUI_WINDOW_FOCUSED");}if a==App::WinLive&&!self.maximized{self.restore=self.win;self.win=self.full_window();self.maximized=true;}if a==App::WinDemo{self.store_msg=if crate::trial::run_gui_fixture(){"PE/DLL and Win32 drawing fixture passed"}else{"PE GUI fixture failed"};}if a==App::Store{let b=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};self.package_installed=self.store.load_7zip(b).is_some();}if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN",App::Browser=>"H5K: GUI_BROWSER_OPEN",App::Sheet=>"H5K: GUI_SHEET_OPEN",App::Store=>"H5K: GUI_STORE_OPEN",App::WinDemo=>"H5K: GUI_WINDEMO_OPEN",App::WinLive=>"H5K: GUI_WINLIVE_OPEN"});self.draw();}
     fn theme(&mut self){self.dark=!self.dark;serial::line(if self.dark{"H5K: GUI_THEME_DARK"}else{"H5K: GUI_THEME_LIGHT"});self.draw();}
     fn cache_current(&mut self){let s=&mut self.cache[self.file];s.data=self.files.data;s.len=self.files.len;s.present=self.files.present;}
     fn switch_file(&mut self,i:usize){
@@ -306,14 +304,14 @@ impl Ui{
     fn key(&mut self,key:u8){
         match key{0x1d=>{self.ctrl=true;return;},0x9d=>{self.ctrl=false;return;},0x2a|0x36=>{self.term.shift=true;return;},0xaa|0xb6=>{self.term.shift=false;return;},_=>{}}
         if key&0x80!=0{return;}
-        if self.app==Some(App::System)&&self.ctrl&&(0x02..=0x07).contains(&key){self.apply_display((key-2)as usize);return;}
+        if self.app==Some(App::System)&&self.ctrl&&(0x02..=0x07).contains(&key){if self.term.shift{if key<=6{self.apply_scale([100,125,150,175,200][(key-2)as usize]);}}else{self.apply_display((key-2)as usize);}return;}
         if self.app==Some(App::WinLive){if key==1&&self.ctrl{self.close();return;}let ch=ascii(key,self.term.shift);let vk=match key{0x01=>27,0x0e=>8,0x0f=>9,0x1c=>13,0x3b..=0x44=>112+(key-0x3b)as u32,_=>ch.map_or(0,|v|v.to_ascii_uppercase()as u32)};if vk!=0{crate::trial::live_key(vk,ch);if !crate::trial::live_active(){self.close();}else{self.draw();}}return;}
         if key==0x01{if self.menu{self.menu=false;self.draw();}else{self.close();}return;}
         if key==0x41&&(self.app==Some(App::Files)||self.app==Some(App::Notepad)){self.switch_file((self.file+1)%FILE_COUNT);return;}
         // Preserve F6 as the existing Notepad save shortcut. GUI fixture is Ctrl+F6.
         if key==0x40&&self.ctrl{self.select(App::WinDemo);return;}
         if key==0x58{self.select(App::Store);return;}
-        if self.app==Some(App::Store)&&!self.menu&&!self.minimized{match key{0x17=>self.package_action(true),0x16=>self.package_action(false),0x1c=>self.select(App::Terminal),_=>{}}return;}
+        if self.app==Some(App::Store)&&!self.menu&&!self.minimized{match key{0x17=>self.package_action(true),0x16=>self.package_action(false),0x22=>self.launch_registered(),0x1c=>self.select(App::Terminal),_=>{}}return;}
         if key==0x57{self.select(App::Sheet);return;}
         if key==0x42{self.select(App::Browser);return;}
         if key>=0x3b&&key<=0x3f{self.select(APPS[(key-0x3b)as usize]);return;}
@@ -327,6 +325,7 @@ impl Ui{
             0x12 if self.app==Some(App::Files)=>self.select(App::Notepad),0x31 if self.app==Some(App::Files)=>self.new_file(),0x20 if self.app==Some(App::Files)=>self.delete_file(),_=>{}
         }
     }
+    fn launch_registered(&mut self){let buf=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};if self.store.load_7zip(buf).is_none(){self.store_msg="Install the verified package first";self.draw();return;}if crate::trial::original_gui_live(self.c.fb.width.saturating_sub(48),self.bar_y().saturating_sub(78)){self.select(App::WinLive);serial::line("H5K: STORE_GUI_LAUNCHED");}else{self.store_msg="Original GUI startup blocked";self.draw();}}
     fn package_action(&mut self,install:bool){let ok=if install{self.store.install_7zip(crate::trial::BUNDLED)}else{self.store.uninstall_7zip()};if ok{self.package_installed=install;}self.store_msg=if ok{if install{"Portable package installed"}else{"Package disabled; user files retained"}}else{"Package transaction failed"};serial::line(if ok{if install{"H5K: STORE_INSTALL_OK"}else{"H5K: STORE_UNINSTALL_OK"}}else{"H5K: STORE_ACTION_FAILED"});self.draw();}
     fn click(&mut self){
         let x=self.mx;let y=self.my;let by=self.bar_y();let dock=self.dock_x();
@@ -336,6 +335,7 @@ impl Ui{
             if y<r.y+42{if x>=r.x+r.w-38{self.close();}else if x>=r.x+r.w-73{self.maximize();}else if x>=r.x+r.w-108{self.minimized=true;self.draw();}else if !self.maximized{self.drag=Some((x-r.x,y-r.y));}return;}
             let bx=r.x+22;let yy=r.y+58;
             if a==App::WinLive{if x>=bx&&y>=yy{crate::trial::live_click(x-bx,y-yy);if !crate::trial::live_active(){self.close();}else{self.draw();}}return;}
+            if a==App::Store&&x>=bx+240&&x<bx+455&&y>=yy+144&&y<yy+178{self.launch_registered();return;}
             if a==App::Store&&x>=bx&&x<bx+230{if y>=yy+98&&y<yy+132{self.package_action(x<bx+120);return;}if y>=yy+144&&y<yy+178{self.select(App::Terminal);return;}}
             if a==App::Sheet&&x>=bx+30&&y>=yy+87&&y<yy+207{let cw=(r.w-76)/4;let col=(x-bx-30)/cw;let row=(y-yy-87)/30;if col<4{self.sheet_cell=row*4+col;self.sheet_len=0;self.draw();}return;}
             if a==App::Network&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+190{self.connect_net();return;}
@@ -346,9 +346,10 @@ impl Ui{
             if a==App::Files&&y>=yy+43&&y<yy+77{if x>=bx&&x<bx+106{self.new_file();}else if x>=bx+116&&x<bx+206{self.delete_file();}}
             if a==App::System{
                 if x>=bx&&x<bx+426&&y>=yy+96&&y<yy+168{let row=(y-yy-96)/38;let col=(x-bx)/142;if (x-bx)%142<134&&(y-yy-96)%38<34{self.apply_display(row*3+col);return;}}
-                if x>=bx&&x<bx+180&&y>=yy+231&&y<yy+265{self.theme();}
+                if x>=bx&&x<bx+415&&y>=yy+228&&y<yy+260{self.apply_scale([100,125,150,175,200][(x-bx)/83]);return;}if x>=bx&&x<bx+180&&y>=yy+266&&y<yy+296{self.theme();}
             }return;
         }}
+        if let Some(s)=self.background.iter().rev().flatten().find(|s|!s.minimized&&s.win.hit(x,y)).copied(){self.select(s.app);return;}
         if x<100&&y>=374&&y<435&&by>438{self.select(App::Sheet);return;}
         if x<100&&y>=8&&y<374{let i=(y-8)/61;if i<6{self.select(APPS[i]);}}
     }
@@ -377,13 +378,14 @@ fn init_input()->bool{
 }
 
 pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Store)->!{
+    let mut canvas=Canvas::new(fb);if let Some((mode,scale))=store.display_settings(){if let Some(actual)=crate::display::set_mode(fb,mode){canvas=Canvas::scaled(actual,scale);serial::line("H5K: DISPLAY_SETTINGS_RESTORED");serial::metric("H5K: DISPLAY_SCALE=",canvas.scale as u64);}}let fb=canvas.fb;
     if fb.width<640||fb.height<480{serial::line("H5K: FAIL DESKTOP_RESOLUTION");crate::kernel::halt();}
     let w=560.min(fb.width.saturating_sub(108));let h=365.min(fb.height.saturating_sub(66));let win=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};
     let mut cache=[EMPTY_FILE;FILE_COUNT];cache[0]=FileSlot{data:files.data,len:files.len,present:files.present};
     for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
     let _=store.load(0);
     let mut url=[0;128];let default=b"http://10.0.2.200:8080/hello.exe";url[..default.len()].copy_from_slice(default);
-    let mut ui=Ui{display_msg:"Select a supported display mode",package_installed:false,store_msg:"F12 opens Hi5Store",c:Canvas::new(fb),app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",pe_report:crate::imports::Report::default(),rebase:crate::relocate::Report::default(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
+    let mut ui=Ui{background:[None;9],display_msg:"Select a supported display mode",package_installed:false,store_msg:"F12 opens Hi5Store",c:canvas,app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",pe_report:crate::imports::Report::default(),rebase:crate::relocate::Report::default(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");
@@ -393,7 +395,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     loop{match ui.tasks.dispatch(){
         0=>{for _ in 0..32{let st=p::input(0x64);if st&1==0{break;}let b=p::input(0x60);if st&0x20!=0{
             if pos==0&&b&8==0{continue;}packet[pos]=b;pos+=1;if pos==3{pos=0;let flags=packet[0];if flags&0xc0!=0{continue;}let dx=packet[1]as isize-if flags&0x10!=0{256}else{0};let dy=packet[2]as isize-if flags&0x20!=0{256}else{0};let pressed=flags&1!=0;ui.move_pointer(dx,dy,pressed,down);down=pressed;}
-        }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
+        }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.app==Some(App::WinLive)&&b&0x80==0{let vk=match b{0x48=>38,0x50=>40,0x4b=>37,0x4d=>39,0x47=>36,0x4f=>35,0x49=>33,0x51=>34,0x53=>46,_=>0};if vk!=0{crate::trial::live_key(vk,None);if !crate::trial::live_active(){ui.close();}else{ui.draw();}}}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
         1=>{if ui.app==Some(App::WinLive){crate::trial::live_tick();if !crate::trial::live_active(){ui.close();}}else{core::hint::spin_loop();}},_=>p::wait_tick(),
     }}
 }
