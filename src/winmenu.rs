@@ -29,10 +29,23 @@ impl Menus{
     pub fn destroy(&mut self,h:u64)->bool{if self.attached(h){return false;}self.destroy_inner(h)}
     fn destroy_inner(&mut self,h:u64)->bool{let Some(i)=self.index(h)else{return false;};let n=self.slots[i].len;self.slots[i].handle=0;self.slots[i].len=0;for p in 0..n{let sub=self.slots[i].items[p].sub;if sub!=0{self.destroy_inner(sub);}}true}
     pub fn load(&mut self,data:&[u8])->Option<u64>{
-        if word(data,0)?!=0{return None;}let mut pos=4usize.checked_add(word(data,2)? as usize)?;let start=self.next;
-        let result=self.parse(data,&mut pos,0);
+        let version=word(data,0)?;let mut pos=4usize.checked_add(word(data,2)? as usize)?;let start=self.next;
+        let result=match version{0=>self.parse(data,&mut pos,0),1 if pos>=8&&pos%4==0=>self.parse_ex(data,&mut pos,0),_=>None};
         if result.is_none(){for m in &mut self.slots{if m.handle>=start{m.handle=0;m.len=0;}}}
         result
+    }
+    // MENUEX_TEMPLATE_HEADER (version 1), followed by aligned MENUEX_TEMPLATE_ITEMs.
+    fn parse_ex(&mut self,data:&[u8],p:&mut usize,depth:usize)->Option<u64>{
+        if depth>=8{return None;}let h=self.create()?;
+        loop{
+            *p=align4(*p)?;let typ=dword(data,*p)?;let state=dword(data,(*p).checked_add(4)?)?;let id=dword(data,(*p).checked_add(8)?)?;
+            *p=(*p).checked_add(12)?;let flags=take(data,p)?;if flags&!0x81!=0{return None;}
+            let mut item=Item{typ,state,id,..EMPTY};
+            loop{let c=take(data,p)?;if c==0{break;}if item.len==LABEL-1{return None;}item.text[item.len]=c;item.len+=1;}
+            *p=align4(*p)?;
+            if flags&1!=0{let _help=dword(data,*p)?;*p=(*p).checked_add(4)?;item.sub=self.parse_ex(data,p,depth+1)?;}
+            if !self.insert(h,u32::MAX,true,item){return None;}if flags&0x80!=0{break;}
+        }Some(h)
     }
     fn parse(&mut self,data:&[u8],p:&mut usize,depth:usize)->Option<u64>{
         if depth>=8{return None;}let h=self.create()?;
@@ -44,6 +57,8 @@ impl Menus{
         }Some(h)
     }
 }
+fn align4(p:usize)->Option<usize>{Some(p.checked_add(3)?&!3)}
+fn dword(b:&[u8],p:usize)->Option<u32>{Some(u32::from_le_bytes(b.get(p..p.checked_add(4)?)?.try_into().ok()?))}
 fn word(b:&[u8],p:usize)->Option<u16>{Some(u16::from_le_bytes(b.get(p..p.checked_add(2)?)?.try_into().ok()?))}
 fn take(b:&[u8],p:&mut usize)->Option<u16>{let v=word(b,*p)?;*p=(*p).checked_add(2)?;Some(v)}
 pub fn self_test(m:&mut Menus)->bool{
@@ -55,5 +70,10 @@ pub fn self_test(m:&mut Menus)->bool{
     if m.count(h)!=Some(1)||m.count(file.sub)!=Some(2)||m.get(file.sub,42,false).map(|i|i.len)!=Some(4)||m.get(file.sub,1,true).map(|i|i.typ)!=Some(0x800){return false;}
     let Some(copy)=m.create()else{return false;};let mut v=m.get(file.sub,0,true).unwrap();v.state=8;
     if !m.insert(copy,0,true,v)||m.get(copy,42,false).map(|i|i.state)!=Some(8)||m.insert(file.sub,0,true,Item{sub:h,..EMPTY})||m.destroy(file.sub)||!m.remove(copy,0,true,false)||m.count(copy)!=Some(0){return false;}
-    if m.load(&b[..b.len()-2]).is_some()||!m.destroy(h)||m.valid(file.sub)||!m.destroy(copy){return false;}m.reset();true
+    if m.load(&b[..b.len()-2]).is_some()||!m.destroy(h)||m.valid(file.sub)||!m.destroy(copy){return false;}
+    // MENUEX with popup id=500, child id=42, checked state and UTF16 text.
+    let ex:[u16;26]=[1,4,0,0, 0,0,0,0,500,0,0x81,70,0,0, 0,0, 0,0,8,0,42,0,0x80,79,0,0];
+    let b=unsafe{core::slice::from_raw_parts(ex.as_ptr().cast::<u8>(),ex.len()*2)};
+    let Some(h)=m.load(b)else{return false;};let Some(v)=m.get(h,0,true)else{return false;};
+    if v.id!=500||m.get(v.sub,0,true).map(|i|(i.id,i.state,i.text[0]))!=Some((42,8,79))||m.load(&b[..b.len()-4]).is_some()||!m.destroy(h){return false;}m.reset();true
 }
