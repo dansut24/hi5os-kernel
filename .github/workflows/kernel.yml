@@ -8,7 +8,7 @@ permissions:
 jobs:
   build-and-boot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - name: Install VM and image tools
@@ -50,6 +50,8 @@ jobs:
         run: python3 scripts/offline7zip.py max
       - name: Genuine ZIP and 7z round trip (required)
         run: python3 scripts/archive7zip.py --require
+      - name: Expanded archive, PE DLL GUI fixture and package lifecycle (diagnostic)
+        run: python3 scripts/archive7zip.py --extended
       - name: Original GUI EXE and MSI dependency inventory
         run: /usr/bin/python3 scripts/gui_inventory.py
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
@@ -58,7 +60,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.2.7-vm-evidence
+          name: hi5os-v0.3.4-vm-evidence
           path: dist/
           if-no-files-found: warn
           retention-days: 14
@@ -67,8 +69,8 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: hi5os-v0.2.7-UTM
-          path: dist/hi5os-v0.2.7.img
+          name: hi5os-v0.3.4-UTM
+          path: dist/hi5os-v0.3.4.img
           compression-level: 6
           if-no-files-found: error
           retention-days: 14

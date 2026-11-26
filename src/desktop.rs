@@ -1,4 +1,4 @@
-//! Hi5Desktop v0.2.7 — native software GUI; single foreground window.
+//! Hi5Desktop v0.3.4 — native software GUI; single foreground window.
 use crate::{boot::Framebuffer,ui::{Canvas,Color},platform as p,services::{Files,Tasks},serial,disk::{Store,CAP,FILE_COUNT,NAMES}};
 use core::ptr;
 use crate::net::{Nic,MAX_RESPONSE};

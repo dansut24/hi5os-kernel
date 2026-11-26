@@ -11,7 +11,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
     qmp=tmp/"qmp.sock";vars=tmp/"vars.fd";shutil.copyfile(var,vars)
     cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu",CPU,"-m","512","-smp","1",
          "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
-         "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.7.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
+         "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.3.4.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
          "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
          "-nic","none","-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
     proc=subprocess.Popen(cmd)

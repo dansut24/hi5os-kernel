@@ -2,16 +2,17 @@
 """UTM-equivalent offline package installation and actual trial launch."""
 import pathlib,tempfile,shutil,subprocess,time,socket,json,struct,zlib,hashlib,sys
 CPU=next((a for a in sys.argv[1:] if not a.startswith("--")),"qemu64")
+suffix="-extended" if "--extended" in sys.argv else ""
 assert CPU in ("qemu64","max")
 from smoke import ROOT,firmware,validate
 code,var=firmware()
 with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
     tmp=pathlib.Path(td);data=tmp/"data.img";shutil.copyfile(ROOT/"dist/hi5os-data-v1.img",data)
-    log=ROOT/"dist"/f"7zip-archive-{CPU}.log";log.unlink(missing_ok=True)
+    log=ROOT/"dist"/f"7zip-archive-{CPU}{suffix}.log";log.unlink(missing_ok=True)
     qmp=tmp/"qmp.sock";vars=tmp/"vars.fd";shutil.copyfile(var,vars)
     cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu",CPU,"-m","512","-smp","1",
          "-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}",
-         "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.2.7.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
+         "-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.3.4.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1",
          "-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2",
          "-nic","none","-vga","std","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
     proc=subprocess.Popen(cmd)
@@ -70,7 +71,22 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 print("ARCHIVE OP:",op,"PASS" if ok else "NOT QUALIFIED",flush=True)
             assert results["7za i"],"Regression: genuine supported-format output no longer qualified"
             results["arcverify"]=b"SHELL_ARCHIVE_VERIFY_OK" in command("arcverify",b"SHELL_ARCHIVE_VERIFY_OK")
-            call("screendump",{"filename":str(ROOT/"dist"/f"7zip-archive-{CPU}-512m.ppm")});call("quit")
+            if "--extended" in sys.argv:
+                assert b"SHELL_ARCSEED_OK" in command("arcbig",b"SHELL_ARCSEED_OK")
+                for op in ["7za a -mx=1 -mmt=1 multi.zip batch","7za a -mx=1 -mmt=1 multi.7z batch","7za t multi.zip","7za t multi.7z"]:
+                    tail=command(op);results[op]=b"TRIAL_RESULT=0x0000000000000001" in tail and b"TRIAL_EXIT=0x0000000000000000" in tail and b"Everything is Ok" in tail
+                    print("EXTENDED OP:",op,results[op],flush=True)
+                assert b"SHELL_ARCSEED_OK" in command("arcupdate",b"SHELL_ARCSEED_OK")
+                for op in ["7za u -mx=1 -mmt=1 multi.zip batch/small.txt","7za u -mx=1 -mmt=1 multi.7z batch/small.txt","7za d multi.zip batch/large.bin","7za d multi.7z batch/large.bin"]:
+                    tail=command(op);results[op]=b"TRIAL_RESULT=0x0000000000000001" in tail and b"TRIAL_EXIT=0x0000000000000000" in tail and b"Everything is Ok" in tail
+                    print("EXTENDED OP:",op,results[op],flush=True)
+                key("f6");wait(b"GUI_WINDEMO_OPEN",30);results["compiled PE GUI/DLL"]=b"GUI_PE_DLL_EXECUTED" in log.read_bytes()
+                call("screendump",{"filename":str(ROOT/"dist"/"wingui-demo.ppm")})
+                key("f12");wait(b"GUI_STORE_OPEN",30);key("u");wait(b"STORE_UNINSTALL_OK",30);key("ret")
+                results["portable uninstall blocks execution"]=b"SHELL_7ZIP_BLOCKED" in command("7za -h")
+                key("f12");key("i");wait(b"STORE_INSTALL_OK",120);key("ret")
+                results["portable reinstall"]=b"SEVENZIP_HELP_OK" in command("7za -h")
+            call("screendump",{"filename":str(ROOT/"dist"/f"7zip-archive-{CPU}{suffix}-512m.ppm")});call("quit")
         proc.wait(timeout=10)
         assert proc.returncode==0
         with data.open("rb") as fh:
@@ -83,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
         import zipfile,io
         candidates=[]
         with data.open("rb") as fh:
-            for base in (16384,18432):
+            for base in (16384,18432,20480,26624):
                 fh.seek(base*512);hdr=fh.read(512)
                 if hdr[:8]!=b"H5WORK01" or zlib.crc32(hdr[:508])!=struct.unpack_from("<I",hdr,508)[0]:continue
                 gen,n,crc=struct.unpack_from("<III",hdr,8);body=fh.read(n)
@@ -108,7 +124,21 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
         except (KeyError,subprocess.TimeoutExpired):results["host 7z verify"]=False
         results["extracted ZIP bytes"]=files.get("outzip\\notes.txt")==sample
         results["extracted 7z bytes"]=files.get("out7z\\notes.txt")==sample
-        (ROOT/"dist"/"7zip-archive-results.json").write_text(json.dumps(results,indent=2)+"\n")
+        if "--extended" in sys.argv:
+            original=bytes((i*17+j*31+(j>>8))&255 for i in range(48) for j in range(4096))
+            results["large persisted source"]=files.get("batch\\large.bin")==original
+            expected=b"Hi5OS updated content\r\n"
+            try:
+                with zipfile.ZipFile(io.BytesIO(files["multi.zip"])) as z:
+                    results["updated ZIP deletion"]=z.testzip() is None and z.read("batch/small.txt")==expected and "batch/large.bin" not in z.namelist()
+            except (KeyError,zipfile.BadZipFile):results["updated ZIP deletion"]=False
+            try:
+                arc=tmp/"multi.7z";arc.write_bytes(files["multi.7z"])
+                p=subprocess.run(["7z","x","-so",str(arc),"batch/small.txt"],capture_output=True,timeout=30)
+                listing=subprocess.run(["7z","l","-slt",str(arc)],capture_output=True,timeout=30)
+                results["updated 7z deletion"]=p.returncode==0 and p.stdout==expected and listing.returncode==0 and b"Path = batch/large.bin" not in listing.stdout and b"Path = batch\\large.bin" not in listing.stdout
+            except (KeyError,subprocess.TimeoutExpired):results["updated 7z deletion"]=False
+        (ROOT/"dist"/("7zip-archive"+suffix+"-results.json")).write_text(json.dumps(results,indent=2)+"\n")
         print("Archive qualification:",json.dumps(results))
         if not all(results.values()):print("::warning::Archive functionality NOT qualified; see operation results and actual API trace")
         # Strict release mode is separate from the diagnostic candidate.
