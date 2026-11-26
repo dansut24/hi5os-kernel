@@ -5,9 +5,9 @@ const CLASS:Class=Class{atom:0,proc:0,name:[0;64],len:0};
 const WINDOW:Window=Window{handle:0,atom:0,parent:0,rect:[0;4],visible:false,menu:0,id:0,user:0,style:0,ex:0};
 #[derive(Clone,Copy,PartialEq,Debug)]pub struct Message{pub hwnd:u64,pub id:u32,pub wparam:u64,pub lparam:u64}
 const MSG:Message=Message{hwnd:0,id:0,wparam:0,lparam:0};
-pub struct Desktop{classes:[Class;16],windows:[Window;32],q:[Message;128],head:usize,len:usize,next:u64}
+pub struct Desktop{classes:[Class;16],windows:[Window;32],q:[Message;128],head:usize,len:usize,next:u64,focus:u64}
 impl Desktop{
-    pub const fn new()->Self{Self{classes:[CLASS;16],windows:[WINDOW;32],q:[MSG;128],head:0,len:0,next:1}}
+    pub const fn new()->Self{Self{classes:[CLASS;16],windows:[WINDOW;32],q:[MSG;128],head:0,len:0,next:1,focus:0}}
     pub fn register(&mut self,name:&[u8],proc:u64)->Option<u16>{
         if name.is_empty()||name.len()>64||!name.iter().all(|c|(32..127).contains(c))||proc==0||self.classes.iter().any(|c|c.atom!=0&&c.name[..c.len].eq_ignore_ascii_case(name)){return None;}
         let i=self.classes.iter().position(|c|c.atom==0)?;let atom=(i+1)as u16;let c=&mut self.classes[i];c.atom=atom;c.proc=proc;c.len=name.len();c.name[..name.len()].copy_from_slice(name);Some(atom)
@@ -53,6 +53,13 @@ impl Desktop{
         while let Some(child)=self.windows.iter().find(|w|w.handle!=0&&w.parent==h).map(|w|w.handle){if !self.discard_tree(child){return false;}}
         self.destroy(h)
     }
+    // Geometry and focus state only; resize/focus notification delivery and paint remain separate.
+    pub fn move_window(&mut self,h:u64,x:i32,y:i32,w:i32,height:i32)->bool{
+        let Some(i)=self.window(h)else{return false;};if w<0||height<0||w>16384||height>16384{return false;}
+        self.windows[i].rect=[x,y,w,height];true
+    }
+    pub fn focus(&self)->u64{self.focus}
+    pub fn set_focus(&mut self,h:u64)->Option<u64>{if h!=0&&self.window(h).is_none(){return None;}let old=self.focus;self.focus=h;Some(old)}
     pub fn post(&mut self,m:Message)->bool{
         if self.len==128||m.hwnd!=0&&self.window(m.hwnd).is_none(){return false;}
         self.q[(self.head+self.len)%128]=m;self.len+=1;true
@@ -62,7 +69,7 @@ impl Desktop{
         let Some(i)=self.window(h)else{return false;};if self.windows.iter().any(|w|w.handle!=0&&w.parent==h){return false;}
         // Do not deliver stale messages for destroyed handles; no callback dispatched here.
         let count=self.len;for _ in 0..count{let m=self.peek(true).unwrap();if m.hwnd!=h{self.post(m);}}
-        self.windows[i]=WINDOW;true
+        if self.focus==h{self.focus=0;}self.windows[i]=WINDOW;true
     }
 }
 pub fn self_test()->bool{
@@ -72,6 +79,7 @@ pub fn self_test()->bool{
     let Some(child)=d.create(a,h,[1,1,20,20])else{return false;};
     if d.procedure(h)!=Some(0x1000)||d.rect(h)!=Some([0,0,320,240])||d.destroy(h)||!d.show(h,true){return false;}
     if !d.configure(child,0x50000000,0,77)||d.parent(child)!=Some(h)||d.id(child)!=Some(77)||d.screen_rect(child)!=Some([1,1,21,21])||d.set_user(child,88)!=Some(0)||d.long(child,-21)!=Some(88){return false;}
+    if d.set_focus(child)!=Some(0)||d.focus()!=child||!d.move_window(child,2,3,30,40)||d.screen_rect(child)!=Some([2,3,32,43]){return false;}
     let Some(first)=d.peek(false)else{return false;};if first.id!=1||d.peek(true)!=Some(first){return false;}
     if !d.destroy(child)||!d.destroy(h)||d.peek(true).is_some()||d.post(Message{hwnd:h,id:0,wparam:0,lparam:0}){return false;}
     for i in 0..128{if !d.post(Message{hwnd:0,id:i,wparam:0,lparam:0}){return false;}}

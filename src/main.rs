@@ -18,6 +18,7 @@ mod relocate;
 mod trial;
 mod trialfs;
 mod winwindow;
+mod winmenu;
 mod msi;
 mod procman;
 mod pegraph;
