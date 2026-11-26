@@ -91,10 +91,16 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 ready=b"ORIGINAL_GUI_LIVE_WAIT" in tail and b"GUI_WINLIVE_OPEN" in tail
                 results["original live window"]=ready
                 if ready:
-                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-original-live.ppm")})
+                    screenshot=ROOT/"dist"/"7zip-original-live.ppm"
+                    call("screendump",{"filename":str(screenshot)})
+                    time.sleep(5)
+                    current=log.read_bytes().rsplit(b"ORIGINAL_GUI_LIVE_WAIT",1)[-1]
+                    ready=proc.poll() is None and screenshot.is_file() and screenshot.stat().st_size>1024 and not any(m in current for m in (b"ORIGINAL_GUI_LIVE_END",b"ORIGINAL_GUI_SESSION_DISCARDED",b"SHELL_ORIGINAL_GUI_LIVE_BLOCKED",b"H5K: PANIC",b"H5K: FAIL "))
+                    if ready:
+                        call("screendump",{"filename":str(ROOT/"dist"/"7zip-original-live-persistent.ppm")})
                     key("ctrl-esc");key("f4")
+                results["original live persistence"]=ready
                 print("ORIGINAL GUI LIVE:",ready,flush=True)
-                if "--require-live" in sys.argv:assert ready,"Original 7-Zip never reached visible message wait"
                 key("f12");wait(b"GUI_STORE_OPEN",30);key("u");wait(b"STORE_UNINSTALL_OK",30);key("ret")
                 results["portable uninstall blocks execution"]=b"SHELL_7ZIP_BLOCKED" in command("7za -h")
                 key("f12");key("i");wait(b"STORE_INSTALL_OK",120);key("ret")
@@ -156,6 +162,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
         if not all(results.values()):print("::warning::Archive functionality NOT qualified; see operation results and actual API trace")
         # Strict release mode is separate from the diagnostic candidate.
         if "--require" in sys.argv:assert all(results.values()),results
+        if "--require-live" in sys.argv:assert results.get("original live window") and results.get("original live persistence"),"Original 7-Zip did not reach and maintain visible message wait"
     finally:
         if proc.poll() is None:
             proc.terminate()
