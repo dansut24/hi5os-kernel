@@ -5,8 +5,8 @@ use crate::net::{Nic,MAX_RESPONSE};
 const BLUE:Color=[34,112,195];const WHITE:Color=[255,255,255];const GOLD:Color=[234,178,66];
 #[derive(Clone,Copy)]struct Palette{wall:Color,wall2:Color,bar:Color,panel:Color,sub:Color,ink:Color,muted:Color,edge:Color,green:Color}
 fn palette(dark:bool)->Palette{if dark{Palette{wall:[19,39,61],wall2:[32,65,92],bar:[27,42,58],panel:[34,50,67],sub:[45,63,81],ink:[231,240,247],muted:[169,189,207],edge:[58,80,102],green:[113,221,166]}}else{Palette{wall:[211,229,244],wall2:[175,205,232],bar:[244,248,252],panel:[255,255,255],sub:[238,244,249],ink:[27,43,61],muted:[83,105,127],edge:[204,218,230],green:[23,128,83]}}}
-#[derive(Clone,Copy,PartialEq)]enum App{System,Files,Network,Terminal,Notepad,Browser,Sheet,Store,WinDemo}
-impl App{fn title(self)->&'static str{match self{Self::System=>"Settings",Self::Files=>"File Explorer",Self::Network=>"Network",Self::Terminal=>"Terminal",Self::Notepad=>"Notepad",Self::Browser=>"Hi5Browser",Self::Sheet=>"Hi5Sheet",Self::Store=>"Hi5Store",Self::WinDemo=>"Windows GUI test"}}}
+#[derive(Clone,Copy,PartialEq)]enum App{System,Files,Network,Terminal,Notepad,Browser,Sheet,Store,WinDemo,WinLive}
+impl App{fn title(self)->&'static str{match self{Self::System=>"Settings",Self::Files=>"File Explorer",Self::Network=>"Network",Self::Terminal=>"Terminal",Self::Notepad=>"Notepad",Self::Browser=>"Hi5Browser",Self::Sheet=>"Hi5Sheet",Self::Store=>"Hi5Store",Self::WinDemo=>"Windows GUI test",Self::WinLive=>"Windows application"}}}
 const APPS:[App;6]=[App::System,App::Files,App::Network,App::Terminal,App::Notepad,App::Browser];
 #[derive(Clone,Copy)]struct Rect{x:usize,y:usize,w:usize,h:usize}
 impl Rect{fn hit(self,x:usize,y:usize)->bool{x>=self.x&&x<self.x+self.w&&y>=self.y&&y<self.y+self.h}}
@@ -34,7 +34,7 @@ impl Ui{
             App::Terminal=>{c.round(x,y,34,30,5,[30,44,58]);c.text(x+5,y+4,">_",WHITE);}
             App::Notepad=>{c.round(x+4,y,26,34,4,[250,251,253]);for i in 0..4{c.rect(x+9,y+8+i*5,16,2,BLUE);}}
             App::Browser=>{c.round(x,y,34,34,15,[34,142,155]);c.rect(x+4,y+16,26,2,WHITE);c.rect(x+16,y+4,2,26,WHITE);}
-            App::Store|App::WinDemo=>{c.round(x,y,34,34,5,BLUE);c.text(x+5,y+5,"APP",WHITE);}
+            App::Store|App::WinDemo|App::WinLive=>{c.round(x,y,34,34,5,BLUE);c.text(x+5,y+5,"APP",WHITE);}
             App::Sheet=>{c.round(x,y,34,34,5,[25,135,84]);for i in 0..3{c.rect(x+5,y+7+i*9,24,1,WHITE);c.rect(x+7+i*9,y+5,1,24,WHITE);}}
         }
     }
@@ -45,7 +45,7 @@ impl Ui{
         for y in 0..by{let mix=|i:usize|((q.wall[i]as usize*(by-y)+q.wall2[i]as usize*y)/by.max(1))as u8;c.rect(0,y,w,1,[mix(0),mix(1),mix(2)]);}
         c.title(w.saturating_sub(145),20,"Hi5OS",q.ink);
         c.text(w.saturating_sub(202),54,concat!("Developer preview ",env!("CARGO_PKG_VERSION")),q.muted);
-        for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser",App::Sheet=>"Sheet",App::Store=>"Store",App::WinDemo=>"WinDemo"};c.text(18,y+35,label,q.ink);}
+        for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser",App::Sheet=>"Sheet",App::Store=>"Store",App::WinDemo=>"WinDemo",App::WinLive=>"Windows"};c.text(18,y+35,label,q.ink);}
         if by>438{self.icon(App::Sheet,31,374);c.text(18,409,"Sheet",q.ink);}
         if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);
@@ -69,6 +69,7 @@ impl Ui{
         self.button(Rect{x:r.x+r.w-38,y:r.y+5,w:30,h:30},"x",q.sub,q.ink);
         let x=r.x+22;let y=r.y+58;let right=r.x+r.w-14;
         match a{
+            App::WinLive=>{crate::trial::live_draw(c,x,y,right.saturating_sub(x),(r.y+r.h).saturating_sub(y+8));},
             App::WinDemo=>{
                 c.title(x,y,"Compiled Windows PE GUI fixture",q.ink);
                 c.text_limit(x,y+38,"USER32/GDI32 calls through Hi5Compat",q.muted,false,right);
@@ -183,7 +184,7 @@ impl Ui{
                     c.text_limit(x,bottom.saturating_sub(25),"PgUp/PgDn: scroll | Esc: close",fg,false,right);return;
                 }
                 match self.term.result{
-                    1=>{c.text_limit(x,y+91,"F12: Hi5Store | Ctrl+F6: GUI fixture | 7zfm: original probe",fg,false,right);}
+                    1=>{c.text_limit(x,y+91,"F12: Hi5Store | Ctrl+F6: fixture | 7zlive: live trial",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
                     3=>c.text(x,y+91,concat!("Hi5OS ",env!("CARGO_PKG_VERSION")),fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
@@ -213,7 +214,7 @@ impl Ui{
             }
         }
     }
-    fn select(&mut self,a:App){if a==App::WinDemo{self.store_msg=if crate::trial::run_gui_fixture(){"PE/DLL and Win32 drawing fixture passed"}else{"PE GUI fixture failed"};}if a==App::Store{let b=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};self.package_installed=self.store.load_7zip(b).is_some();}if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN",App::Browser=>"H5K: GUI_BROWSER_OPEN",App::Sheet=>"H5K: GUI_SHEET_OPEN",App::Store=>"H5K: GUI_STORE_OPEN",App::WinDemo=>"H5K: GUI_WINDEMO_OPEN"});self.draw();}
+    fn select(&mut self,a:App){if self.app==Some(App::WinLive)&&a!=App::WinLive{crate::trial::live_close();}if a==App::WinDemo{self.store_msg=if crate::trial::run_gui_fixture(){"PE/DLL and Win32 drawing fixture passed"}else{"PE GUI fixture failed"};}if a==App::Store{let b=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};self.package_installed=self.store.load_7zip(b).is_some();}if a==App::Notepad&&!self.dirty{self.load_note();}self.app=Some(a);self.minimized=false;self.menu=false;serial::line(match a{App::System=>"H5K: GUI_SYSTEM_OPEN",App::Files=>"H5K: GUI_FILES_OPEN",App::Network=>"H5K: GUI_NETWORK_OPEN",App::Terminal=>"H5K: GUI_TERMINAL_OPEN",App::Notepad=>"H5K: GUI_NOTEPAD_OPEN",App::Browser=>"H5K: GUI_BROWSER_OPEN",App::Sheet=>"H5K: GUI_SHEET_OPEN",App::Store=>"H5K: GUI_STORE_OPEN",App::WinDemo=>"H5K: GUI_WINDEMO_OPEN",App::WinLive=>"H5K: GUI_WINLIVE_OPEN"});self.draw();}
     fn theme(&mut self){self.dark=!self.dark;serial::line(if self.dark{"H5K: GUI_THEME_DARK"}else{"H5K: GUI_THEME_LIGHT"});self.draw();}
     fn cache_current(&mut self){let s=&mut self.cache[self.file];s.data=self.files.data;s.len=self.files.len;s.present=self.files.present;}
     fn switch_file(&mut self,i:usize){
@@ -237,14 +238,14 @@ impl Ui{
     }
     fn new_file(&mut self){self.files.write(b"New Hi5OS note");self.cache_current();if self.store.attached(){self.store.save(true,b"New Hi5OS note");}self.dirty=false;self.save_status=0;serial::line("H5K: GUI_FILE_CREATED");self.draw();}
     fn delete_file(&mut self){self.files.remove();self.cache_current();if self.store.attached(){self.store.save(false,&[]);}self.dirty=false;self.note_len=0;self.save_status=0;serial::line("H5K: GUI_FILE_DELETED");self.draw();}
-    fn close(&mut self){self.app=None;self.minimized=false;self.menu=false;self.drag=None;serial::line("H5K: GUI_HOME");self.draw();}
+    fn close(&mut self){if self.app==Some(App::WinLive){crate::trial::live_close();}self.app=None;self.minimized=false;self.menu=false;self.drag=None;serial::line("H5K: GUI_HOME");self.draw();}
     fn maximize(&mut self){if self.maximized{self.win=self.restore;}else{self.restore=self.win;self.win=Rect{x:6,y:6,w:self.c.fb.width.saturating_sub(12),h:self.bar_y().saturating_sub(12)};}self.maximized=!self.maximized;serial::line(if self.maximized{"H5K: GUI_MAXIMIZED"}else{"H5K: GUI_RESTORED"});self.draw();}
     fn load_workspace(&mut self){if !self.term.workspace{let b=unsafe{&mut *ptr::addr_of_mut!(WORK_BUFFER)};if let Some(n)=self.store.load_workspace(b){let _=crate::trial::workspace_load(&b[..n]);}else{crate::trial::workspace_ready();}self.term.workspace=true;}}
     fn save_workspace(&mut self)->bool{let b=unsafe{&mut *ptr::addr_of_mut!(WORK_BUFFER)};if let Some(n)=crate::trial::workspace_pack(b){self.store.save_workspace(&b[..n])}else{false}}
     fn terminal_key(&mut self,key:u8){
         match key{
             0x1c=>{
-                let cmd_copy=self.term.buf;let cmd=&cmd_copy[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"winfault"=>{if crate::trial::self_test(){22}else{23}},b"install7zip"=>{let src=if self.web_ok&&crate::trial::verified(&self.web[..self.web_len]){&self.web[..self.web_len]}else{crate::trial::BUNDLED};if self.store.install_7zip(src){26}else{27}},b"arcbig"=>{self.load_workspace();if crate::trial::workspace_large_seed()&&self.save_workspace(){28}else{29}},b"arcupdate"=>{self.load_workspace();if crate::trial::workspace_update_seed()&&self.save_workspace(){28}else{29}},b"uninstall7zip"=>{if self.store.uninstall_7zip(){33}else{27}},b"7zfm"=>{if crate::trial::original_gui_probe(){34}else{35}},b"arcseed"=>{self.load_workspace();if crate::trial::workspace_seed(crate::trial::SAMPLE)&&self.save_workspace(){28}else{29}},b"arcimport"=>{self.load_workspace();let s=self.cache[self.file];if s.present&&crate::trial::workspace_seed(&s.data[..s.len])&&self.save_workspace(){28}else{29}},b"msiinfo"=>{if self.web_ok&&crate::msi::inspect(&self.web[..self.web_len]).is_some(){31}else{32}},b"arcverify"=>{self.load_workspace();if crate::trial::workspace_verify(){30}else{29}},_ if cmd.starts_with(b"7za ")=>{self.load_workspace();let buf=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};let r=if let Some(n)=self.store.load_7zip(buf){crate::trial::run_command(&buf[..n],cmd)}else{Err("Install verified 7za.exe via Hi5Store first")};match r{Ok(_)=>{if crate::trial::command_ok()&&cmd!=b"7za -h"&&cmd!=b"7za i"&&!self.save_workspace(){serial::line("H5K: WORKSPACE_SAVE_FAILED");29}else{24}},Err(e)=>{serial::line(e);25}}},b"winconsole"=>{if crate::platform::run_console_fixture(){20}else{21}},b"winruntime"=>{if crate::platform::run_runtime_fixture(){16}else{17}},b"pereloc"=>{if self.web_ok{match crate::relocate::inspect(&self.web[..self.web_len]){Ok(r)=>{self.rebase=r;18},Err(e)=>{serial::line(e);19}}}else{19}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
+                let cmd_copy=self.term.buf;let cmd=&cmd_copy[..self.term.len];let result=match cmd{b"help"=>1,b"mem"=>2,b"ver"=>3,b"ls"=>4,b"theme"=>5,b"clear"=>0,b"compat"=>7,b"security"=>8,b"sheet"=>9,b"winhello"=>{if crate::platform::run_pe_fixture(){12}else{13}},b"winfault"=>{if crate::trial::self_test(){22}else{23}},b"install7zip"=>{let src=if self.web_ok&&crate::trial::verified(&self.web[..self.web_len]){&self.web[..self.web_len]}else{crate::trial::BUNDLED};if self.store.install_7zip(src){26}else{27}},b"arcbig"=>{self.load_workspace();if crate::trial::workspace_large_seed()&&self.save_workspace(){28}else{29}},b"arcupdate"=>{self.load_workspace();if crate::trial::workspace_update_seed()&&self.save_workspace(){28}else{29}},b"uninstall7zip"=>{if self.store.uninstall_7zip(){33}else{27}},b"7zfm"=>{if crate::trial::original_gui_probe(){34}else{35}},b"7zlive"=>{if crate::trial::original_gui_live(){self.select(App::WinLive);34}else{35}},b"arcseed"=>{self.load_workspace();if crate::trial::workspace_seed(crate::trial::SAMPLE)&&self.save_workspace(){28}else{29}},b"arcimport"=>{self.load_workspace();let s=self.cache[self.file];if s.present&&crate::trial::workspace_seed(&s.data[..s.len])&&self.save_workspace(){28}else{29}},b"msiinfo"=>{if self.web_ok&&crate::msi::inspect(&self.web[..self.web_len]).is_some(){31}else{32}},b"arcverify"=>{self.load_workspace();if crate::trial::workspace_verify(){30}else{29}},_ if cmd.starts_with(b"7za ")=>{self.load_workspace();let buf=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};let r=if let Some(n)=self.store.load_7zip(buf){crate::trial::run_command(&buf[..n],cmd)}else{Err("Install verified 7za.exe via Hi5Store first")};match r{Ok(_)=>{if crate::trial::command_ok()&&cmd!=b"7za -h"&&cmd!=b"7za i"&&!self.save_workspace(){serial::line("H5K: WORKSPACE_SAVE_FAILED");29}else{24}},Err(e)=>{serial::line(e);25}}},b"winconsole"=>{if crate::platform::run_console_fixture(){20}else{21}},b"winruntime"=>{if crate::platform::run_runtime_fixture(){16}else{17}},b"pereloc"=>{if self.web_ok{match crate::relocate::inspect(&self.web[..self.web_len]){Ok(r)=>{self.rebase=r;18},Err(e)=>{serial::line(e);19}}}else{19}},b"pehello"=>{match crate::imports::log(crate::compat::HELLO){Ok(r)=>{self.pe_report=r;14},Err(_)=>15}},b"peinfo"=>{if self.web_ok{match crate::imports::log(&self.web[..self.web_len]){Ok(r)=>{self.pe_report=r;14},Err(e)=>{serial::line(e);15}}}else{15}},_ if cmd.starts_with(b"set ")||cmd.starts_with(b"get ")=>{if let Some(v)=self.sheet.command(cmd){self.sheet_result=v;10}else{11}},_=>6};
                 self.term.last=self.term.buf;self.term.last_len=if result==0{0}else{self.term.len};self.term.len=0;self.term.result=result;self.term.scroll=0;
                 serial::line(match result{1=>"H5K: SHELL_HELP_OK",2=>"H5K: SHELL_MEM_OK",3=>"H5K: SHELL_VER_OK",4=>"H5K: SHELL_LS_OK",5=>"H5K: SHELL_THEME_OK",0=>"H5K: SHELL_CLEAR_OK",7=>"H5K: SHELL_COMPAT_OK",8=>"H5K: SHELL_SECURITY_OK",9=>"H5K: SHELL_SHEET_OK",10=>"H5K: SHELL_CELL_OK",11=>"H5K: SHELL_CELL_REJECTED",12=>"H5K: SHELL_WINHELLO_OK",13=>"H5K: SHELL_WINHELLO_FAILED",14=>"H5K: SHELL_PEINFO_OK",15=>"H5K: SHELL_PEINFO_FAILED",16=>"H5K: SHELL_WINRUNTIME_OK",17=>"H5K: SHELL_WINRUNTIME_FAILED",18=>"H5K: SHELL_PERELOC_OK",19=>"H5K: SHELL_PERELOC_FAILED",20=>"H5K: SHELL_WINCONSOLE_OK",21=>"H5K: SHELL_WINCONSOLE_FAILED",22=>"H5K: SHELL_WINFAULT_OK",23=>"H5K: SHELL_WINFAULT_FAILED",24=>"H5K: SHELL_7ZIP_RETURNED",25=>"H5K: SHELL_7ZIP_BLOCKED",26=>"H5K: SHELL_INSTALL7ZIP_OK",27=>"H5K: SHELL_INSTALL7ZIP_FAILED",28=>"H5K: SHELL_ARCSEED_OK",29=>"H5K: SHELL_WORKSPACE_FAILED",30=>"H5K: SHELL_ARCHIVE_VERIFY_OK",31=>"H5K: SHELL_MSIINFO_OK",32=>"H5K: SHELL_MSIINFO_FAILED",33=>"H5K: SHELL_UNINSTALL7ZIP_OK",34=>"H5K: SHELL_ORIGINAL_GUI_PROBED",35=>"H5K: SHELL_ORIGINAL_GUI_BLOCKED",_=>"H5K: SHELL_UNKNOWN"});
                 if result==10{serial::metric("H5K: SHEET_RESULT=",self.sheet_result as u64);}
@@ -289,6 +290,7 @@ impl Ui{
     fn key(&mut self,key:u8){
         match key{0x1d=>{self.ctrl=true;return;},0x9d=>{self.ctrl=false;return;},0x2a|0x36=>{self.term.shift=true;return;},0xaa|0xb6=>{self.term.shift=false;return;},_=>{}}
         if key&0x80!=0{return;}
+        if self.app==Some(App::WinLive){if key==1&&self.ctrl{self.close();return;}let ch=ascii(key,self.term.shift);let vk=match key{0x01=>27,0x0e=>8,0x0f=>9,0x1c=>13,0x3b..=0x44=>112+(key-0x3b)as u32,_=>ch.map_or(0,|v|v.to_ascii_uppercase()as u32)};if vk!=0{crate::trial::live_key(vk,ch);if !crate::trial::live_active(){self.close();}else{self.draw();}}return;}
         if key==0x01{if self.menu{self.menu=false;self.draw();}else{self.close();}return;}
         if key==0x41&&(self.app==Some(App::Files)||self.app==Some(App::Notepad)){self.switch_file((self.file+1)%FILE_COUNT);return;}
         // Preserve F6 as the existing Notepad save shortcut. GUI fixture is Ctrl+F6.
@@ -316,6 +318,7 @@ impl Ui{
         if let Some(a)=self.app{let r=self.win;if !self.minimized&&r.hit(x,y){
             if y<r.y+42{if x>=r.x+r.w-38{self.close();}else if x>=r.x+r.w-73{self.maximize();}else if x>=r.x+r.w-108{self.minimized=true;self.draw();}else if !self.maximized{self.drag=Some((x-r.x,y-r.y));}return;}
             let bx=r.x+22;let yy=r.y+58;
+            if a==App::WinLive{if x>=bx&&y>=yy{crate::trial::live_click(x-bx,y-yy);if !crate::trial::live_active(){self.close();}else{self.draw();}}return;}
             if a==App::Store&&x>=bx&&x<bx+230{if y>=yy+98&&y<yy+132{self.package_action(x<bx+120);return;}if y>=yy+144&&y<yy+178{self.select(App::Terminal);return;}}
             if a==App::Sheet&&x>=bx+30&&y>=yy+87&&y<yy+207{let cw=(r.w-76)/4;let col=(x-bx-30)/cw;let row=(y-yy-87)/30;if col<4{self.sheet_cell=row*4+col;self.sheet_len=0;self.draw();}return;}
             if a==App::Network&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+190{self.connect_net();return;}

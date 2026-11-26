@@ -18,6 +18,8 @@ impl Controls{
     pub fn abi(&mut self,h:u64,size:u64)->bool{let Some(i)=self.bar(h)else{return false;};if size!=32{return false;}self.bars[i].abi=true;true}
     pub fn set_images(&mut self,h:u64,list:u64)->Option<u64>{let i=self.bar(h)?;if list!=0&&self.list(list).is_none(){return None;}let old=self.bars[i].images;self.bars[i].images=list;Some(old)}
     pub fn add_buttons(&mut self,h:u64,b:&[Button])->bool{let Some(i)=self.bar(h)else{return false;};let v=&mut self.bars[i];if !v.abi||b.len()>32-v.len||b.iter().any(|x|x.len>=96){return false;}v.buttons[v.len..v.len+b.len()].copy_from_slice(b);v.len+=b.len();true}
+    pub fn button(&self,h:u64,n:usize)->Option<(Button,Option<Image>)>{let b=&self.bars[self.bar(h)?];if n>=b.len{return None;}let v=b.buttons[n];let image=if v.image>=0{self.list(b.images).and_then(|i|{let l=&self.lists[i];((v.image as usize)<l.len).then(||l.images[v.image as usize])})}else{None};Some((v,image))}
+    pub fn bar_at(&self,n:usize)->Option<u64>{self.bars.get(n).map(|b|b.hwnd).filter(|h|*h!=0)}
     pub fn button_count(&self,h:u64)->Option<usize>{Some(self.bars[self.bar(h)?].len)}
     pub fn dimensions(&self,h:u64)->Option<(i32,i32)>{let b=&self.bars[self.bar(h)?];let (w,h)=if let Some(i)=self.list(b.images){(self.lists[i].w,self.lists[i].h)}else{(24,24)};Some(((w as usize+12).checked_mul(b.len)? as i32,h as i32+12))}
     fn list(&self,h:u64)->Option<usize>{if h==0{return None;}self.lists.iter().position(|l|l.handle==h)}
@@ -34,6 +36,17 @@ pub fn dib_size(data:&[u8])->Option<(u32,u32)>{
     let colors=if bpp<=8{let used=d(32)?;if used==0{1usize<<bpp}else{if used>1<<bpp{return None;}used as usize}}else{d(32)? as usize};
     let stride=(w as usize*bpp as usize).div_ceil(32)*4;let end=header.checked_add(colors.checked_mul(4)?)?.checked_add(stride.checked_mul(h.unsigned_abs()as usize)?)?;
     if end>data.len(){return None;}Some((w as u32,h.unsigned_abs()))
+}
+pub fn dib_pixel(data:&[u8],x:usize,y:usize)->Option<[u8;3]>{
+    let (w,h)=dib_size(data)?;if x>=w as usize||y>=h as usize{return None;}
+    let d=|at:usize|Some(u32::from_le_bytes(data.get(at..at+4)?.try_into().ok()?));
+    let header=d(0)?as usize;let bpp=u16::from_le_bytes(data.get(14..16)?.try_into().ok()?)as usize;
+    let used=d(32)?as usize;let colors=if bpp<=8&&used==0{1usize<<bpp}else{used};
+    let row=if (d(8)?as i32)<0{y}else{h as usize-1-y};let stride=(w as usize*bpp).div_ceil(32)*4;
+    let start=header+colors*4+row*stride;
+    if bpp<=8{let v=*data.get(start+x*bpp/8)?;let shift=8-bpp-(x*bpp%8);let i=(v as usize>>shift)&((1<<bpp)-1);if i>=colors{return None;}let p=data.get(header+i*4..header+i*4+3)?;return Some([p[2],p[1],p[0]]);}
+    if bpp==16{let i=start+x*2;let v=u16::from_le_bytes(data.get(i..i+2)?.try_into().ok()?);return Some([(((v>>10)&31)*255/31)as u8,(((v>>5)&31)*255/31)as u8,((v&31)*255/31)as u8]);}
+    let i=start+x*(bpp/8);let p=data.get(i..i+3)?;Some([p[2],p[1],p[0]])
 }
 pub fn self_test(c:&mut Controls)->bool{
     c.reset();if !c.add_bar(1)||c.add_bar(1)||c.add_buttons(1,&[BUTTON])||!c.abi(1,32){return false;}
