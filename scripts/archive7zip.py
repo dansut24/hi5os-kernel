@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             assert b"TRIAL_NLS_CONVERSION_OK" in log.read_bytes()
             assert b"TRIAL_FILE_ABI_OK" in log.read_bytes()
             assert b"TRIAL_ARCHIVE_IO_TIME_OK" in log.read_bytes()
+            assert b"TRIAL_USER_TEXT_OK" in log.read_bytes()
             def command(s,marker=b"SHELL_7ZIP_RETURNED"):
                 prior=len(log.read_bytes())
                 for ch in s:key({" ":"spc","-":"minus",".":"dot","=":"equal","/":"slash"}.get(ch,ch))
@@ -62,7 +63,9 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             for op in operations:
                 tail=command(op)
                 ok=b"TRIAL_RESULT=0x0000000000000001" in tail and b"TRIAL_EXIT=0x0000000000000000" in tail and b"SHELL_WORKSPACE_FAILED" not in tail
-                if op=="7za i":ok=ok and b"SEVENZIP_FORMATS_OK" in tail
+                if op=="7za i":ok=ok and b"SEVENZIP_FORMATS_OK" in tail and b"Codecs:" in tail and b"Hashers:" in tail
+                elif op.startswith("7za l "):ok=ok and b"notes.txt" in tail and b"1 files" in tail
+                elif op.startswith(("7za a ","7za t ","7za x ")):ok=ok and b"Everything is Ok" in tail
                 results[op]=ok
                 print("ARCHIVE OP:",op,"PASS" if ok else "NOT QUALIFIED",flush=True)
             assert results["7za i"],"Regression: genuine supported-format output no longer qualified"

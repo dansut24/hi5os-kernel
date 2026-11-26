@@ -650,6 +650,44 @@ unsafe fn archive_io_time_test()->bool{
     if frame.rax!=1||ptr::read_unaligned(c.cast::<u32>())!=0{return false;}
     fs().close(h).is_ok()&&release(buffer)
 }
+// USER32 character navigation for the private ANSI/OEM codepages and UTF-8.
+unsafe fn char_prev(cp:u32,start:u64,current:u64,flags:u32)->Option<u64>{
+    if flags!=0||current<start{return None;}
+    let cp=codepage(cp)?;
+    let distance=usize::try_from(current-start).ok()?;
+    if distance>65536{return None;}
+    if distance==0{phys(start,1,false)?;return Some(start);}
+    let p=phys(start,distance,false)?;
+    let prefix=core::slice::from_raw_parts(p,distance);
+    // Never scan past the first NUL or a validated user buffer.
+    if prefix.contains(&0){return None;}
+    if cp==65001{
+        let s=core::str::from_utf8(prefix).ok()?;
+        let (i,_)=s.char_indices().last()?;Some(start+i as u64)
+    }else{Some(current-1)}
+}
+fn upper_unit(v:u16)->u16{
+    let Some(c)=char::from_u32(v as u32)else{return v;};
+    let mut upper=c.to_uppercase();let Some(first)=upper.next()else{return v;};
+    if upper.next().is_some()||first as u32>65535{v}else{first as u16}
+}
+unsafe fn char_upper(v:u64)->Option<u64>{
+    // Win32 supports a single UTF-16 code unit encoded in the low word, or a writable string.
+    if v<=0xffff{return Some(upper_unit(v as u16)as u64);}
+    let n=c_len(v,true)?;let p=phys(v,(n+1)*2,true)?;
+    for i in 0..n{let q=p.add(i*2).cast::<u16>();ptr::write_unaligned(q,upper_unit(ptr::read_unaligned(q)));}
+    Some(v)
+}
+unsafe fn user_text_test()->bool{
+    let a=ENV+0x800;let Some(p)=phys(a,32,true)else{return false;};
+    ptr::copy_nonoverlapping(b"A\x82Z\0".as_ptr(),p,4);
+    if char_prev(437,a,a,0)!=Some(a)||char_prev(437,a,a+3,0)!=Some(a+2)||char_prev(1252,a,a+2,0)!=Some(a+1)||char_prev(1,a,a+1,0)!=Some(a)||char_prev(437,a,a+4,0).is_some()||char_prev(437,a,a+2,1).is_some()||char_prev(932,a,a+1,0).is_some(){return false;}
+    ptr::copy_nonoverlapping(b"A\xc3\xa9Z\0".as_ptr(),p,5);
+    if char_prev(65001,a,a+3,0)!=Some(a+1)||char_prev(65001,a,a+4,0)!=Some(a+3)||char_prev(65001,a,a+2,0).is_some(){return false;}
+    for (i,c) in [0x61u16,0xe9,0,0x5a].iter().enumerate(){ptr::write_unaligned(p.add(i*2).cast::<u16>(),*c);}
+    if char_upper(0x61)!=Some(0x41)||char_upper(a)!=Some(a){return false;}
+    ptr::read_unaligned(p.cast::<u16>())==0x41&&ptr::read_unaligned(p.add(2).cast::<u16>())==0xc9&&ptr::read_unaligned(p.add(4).cast::<u16>())==0&&ptr::read_unaligned(p.add(6).cast::<u16>())==0x5a
+}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -837,6 +875,8 @@ unsafe fn capture(v:u64,n:usize)->bool{
         117=>{let r=path(x).ok_or(123u32).and_then(|p|fs().info(p).ok_or(2u32));match r{Ok(e)=>{if y!=0{LAST=87;return;}let Some(p)=phys(z,36,true)else{LAST=87;return;};ptr::write_bytes(p,0,36);ptr::write_unaligned(p.cast::<u32>(),e.attrs);for j in 0..3{ptr::write_unaligned(p.add(4+j*8).cast::<u64>(),e.times[j]);}ptr::write_unaligned(p.add(32).cast::<u32>(),e.size);f.rax=1;},Err(e)=>LAST=e}},
         118=>format_message(f,x,y,z,w),
         119..=122=>calendar_api(f,a.kind,x,y,z),
+        123=>{match char_prev(x as u16 as u32,y,z,w as u32){Some(v)=>f.rax=v,None=>{LAST=87;f.rax=0;}}},
+        124=>{match char_upper(x){Some(v)=>f.rax=v,None=>{LAST=87;f.rax=0;}}},
         _=>{if &a.name[..a.nn]==b"_CxxThrowException"{serial::metric("H5K: TRIAL_CXX_OBJECT=",x);serial::metric("H5K: TRIAL_CXX_THROWINFO=",y);serial::metric("H5K: TRIAL_CXX_LAST_ERROR=",LAST as u64);if let Some(p)=phys(f.rsp,8,false){serial::metric("H5K: TRIAL_CXX_RETURN=",ptr::read_unaligned(p.cast::<u64>()));}}abort_import(id)}
     }
 }
@@ -877,7 +917,7 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
 }
 fn kind(d:&str,n:&str)->u8{
     if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,"FileTimeToDosDateTime"=>119,"DosDateTimeToFileTime"=>120,"FileTimeToSystemTime"=>121,"SystemTimeToFileTime"=>122,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
@@ -984,6 +1024,7 @@ pub fn self_test()->bool{unsafe{
     reset();if !nls_test(){return false;}serial::line("H5K: TRIAL_NLS_CONVERSION_OK");
     reset();if !file_abi_test(){return false;}serial::line("H5K: TRIAL_FILE_ABI_OK");
     reset();if !archive_io_time_test(){return false;}serial::line("H5K: TRIAL_ARCHIVE_IO_TIME_OK");
+    reset();if !user_text_test(){return false;}serial::line("H5K: TRIAL_USER_TEXT_OK");
     reset();
     // Store into all four x64 home slots, then return 42 through the entry trampoline.
     let code=[0x48u8,0xc7,0x44,0x24,0x08,1,0,0,0,0x48,0xc7,0x44,0x24,0x10,2,0,0,0,0x48,0xc7,0x44,0x24,0x18,3,0,0,0,0x48,0xc7,0x44,0x24,0x20,4,0,0,0,0xb8,42,0,0,0,0xc3];
