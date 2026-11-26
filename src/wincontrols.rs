@@ -20,6 +20,7 @@ impl Controls{
     pub fn add_buttons(&mut self,h:u64,b:&[Button])->bool{let Some(i)=self.bar(h)else{return false;};let v=&mut self.bars[i];if !v.abi||b.len()>32-v.len||b.iter().any(|x|x.len>=96){return false;}v.buttons[v.len..v.len+b.len()].copy_from_slice(b);v.len+=b.len();true}
     pub fn button(&self,h:u64,n:usize)->Option<(Button,Option<Image>)>{let b=&self.bars[self.bar(h)?];if n>=b.len{return None;}let v=b.buttons[n];let image=if v.image>=0{self.list(b.images).and_then(|i|{let l=&self.lists[i];((v.image as usize)<l.len).then(||l.images[v.image as usize])})}else{None};Some((v,image))}
     pub fn bar_at(&self,n:usize)->Option<u64>{self.bars.get(n).map(|b|b.hwnd).filter(|h|*h!=0)}
+    pub fn enable(&mut self,h:u64,id:i32,enabled:bool)->bool{let Some(i)=self.bar(h)else{return false;};let b=&mut self.bars[i];let Some(v)=b.buttons[..b.len].iter_mut().find(|v|v.command==id)else{return false;};if enabled{v.state|=4;}else{v.state&=!4;}true}
     pub fn button_count(&self,h:u64)->Option<usize>{Some(self.bars[self.bar(h)?].len)}
     pub fn dimensions(&self,h:u64)->Option<(i32,i32)>{let b=&self.bars[self.bar(h)?];let (w,h)=if let Some(i)=self.list(b.images){(self.lists[i].w,self.lists[i].h)}else{(24,24)};Some(((w as usize+12).checked_mul(b.len)? as i32,h as i32+12))}
     fn list(&self,h:u64)->Option<usize>{if h==0{return None;}self.lists.iter().position(|l|l.handle==h)}
