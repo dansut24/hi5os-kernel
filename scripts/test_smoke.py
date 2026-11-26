@@ -13,6 +13,16 @@ class MarkerTests(unittest.TestCase):
                 self.assertTrue(names)
                 self.assertEqual(set(names),{expected})
 
+    def test_gui_shortcut_preserves_notepad_save(self):
+        desktop=(ROOT/"src/desktop.rs").read_text()
+        archive=(ROOT/"scripts/archive7zip.py").read_text()
+        persistence=(ROOT/"scripts/persistence.py").read_text()
+        self.assertIn("if key==0x40&&self.ctrl{self.select(App::WinDemo);return;}",desktop)
+        self.assertIn("if key==0x40||(self.ctrl&&key==0x1f){self.save_note();return;}",desktop)
+        self.assertNotIn("if key==0x40{self.select(App::WinDemo);return;}",desktop)
+        self.assertIn('key("ctrl-f6")',archive)
+        self.assertIn('key("f6");wait(b"GUI_NOTE_SAVED"',persistence)
+
     def test_network_fixture_addresses(self):
         network=(ROOT/"scripts/network.py").read_text()
         desktop=(ROOT/"src/desktop.rs").read_text()

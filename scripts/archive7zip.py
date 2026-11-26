@@ -80,7 +80,8 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 for op in ["7za u -mx=1 -mmt=1 multi.zip batch/small.txt","7za u -mx=1 -mmt=1 multi.7z batch/small.txt","7za d multi.zip batch/large.bin","7za d multi.7z batch/large.bin"]:
                     tail=command(op);results[op]=b"TRIAL_RESULT=0x0000000000000001" in tail and b"TRIAL_EXIT=0x0000000000000000" in tail and b"Everything is Ok" in tail
                     print("EXTENDED OP:",op,results[op],flush=True)
-                key("f6");wait(b"GUI_WINDEMO_OPEN",30);results["compiled PE GUI/DLL"]=b"GUI_PE_DLL_EXECUTED" in log.read_bytes()
+                key("ctrl-f6");wait(b"GUI_WINDEMO_OPEN",30);results["compiled PE GUI/DLL"]=b"GUI_PE_DLL_EXECUTED" in log.read_bytes()
+                assert results["compiled PE GUI/DLL"],"Regression: compiled graphical PE/DLL fixture failed"
                 call("screendump",{"filename":str(ROOT/"dist"/"wingui-demo.ppm")})
                 key("f12");wait(b"GUI_STORE_OPEN",30);key("u");wait(b"STORE_UNINSTALL_OK",30);key("ret")
                 results["portable uninstall blocks execution"]=b"SHELL_7ZIP_BLOCKED" in command("7za -h")

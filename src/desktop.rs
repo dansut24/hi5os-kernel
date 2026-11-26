@@ -183,7 +183,7 @@ impl Ui{
                     c.text_limit(x,bottom.saturating_sub(25),"PgUp/PgDn: scroll | Esc: close",fg,false,right);return;
                 }
                 match self.term.result{
-                    1=>{c.text_limit(x,y+91,"F12: Hi5Store | F6: Windows GUI test | arcseed | arcbig",fg,false,right);}
+                    1=>{c.text_limit(x,y+91,"F12: Hi5Store | Ctrl+F6: Windows GUI test | arcbig",fg,false,right);}
                     2=>{c.text(x,y+91,"Managed MiB:",fg);c.num(x+126,y+91,self.ram,green);}
                     3=>c.text(x,y+91,concat!("Hi5OS ",env!("CARGO_PKG_VERSION")),fg),
                     4=>{for i in 0..FILE_COUNT{if self.cache[i].present{c.text(x+i*110,y+91,NAMES[i],fg);}}},
@@ -291,7 +291,8 @@ impl Ui{
         if key&0x80!=0{return;}
         if key==0x01{if self.menu{self.menu=false;self.draw();}else{self.close();}return;}
         if key==0x41&&(self.app==Some(App::Files)||self.app==Some(App::Notepad)){self.switch_file((self.file+1)%FILE_COUNT);return;}
-        if key==0x40{self.select(App::WinDemo);return;}
+        // Preserve F6 as the existing Notepad save shortcut. GUI fixture is Ctrl+F6.
+        if key==0x40&&self.ctrl{self.select(App::WinDemo);return;}
         if key==0x58{self.select(App::Store);return;}
         if self.app==Some(App::Store)&&!self.menu&&!self.minimized{match key{0x17=>self.package_action(true),0x16=>self.package_action(false),0x1c=>self.select(App::Terminal),_=>{}}return;}
         if key==0x57{self.select(App::Sheet);return;}
