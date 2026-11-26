@@ -39,4 +39,6 @@ mcopy -i dist/hi5os-v0.3.4.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 mcopy -s -i dist/hi5os-v0.3.4.img dist/7zip-notices ::/7ZIP-NOTICES
 rm -f dist/hi5os-data-v1.img
 python3 scripts/data_image.py dist/hi5os-data-v1.img
-(cd dist && sha256sum hi5-wingui.exe hi5-test.dll hi5-winhello.exe hi5-winruntime.exe hi5-winconsole.exe BOOTX64.EFI hi5os-v0.3.4.img hi5os-data-v1.img > SHA256SUMS)
+rm -f dist/hi5os-setup-data.img
+python3 scripts/data_image.py dist/hi5os-setup-data.img --setup
+(cd dist && sha256sum hi5-wingui.exe hi5-test.dll hi5-winhello.exe hi5-winruntime.exe hi5-winconsole.exe BOOTX64.EFI hi5os-v0.3.4.img hi5os-data-v1.img hi5os-setup-data.img > SHA256SUMS)
