@@ -5,6 +5,7 @@ for tool in cargo mkfs.vfat mmd mcopy clang lld-link; do command -v "$tool" >/de
 /usr/bin/python3 scripts/fontgen.py
 mkdir -p target/hi5-fixture
 /usr/bin/python3 scripts/prepare7zip.py
+/usr/bin/python3 scripts/prepare_gui.py
 clang --target=x86_64-pc-windows-msvc -c fixtures/hello.s -o target/hi5-fixture/hello.obj
 lld-link /lib /def:fixtures/kernel32.def /machine:x64 /out:target/hi5-fixture/kernel32.lib
 lld-link /entry:hi5_entry /subsystem:console /nodefaultlib /fixed /base:0x100000000 /filealign:512 /timestamp:0 /out:target/hi5-fixture/hello.exe target/hi5-fixture/hello.obj target/hi5-fixture/kernel32.lib
@@ -20,6 +21,7 @@ lld-link /lib /def:fixtures/gdi32-gui.def /machine:x64 /out:target/hi5-fixture/g
 lld-link /entry:hi5_entry /subsystem:windows /nodefaultlib /dynamicbase /base:0x140000000 /timestamp:0 /out:target/hi5-fixture/h5gui.exe target/hi5-fixture/h5gui.obj target/hi5-fixture/h5dll.lib target/hi5-fixture/user32-gui.lib target/hi5-fixture/gdi32-gui.lib
 cargo build --release --locked --target x86_64-unknown-uefi
 mkdir -p dist
+cp target/hi5-fixture/gui-package.json dist/7zip-gui-package.json
 cp target/hi5-fixture/h5gui.exe dist/hi5-wingui.exe
 cp target/hi5-fixture/h5dll.dll dist/hi5-test.dll
 cp target/hi5-fixture/hello.exe dist/hi5-winhello.exe

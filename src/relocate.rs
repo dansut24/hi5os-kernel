@@ -64,6 +64,13 @@ fn map_image(b:&[u8],out:&mut[u8],seen:&mut[u8],new_base:Option<u64>,dll:bool)->
     let mut crc=0xffff_ffffu32;for x in &out[..size]{crc^=*x as u32;for _ in 0..8{crc=(crc>>1)^if crc&1!=0{0xedb88320}else{0};}}
     Ok(Report{size,count,base,crc:!crc})
 }
+pub fn inspect_codec(b:&[u8])->Result<Report,&'static str>{
+    let image=unsafe{&mut *ptr::addr_of_mut!(IMAGE)};let seen=unsafe{&mut *ptr::addr_of_mut!(SEEN)};
+    let r=map_dll(b,image,seen,0x1_0800_0000)?;
+    if crate::pegraph::export(&image[..r.size],crate::imports::Symbol::Name("CreateObject")).is_none(){return Err("Codec CreateObject export missing");}
+    serial::metric("H5K: GUI_CODEC_RELOCATIONS=",r.count as u64);serial::metric("H5K: GUI_CODEC_IMAGE_SIZE=",r.size as u64);
+    serial::line("H5K: GUI_CODEC_MAPPED_INERT");Ok(r)
+}
 pub fn inspect(b:&[u8])->Result<Report,&'static str>{
     // Synchronous single CPU UI and boot callers; no interrupt handler accesses scratch.
     let r=unsafe{map(b,&mut *ptr::addr_of_mut!(IMAGE),&mut *ptr::addr_of_mut!(SEEN))}?;

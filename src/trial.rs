@@ -32,7 +32,11 @@ const PIN:&[u8;32]=include_bytes!("../target/hi5-fixture/7zip.sha256");
 pub const BUNDLED:&[u8]=include_bytes!("../target/hi5-fixture/7za.exe");
 #[derive(Clone,Copy)]struct Api{dll:[u8;48],dn:usize,name:[u8;128],nn:usize,kind:u8}
 const EMPTY:Api=Api{dll:[0;48],dn:0,name:[0;128],nn:0,kind:0};
-static mut APIS:[Api;256]=[EMPTY;256];
+const API_LIMIT:usize=464;
+static mut APIS:[Api;API_LIMIT]=[EMPTY;API_LIMIT];
+static mut ORIGINAL_GUI:bool=false;
+static mut GUI_STARTUP_RESULT:u64=0;
+static mut PRNG:u32=1;
 static mut N:usize=0;
 static mut IMAGE_SIZE:usize=0;
 static mut EXIT:u32=0;
@@ -78,7 +82,7 @@ static mut TOKENS:[Token;16]=[EMPTY_TOKEN;16];
 static mut TOKEN_NEXT:u64=0x10000;
 static mut CLEANUP_ACTIVE:bool=false;
 static mut DLL_POLICY:u32=0;
-const MODULES:[&str;6]=["kernel32.dll","msvcrt.dll","advapi32.dll","oleaut32.dll","user32.dll","ntdll.dll"];
+const MODULES:[&str;12]=["kernel32.dll","msvcrt.dll","advapi32.dll","oleaut32.dll","user32.dll","ntdll.dll","gdi32.dll","comctl32.dll","comdlg32.dll","ole32.dll","shell32.dll","uxtheme.dll"];
 const MOD_BASE:u64=0x60000000;
 #[repr(C)]struct Frame{rax:u64,rcx:u64,rdx:u64,r8:u64,r9:u64,rip:u64,cs:u64,flags:u64,rsp:u64,ss:u64}
 global_asm!(r#"
@@ -757,6 +761,96 @@ pub fn run_gui_fixture()->bool{unsafe{
     if passed{serial::line("H5K: GUI_PE_DLL_EXECUTED");}else{GUI_RECT=None;}
     passed
 }}
+fn api_offset(i:usize)->usize{if i<208{i*16}else{0x3000+(i-208)*16}}
+unsafe fn api_stub(i:usize)->u64{
+    let id=if i<208{i as u32}else{1024+i as u32};let b=id.to_le_bytes();
+    let stub=[0xb8,b[0],b[1],b[2],b[3],0xcd,0x81,0xc3];let at=api_offset(i);
+    ptr::copy_nonoverlapping(stub.as_ptr(),ptr::addr_of_mut!(DATA.0).cast::<u8>().add(at),stub.len());AUX+at as u64
+}
+unsafe fn original_import(module:&str,symbol:imports::Symbol<'_>)->Option<u64>{
+    let i=N;if i>=API_LIMIT||module.len()>48{return None;}
+    let mut a=EMPTY;a.dn=module.len();a.dll[..a.dn].copy_from_slice(module.as_bytes());
+    match symbol{
+        imports::Symbol::Name(n)=>{if n.len()>128{return None;}a.nn=n.len();a.name[..a.nn].copy_from_slice(n.as_bytes());a.kind=kind(module,n);},
+        imports::Symbol::Ordinal(n)=>{a.name[0]=b'#';for j in 0..4{a.name[1+j]=b"0123456789abcdef"[((n>>(12-j*4))&15)as usize];}a.nn=5;a.kind=kind(module,core::str::from_utf8(&a.name[..5]).ok()?);}
+    }
+    let name=&a.name[..a.nn];
+    let target=if module.eq_ignore_ascii_case("msvcrt.dll"){match name{
+        b"_acmdln"=>ENV+0x650,b"__initenv"=>ENV+0x640,b"_commode"=>ENV+0x648,b"_fmode"=>ENV+0x64c,b"_iob"=>ENV+0x700,b"_initterm"=>AUX+0xf00,_=>api_stub(i)
+    }}else{api_stub(i)};
+    ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);N+=1;Some(target)
+}
+unsafe fn original_crt_env()->bool{
+    let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
+    ptr::write_bytes(d.add(0x1400),0,256);ptr::write_bytes(d.add(0x1500),0,128);ptr::write_bytes(d.add(0x1600),0,64);
+    for(i,c)in "C:\\7zFM.exe".encode_utf16().enumerate(){ptr::write_unaligned(d.add(0x1400+i*2).cast::<u16>(),c);}
+    let b=b"C:\\7zFM.exe\0";ptr::copy_nonoverlapping(b.as_ptr(),d.add(0x1500),b.len());
+    if !write64(ENV+0x600,ENV+0x500)||!write64(ENV+0x650,ENV+0x500)||!write64(ENV+0x640,ENV+0x620){return false;}
+    ptr::write_unaligned(d.add(0x1370).cast::<u16>(),22);ptr::write_unaligned(d.add(0x1372).cast::<u16>(),24);
+    ARGC=1;
+    for(start,end,off)in [(h5_initterm_start as usize,h5_initterm_end as usize,0xf00usize),(h5_cleanup_start as usize,h5_cleanup_end as usize,0xd00usize)]{
+        let Some(n)=end.checked_sub(start)else{return false;};if n>256{return false;}ptr::copy_nonoverlapping(start as *const u8,d.add(off),n);
+    }true
+}
+unsafe fn startup_api(f:&mut Frame,k:u8,x:u64,y:u64,z:u64,w:u64){
+    match k{
+        133=>{if let Some(n)=c_len(x,true){f.rax=n as u64;}else{LAST=87;}},
+        134=>{if let Some(p)=phys(x,104,true){ptr::write_bytes(p,0,104);ptr::write_unaligned(p.cast::<u32>(),104);ptr::write_unaligned(p.add(80).cast::<u64>(),u64::MAX);ptr::write_unaligned(p.add(88).cast::<u64>(),1);ptr::write_unaligned(p.add(96).cast::<u64>(),2);}else{LAST=87;}},
+        135=>f.rax=0x409, // compatibility locale, not the host locale
+        136=>f.rax=0x70000000,
+        137=>{if x!=0x70000000||y as u32&!8!=0{LAST=87;return;}let a=allocate(z as usize);if a!=0&&y as u32&8!=0{if let Some(p)=phys(a,(z as usize).max(1),true){ptr::write_bytes(p,0,(z as usize).max(1));}}f.rax=a;},
+        138=>{if x==0x70000000&&y as u32==0&&release(z){f.rax=1;}else{LAST=87;}},
+        139=>{if x==0{LAST=87;}else{f.rax=module_handle(x,false);}},
+        140=>{if x==0||y!=0||z as u32!=0{LAST=50;}else{f.rax=module_handle(x,true);}},
+        141=>PRNG=x as u32,
+        142=>{PRNG=PRNG.wrapping_mul(214013).wrapping_add(2531011);f.rax=((PRNG>>16)&0x7fff)as u64;},
+        143=>{let b=b"C:\\Windows";let n=b.len();if y as usize<=n{f.rax=(n+1)as u64;}else if let Some(p)=phys(x,(n+1)*2,true){for(i,v)in b.iter().enumerate(){ptr::write_unaligned(p.add(2*i).cast::<u16>(),*v as u16);}ptr::write_unaligned(p.add(n*2).cast::<u16>(),0);f.rax=n as u64;}else{LAST=87;}},
+        144=>{if x==0||path(x).is_some_and(|p|p.bytes().is_empty()){f.rax=3;}else{f.rax=1;}},
+        145=>{if x as u32&!0x40!=0{LAST=50;return;}let a=allocate(y as usize);if a!=0&&x as u32&0x40!=0{if let Some(p)=phys(a,(y as usize).max(1),true){ptr::write_bytes(p,0,(y as usize).max(1));}}f.rax=a;},
+        146=>{f.rax=if release(x){0}else{LAST=6;x};},
+        147=>{if !GUI_ACTIVE{LAST=50;return;}let Some(p)=phys(x,48,false)else{LAST=87;return;};let h=ptr::read_unaligned(p.cast::<u64>());let msg=ptr::read_unaligned(p.add(8).cast::<u32>());let wp=ptr::read_unaligned(p.add(16).cast::<u64>());let lp=ptr::read_unaligned(p.add(24).cast::<u64>());let Some(proc)=GUI.procedure(h)else{LAST=6;return;};if !executable(proc){LAST=87;return;}f.rip=proc;f.rcx=h;f.rdx=msg as u64;f.r8=wp;f.r9=lp;},
+        148=>{if !GUI_ACTIVE||!executable(x){LAST=87;return;}let Some(lp)=arg(f,40)else{LAST=87;return;};f.rip=x;f.rcx=y;f.rdx=z as u32 as u64;f.r8=w;f.r9=lp;},
+        _=>LAST=50
+    }
+}
+/// The original executable is pinned, and receives only an isolated RAM namespace.
+/// This is an entry-point diagnostic, not a persistent interactive GUI session.
+pub fn original_gui_probe()->bool{unsafe{
+    const EXE:&[u8]=include_bytes!("../target/hi5-fixture/7zfm.exe");
+    const DLL:&[u8]=include_bytes!("../target/hi5-fixture/7z.dll");
+    const EXE_PIN:&[u8;32]=include_bytes!("../target/hi5-fixture/7zfm.exe.sha256");
+    const DLL_PIN:&[u8;32]=include_bytes!("../target/hi5-fixture/7z.dll.sha256");
+    GUI_STARTUP_RESULT=0;
+    if sha256(EXE)!=*EXE_PIN||sha256(DLL)!=*DLL_PIN||!self_test(){serial::line("H5K: ORIGINAL_GUI_PIN_OR_CONTAINMENT_FAILED");return false;}
+    if relocate::inspect_codec(DLL).is_err(){serial::line("H5K: ORIGINAL_GUI_CODEC_STAGE_FAILED");return false;}
+    reset();GUI_RECT=None;GUI_DC=0;GUI=crate::winwindow::Desktop::new();ORIGINAL_GUI=true;
+    let result=(||->Result<u64,&'static str>{
+        if !original_crt_env(){return Err("GUI CRT setup");}
+        let image=&mut *ptr::addr_of_mut!(IMAGE.0);let r=relocate::map_at(EXE,image,&mut *ptr::addr_of_mut!(SEEN),Some(BASE))?;
+        // TLS callbacks are not silently skipped. Delay thunks are bound eagerly below.
+        let pe=u32at(EXE,60).ok_or("GUI PE")?as usize;let opt=pe+24;
+        if u32at(EXE,opt+108).unwrap_or(0)>9&&(u32at(EXE,opt+112+9*8)!=Some(0)||u32at(EXE,opt+116+9*8)!=Some(0)){return Err("GUI TLS unsupported");}
+        IMAGE_SIZE=r.size;if !map_fixture_pages(EXE,0,r.size){return Err("GUI page permissions");}
+        let mut ok=true;
+        let mut bind=|module:&str,symbol:imports::Symbol<'_>,slot:u32|{
+            let at=slot as usize;if at%8!=0||at.checked_add(8).is_none_or(|n|n>r.size){ok=false;return;}
+            let Some(v)=original_import(module,symbol)else{ok=false;return;};image[at..at+8].copy_from_slice(&v.to_le_bytes());
+        };
+        let report=imports::inspect_slots(EXE,&mut bind)?;
+        let delayed=imports::delay_slots(EXE,&mut bind)?;
+        if !ok||report.functions!=292||N!=292+delayed as usize{return Err("GUI import layout");}
+        serial::metric("H5K: ORIGINAL_GUI_STATIC_IMPORTS=",report.functions as u64);serial::metric("H5K: ORIGINAL_GUI_DELAY_IMPORTS=",delayed as u64);
+        serial::line("H5K: ORIGINAL_GUI_ENTER");GUI_ACTIVE=true;
+        let status=enter(BASE+crate::pegraph::entry(EXE).ok_or("GUI entry")?as u64,500);
+        GUI_ACTIVE=false;serial::metric("H5K: ORIGINAL_GUI_STATUS=",status);serial::metric("H5K: ORIGINAL_GUI_CALLS=",CALLS);serial::metric("H5K: ORIGINAL_GUI_EXIT=",EXIT as u64);
+        serial::metric("H5K: ORIGINAL_GUI_FAULT=",H5_TRIAL_FAULT);serial::metric("H5K: ORIGINAL_GUI_RIP=",H5_TRIAL_RIP);
+        if LAST_API<N{let a=ptr::addr_of!(APIS).cast::<Api>().add(LAST_API).read();serial::write("H5K: ORIGINAL_GUI_LAST_API|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
+        Ok(CALLS)
+    })();
+    ORIGINAL_GUI=false;GUI_ACTIVE=false;GUI_RECT=None;GUI_DC=0;
+    match result{Ok(n) if n>0=>{GUI_STARTUP_RESULT=n;serial::line("H5K: ORIGINAL_GUI_RUNTIME_REACHED");true},Ok(_)=>{serial::line("H5K: ORIGINAL_GUI_NO_API_CALLS");false},Err(e)=>{serial::write("H5K: ORIGINAL_GUI_STAGE_ERROR|");serial::line(e);false}}
+}}
+pub fn original_gui_calls()->u64{unsafe{GUI_STARTUP_RESULT}}
 unsafe fn abort_import(i:usize){let a=ptr::addr_of!(APIS).cast::<Api>().add(i).read();detail(&a.dll[..a.dn],&a.name[..a.nn]);serial::write("H5K: TRIAL_UNSUPPORTED|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));H5_TRIAL_STATUS=4;}
 pub fn diagnostic(out:&mut[u8])->usize{unsafe{let n=DETAIL_LEN.min(out.len());ptr::copy_nonoverlapping(ptr::addr_of!(DETAIL).cast::<u8>(),out.as_mut_ptr(),n);n}}
 unsafe fn read_ascii(v:u64,wide:bool,out:&mut[u8])->Option<usize>{
@@ -771,7 +865,7 @@ fn module_id(s:&[u8])->Option<usize>{
 }
 unsafe fn module_handle(v:u64,wide:bool)->u64{
     if v==0{return BASE;}let mut b=[0u8;128];let Some(n)=read_ascii(v,wide,&mut b)else{LAST=87;return 0;};
-    let s=&b[..n];if s.eq_ignore_ascii_case(b"7za.exe"){return BASE;}
+    let s=&b[..n];if (!ORIGINAL_GUI&&s.eq_ignore_ascii_case(b"7za.exe"))||(ORIGINAL_GUI&&s.eq_ignore_ascii_case(b"7zfm.exe")){return BASE;}
     if let Some(i)=module_id(s){return MOD_BASE+0x10000*i as u64;}
     LAST=126;serial::write("H5K: TRIAL_MODULE_MISSING|");serial::line(core::str::from_utf8(s).unwrap_or("?"));0
 }
@@ -782,21 +876,20 @@ unsafe fn proc_address(h:u64,v:u64)->u64{
     serial::write("H5K: TRIAL_DYNAMIC|");serial::write(dll);serial::write("|");serial::line(name);
     // Return only implemented exports, never a successful result for an unknown API.
     for j in 0..N{let a=ptr::addr_of!(APIS).cast::<Api>().add(j).read();
-        if a.dll[..a.dn].eq_ignore_ascii_case(dll.as_bytes())&&a.name[..a.nn]==b[..n]&&a.kind!=0{return AUX+j as u64*16;}
+        if a.dll[..a.dn].eq_ignore_ascii_case(dll.as_bytes())&&a.name[..a.nn]==b[..n]&&a.kind!=0{return AUX+api_offset(j)as u64;}
     }
-    let k=kind(dll,name);if k==0||N>=208{LAST=127;return 0;}
+    let k=kind(dll,name);if k==0||N>=if ORIGINAL_GUI{API_LIMIT}else{208}{LAST=127;return 0;}
     let mut a=EMPTY;a.dn=dll.len();a.dll[..a.dn].copy_from_slice(dll.as_bytes());a.nn=n;a.name[..n].copy_from_slice(&b[..n]);a.kind=k;
     let j=N;N+=1;ptr::addr_of_mut!(APIS).cast::<Api>().add(j).write(a);
-    let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();let stub=[0xb8,j as u8,0,0,0,0xcd,0x81,0xc3];
-    ptr::copy_nonoverlapping(stub.as_ptr(),d.add(j*16),stub.len());AUX+j as u64*16
+    api_stub(j)
 }
 unsafe fn capture(v:u64,n:usize)->bool{
     if n==0{return true;}if n>OUTPUT_CAP-OUT_LEN{return false;}let Some(p)=phys(v,n,false)else{return false;};
     ptr::copy_nonoverlapping(p,ptr::addr_of_mut!(OUT).cast::<u8>().add(OUT_LEN),n);OUT_LEN+=n;true
 }
 #[no_mangle]unsafe extern "efiapi" fn h5_trial_dispatch(f:*mut Frame){
-    let f=&mut *f;let id=f.rax as usize;if id==256{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;return;}
-    if id==257{if !CLEANUP_ACTIVE||ONEXIT_LEN!=0{H5_TRIAL_STATUS=4;return;}CLEANUP_ACTIVE=false;if f.rdx==1{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;}else{f.rax=0;}return;}if id>=N{H5_TRIAL_STATUS=4;return;}
+    let f=&mut *f;let raw=f.rax as usize;let id=if raw>=1232&&raw<1024+API_LIMIT{raw-1024}else{raw};if id==256{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;return;}
+    if id==257{if !CLEANUP_ACTIVE||ONEXIT_LEN!=0{H5_TRIAL_STATUS=4;return;}CLEANUP_ACTIVE=false;if f.rdx==1{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;}else{f.rax=0;}return;}if id>=N||raw>=208&&raw<256||raw>=258&&raw<1232{H5_TRIAL_STATUS=4;return;}
     CALLS+=1;LAST_API=id;
     let a=ptr::addr_of!(APIS).cast::<Api>().add(id).read();
     if CALLS<=4096{serial::write("H5K: TRIAL_CALL|");serial::write(core::str::from_utf8(&a.dll[..a.dn]).unwrap_or("?"));serial::write("|");serial::line(core::str::from_utf8(&a.name[..a.nn]).unwrap_or("?"));}
@@ -852,7 +945,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         49=>f.rax=proc_address(x,y),
         50=>{if MODULES.iter().enumerate().any(|(i,_)|x==MOD_BASE+0x10000*i as u64){f.rax=1;}else{LAST=6;}},
         51=>f.rax=platform::ticks().wrapping_mul(10),
-        52=>{let path=b"C:\\7za.exe";let n=path.len();if x!=0&&x!=BASE{LAST=6;return;}let cap=z as u32 as usize;if cap==0{LAST=122;return;}let m=n.min(cap-1);
+        52=>{let path:&[u8]=if ORIGINAL_GUI{b"C:\\7zFM.exe"}else{b"C:\\7za.exe"};let n=path.len();if x!=0&&x!=BASE{LAST=6;return;}let cap=z as u32 as usize;if cap==0{LAST=122;return;}let m=n.min(cap-1);
             if let Some(p)=phys(y,(m+1)*2,true){for(i,c)in path[..m].iter().enumerate(){ptr::write_unaligned(p.add(2*i).cast::<u16>(),*c as u16);}ptr::write_unaligned(p.add(m*2).cast::<u16>(),0);f.rax=if m<n{LAST=122;cap as u64}else{m as u64};}else{LAST=87;}},
         53=>{let Some(sec)=crate::security::now()else{abort_import(id);return;};let ft=sec.checked_add(11644473600).and_then(|v|v.checked_mul(10000000));if ft.is_none()||!write64(x,ft.unwrap()){abort_import(id);}},
         54=>f.rax=1, // GetActiveProcessorCount: one virtual CPU
@@ -947,6 +1040,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         123=>{match char_prev(x as u16 as u32,y,z,w as u32){Some(v)=>f.rax=v,None=>{LAST=87;f.rax=0;}}},
         124=>{match char_upper(x){Some(v)=>f.rax=v,None=>{LAST=87;f.rax=0;}}},
         125..=132=>gui_api(f,a.kind,x,y,z,w),
+        133..=148=>startup_api(f,a.kind,x,y,z,w),
         _=>{if &a.name[..a.nn]==b"_CxxThrowException"{serial::metric("H5K: TRIAL_CXX_OBJECT=",x);serial::metric("H5K: TRIAL_CXX_THROWINFO=",y);serial::metric("H5K: TRIAL_CXX_LAST_ERROR=",LAST as u64);if let Some(p)=phys(f.rsp,8,false){serial::metric("H5K: TRIAL_CXX_RETURN=",ptr::read_unaligned(p.cast::<u64>()));}}abort_import(id)}
     }
 }
@@ -986,8 +1080,8 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
     }None
 }
 fn kind(d:&str,n:&str)->u8{
-    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,"FileTimeToDosDateTime"=>119,"DosDateTimeToFileTime"=>120,"FileTimeToSystemTime"=>121,"SystemTimeToFileTime"=>122,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,"RegisterClassW"=>125,"CreateWindowExW"=>126,"ShowWindow"=>127,"GetDC"=>128,"ReleaseDC"=>129,"PostMessageW"=>131,"PeekMessageW"=>132,_=>0}}else if d.eq_ignore_ascii_case("gdi32.dll"){match n{"Rectangle"=>130,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
+    if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,"FileTimeToDosDateTime"=>119,"DosDateTimeToFileTime"=>120,"FileTimeToSystemTime"=>121,"SystemTimeToFileTime"=>122,"lstrlenW"=>133,"GetStartupInfoA"=>134,"GetSystemDefaultLangID"|"GetUserDefaultLangID"=>135,"GetProcessHeap"=>136,"HeapAlloc"=>137,"HeapFree"=>138,"LoadLibraryA"=>139,"LoadLibraryExW"=>140,"GetWindowsDirectoryW"=>143,"GetDriveTypeW"=>144,"LocalAlloc"|"GlobalAlloc"=>145,"GlobalFree"=>146,_=>0}}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,"wcslen"=>133,"srand"=>141,"rand"=>142,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,"RegisterClassW"=>125,"CreateWindowExW"=>126,"ShowWindow"=>127,"GetDC"=>128,"ReleaseDC"=>129,"PostMessageW"=>131,"PeekMessageW"=>132,"DispatchMessageW"=>147,"CallWindowProcW"=>148,_=>0}}else if d.eq_ignore_ascii_case("gdi32.dll"){match n{"Rectangle"=>130,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
@@ -1006,11 +1100,11 @@ unsafe fn init_env(){
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    WORK_ACTIVE=false;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;CLEANUP_ACTIVE=false;DLL_POLICY=0;ptr::write_bytes(ptr::addr_of_mut!(BLOCKS).cast::<Block>(),0,2048);NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    WORK_ACTIVE=false;ORIGINAL_GUI=false;PRNG=1;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;CLEANUP_ACTIVE=false;DLL_POLICY=0;ptr::write_bytes(ptr::addr_of_mut!(BLOCKS).cast::<Block>(),0,2048);NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
-    t.write(d|5);t.add(1).write(d+4096|7|NX);
+    t.write(d|5);t.add(1).write(d+4096|7|NX);t.add(3).write(d+0x3000|5);
     for i in 16..48usize{t.add(i).write(d+i as u64*4096|7|NX);}
     for i in 64..512usize{t.add(i).write(d+i as u64*4096|7|NX);}
     let raw=ptr::addr_of!(HEAP_DATA)as u64;

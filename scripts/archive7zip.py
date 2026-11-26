@@ -48,13 +48,13 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
             assert b"TRIAL_FILE_ABI_OK" in log.read_bytes()
             assert b"TRIAL_ARCHIVE_IO_TIME_OK" in log.read_bytes()
             assert b"TRIAL_USER_TEXT_OK" in log.read_bytes()
-            def command(s,marker=b"SHELL_7ZIP_RETURNED"):
+            def command(s,marker=b"SHELL_7ZIP_RETURNED",extra=None):
                 prior=len(log.read_bytes())
                 for ch in s:key({" ":"spc","-":"minus",".":"dot","=":"equal","/":"slash"}.get(ch,ch))
                 key("ret");end=time.monotonic()+120
                 while time.monotonic()<end:
                     tail=log.read_bytes()[prior:]
-                    if marker in tail or b"SHELL_WORKSPACE_FAILED" in tail or b"SHELL_7ZIP_BLOCKED" in tail:return tail
+                    if marker in tail or (extra is not None and extra in tail) or b"SHELL_WORKSPACE_FAILED" in tail or b"SHELL_7ZIP_BLOCKED" in tail:return tail
                     if proc.poll() is not None or b"H5K: PANIC" in tail:raise RuntimeError(tail)
                     time.sleep(.1)
                 raise RuntimeError(tail)
@@ -83,6 +83,9 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 key("ctrl-f6");wait(b"GUI_WINDEMO_OPEN",30);results["compiled PE GUI/DLL"]=b"GUI_PE_DLL_EXECUTED" in log.read_bytes()
                 assert results["compiled PE GUI/DLL"],"Regression: compiled graphical PE/DLL fixture failed"
                 call("screendump",{"filename":str(ROOT/"dist"/"wingui-demo.ppm")})
+                key("f4");tail=command("7zfm",b"SHELL_ORIGINAL_GUI_PROBED",extra=b"SHELL_ORIGINAL_GUI_BLOCKED")
+                results["original File Manager runtime reached"]=b"ORIGINAL_GUI_RUNTIME_REACHED" in tail
+                print("ORIGINAL GUI PROBE:",results["original File Manager runtime reached"],flush=True)
                 key("f12");wait(b"GUI_STORE_OPEN",30);key("u");wait(b"STORE_UNINSTALL_OK",30);key("ret")
                 results["portable uninstall blocks execution"]=b"SHELL_7ZIP_BLOCKED" in command("7za -h")
                 key("f12");key("i");wait(b"STORE_INSTALL_OK",120);key("ret")

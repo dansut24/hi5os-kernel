@@ -76,6 +76,28 @@ pub fn inspect_slots(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>,u32))->Result<R
         if !ended{return Err("Unterminated thunk table");}
     }Err("Unterminated import descriptors")
 }
+/// Eager bind only RVA-based delay descriptors; unsupported imports are still
+/// trapped at invocation. Never execute helper thunks or use bound addresses.
+pub fn delay_slots(b:&[u8],mut emit:impl FnMut(&str,Symbol<'_>,u32))->Result<u32,&'static str>{
+    let p=Pe::new(b).ok_or("Invalid delay PE")?;let (r,n)=p.dir(13).ok_or("Invalid delay directory")?;
+    if r==0{return Ok(0);}if n<32||n>4096{return Err("Delay directory size");}
+    let desc=p.bytes(r,n as usize).ok_or("Delay descriptors outside file")?;let mut count=0;
+    for d in desc.chunks_exact(32){
+        if d.iter().all(|v|*v==0){return Ok(count);}
+        if u32at(d,0)!=Some(1){return Err("Non-RVA delay descriptor");}
+        let dll=p.name(u32at(d,4).ok_or("Delay DLL")?).ok_or("Delay DLL name")?;
+        let iat=u32at(d,12).ok_or("Delay IAT")?;let int=u32at(d,16).ok_or("Delay INT")?;
+        if iat==0||int==0{return Err("Missing delay thunks");}let mut ended=false;
+        for i in 0..=4096u32{
+            let off=i.checked_mul(8).ok_or("Delay offset")?;
+            let v=u64at(p.bytes(int.checked_add(off).ok_or("Delay INT overflow")?,8).ok_or("Delay INT bounds")?,0).ok_or("Delay thunk")?;
+            if v==0{ended=true;break;}if count>=4096{return Err("Delay import limit");}
+            let slot=iat.checked_add(off).ok_or("Delay IAT overflow")?;p.bytes(slot,8).ok_or("Delay IAT bounds")?;
+            if v>>63!=0{if v&0x7fff_ffff_ffff_0000!=0{return Err("Delay ordinal");}emit(dll,Symbol::Ordinal(v as u16),slot);}
+            else{let name=u32::try_from(v).ok().and_then(|v|v.checked_add(2)).and_then(|v|p.name(v)).ok_or("Delay name")?;emit(dll,Symbol::Name(name),slot);}count+=1;
+        }if !ended{return Err("Unterminated delay thunks");}
+    }Err("Unterminated delay descriptors")
+}
 pub fn log(b:&[u8])->Result<Report,&'static str>{
     serial::line("H5K: PE_INSPECT_BEGIN");
     // Verify full downloaded payload in addition to the import inventory (not authentication).
