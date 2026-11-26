@@ -98,3 +98,30 @@ pub fn self_test()->bool{
     test(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n",false,Err("Conflicting HTTP body framing"),b"")&&
     &text[..n]==b"Hello\nA & B\n"
 }
+
+// Bounded navigation: HTTP only. Never reinterpret HTTPS as plaintext.
+pub fn resolve_url(base:&[u8],href:&[u8],out:&mut[u8;128])->Option<usize>{
+    let href=trim(href);if href.is_empty()||href[0]==b'#'||href.iter().any(|b|!(33..127).contains(b)||matches!(*b,b'<'|b'>'|b'"'|b'\''|b'\\')){return None;}
+    let href=href.split(|b|*b==b'#').next()?;if href.is_empty(){return None;}
+    let origin=base.strip_prefix(b"http://")?;let end=origin.iter().position(|b|matches!(*b,b'/'|b'?')).unwrap_or(origin.len())+7;
+    let prefix=if href.starts_with(b"http://"){b"".as_slice()}else if href.starts_with(b"//"){b"http:".as_slice()}else if href.split(|b|*b==b'/').next()?.contains(&b':'){return None;}else if href[0]==b'/'{&base[..end]}else if href[0]==b'?'{base.split(|b|*b==b'?').next()?}else{let path=base.split(|b|*b==b'?').next()?;if path.len()==end{let n=base.len().checked_add(1)?.checked_add(href.len())?;if n>out.len(){return None;}out[..base.len()].copy_from_slice(base);out[base.len()]=b'/';out[base.len()+1..n].copy_from_slice(href);return Some(n);}let slash=path.iter().rposition(|b|*b==b'/')?;&path[..slash+1]};
+    let n=prefix.len().checked_add(href.len())?;if n>out.len(){return None;}out[..prefix.len()].copy_from_slice(prefix);out[prefix.len()..n].copy_from_slice(href);Some(n)
+}
+pub fn redirect(b:&[u8])->Result<Option<&[u8]>,&'static str>{
+    let Some(end)=b.windows(4).position(|w|w==b"\r\n\r\n")else{return Ok(None);};if end>2048{return Err("HTTP header too large");}
+    let mut lines=b[..end].split(|x|*x==10);let status=lines.next().ok_or("Missing HTTP status")?;
+    if ![b"301".as_slice(),b"302",b"303",b"307",b"308"].iter().any(|v|status.get(9..12)==Some(*v)){return Ok(None);}
+    let mut loc=None;for line in lines{let Some(i)=line.iter().position(|b|*b==b':')else{return Err("Invalid redirect header");};if line[..i].eq_ignore_ascii_case(b"location"){if loc.is_some(){return Err("Duplicate redirect Location");}loc=Some(trim(line[i+1..].strip_suffix(b"\r").unwrap_or(&line[i+1..])));}}
+    loc.map(Some).ok_or("Redirect missing Location")
+}
+#[derive(Clone,Copy)]pub struct Link{pub url:[u8;128],pub len:usize}
+pub const EMPTY_LINK:Link=Link{url:[0;128],len:0};
+pub fn links(src:&[u8],base:&[u8],out:&mut[Link;8])->usize{
+    out.fill(EMPTY_LINK);let mut at=0;let mut n=0;let mut skip=0;
+    while at<src.len()&&n<out.len(){let Some(rel)=src[at..].iter().position(|b|*b==b'<')else{break;};at+=rel+1;let Some(e)=src[at..].iter().position(|b|*b==b'>')else{break;};let raw=trim(&src[at..at+e]);at+=e+1;
+        let name=raw.split(|b|b.is_ascii_whitespace()).next().unwrap_or(&[]);if name.eq_ignore_ascii_case(b"script"){skip=1;continue;}if name.eq_ignore_ascii_case(b"style"){skip=2;continue;}if skip!=0{if skip==1&&name.eq_ignore_ascii_case(b"/script")||skip==2&&name.eq_ignore_ascii_case(b"/style"){skip=0;}continue;}if !name.eq_ignore_ascii_case(b"a"){continue;}
+        let mut attrs=&raw[name.len()..];while !attrs.is_empty(){attrs=trim(attrs);if attrs.is_empty(){break;}let k=attrs.iter().position(|b|b.is_ascii_whitespace()||*b==b'=').unwrap_or(attrs.len());if k==0{break;}let key=&attrs[..k];attrs=trim(&attrs[k..]);if attrs.first()!=Some(&b'='){continue;}attrs=trim(&attrs[1..]);if attrs.is_empty(){break;}let q=attrs[0];let (value,rest)=if q==b'"'||q==b'\''{let Some(e)=attrs[1..].iter().position(|b|*b==q)else{break;};(&attrs[1..1+e],&attrs[2+e..])}else{let e=attrs.iter().position(|b|b.is_ascii_whitespace()).unwrap_or(attrs.len());(&attrs[..e],&attrs[e..])};attrs=rest;if key.eq_ignore_ascii_case(b"href"){let mut url=[0;128];if let Some(len)=resolve_url(base,value,&mut url){if !out[..n].iter().any(|v|v.url[..v.len]==url[..len]){out[n]=Link{url,len};n+=1;}}break;}
+        }
+    }n
+}
+pub fn navigation_test()->bool{let mut a=[0;128];let base=b"http://example.test/dir/index.html";let mut l=[EMPTY_LINK;8];resolve_url(base,b"/setup.exe",&mut a).is_some_and(|n|&a[..n]==b"http://example.test/setup.exe")&&resolve_url(base,b"https://example.test/setup.exe",&mut a).is_none()&&resolve_url(base,b"other.msi",&mut a).is_some_and(|n|&a[..n]==b"http://example.test/dir/other.msi")&&redirect(b"HTTP/1.1 302 Found\r\nLocation: /setup.exe\r\n\r\n")==Ok(Some(b"/setup.exe".as_slice()))&&links(b"<a href='/setup.exe'>EXE</a><a href=\"other.msi\">MSI</a><script><a href='/bad'></script>",base,&mut l)==2}

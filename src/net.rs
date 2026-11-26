@@ -178,10 +178,15 @@ impl Nic{
         serial::line("H5K: NET_TCP_OK");
         Ok(Tcp{nic:self,mac,ip,port,remote,closed:false})
     }
-    pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{
+    pub fn get_follow(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<(usize,[u8;128],usize),&'static str>{
+        if url.starts_with(b"https://"){return Err("HTTPS requires TLS - not supported yet");}if url.len()>128{return Err("URL too long");}let mut current=[0;128];current[..url.len()].copy_from_slice(url);let mut n=url.len();
+        for _ in 0..5{match self.get_once(&current[..n],response)?{Ok(size)=>return Ok((size,current,n)),Err((next,len))=>{if next[..len]==current[..n]{return Err("HTTP redirect loop");}current=next;n=len;serial::line("H5K: HTTP_REDIRECT_FOLLOWED");}}}Err("HTTP redirect limit")
+    }
+    pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{self.get_follow(url,response).map(|v|v.0)}
+    fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<Result<usize,([u8;128],usize)>,&'static str>{
         let (host,port,path)=parse_url(url).ok_or("Use http://host:port/path")?;
         let mut req=[0u8;256];let mut k=0;
-        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
+        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[7..url.iter().enumerate().skip(7).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
         let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;
         let overall=p::ticks()+24000;let mut used=0;let mut next_log=65536;
         let mut buf=[0u8;B];
@@ -191,9 +196,10 @@ impl Nic{
             response[used..used+n].copy_from_slice(&buf[..n]);used+=n;
             if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}
             if fin{serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
+            if let Some(location)=crate::http::redirect(&response[..used])?{let mut next=[0;128];let n=crate::http::resolve_url(url,location,&mut next).ok_or("Redirect unsupported - HTTPS or invalid URL")?;return Ok(Err((next,n)));}
             if let Some((len,mode))=crate::http::complete(response,used,fin)?{
                 serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
-                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(len);
+                serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);serial::line("H5K: HTTP_DOWNLOAD_OK");return Ok(Ok(len));
             }
             if fin{return Err("Incomplete HTTP body");}
         }

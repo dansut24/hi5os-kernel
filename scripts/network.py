@@ -12,15 +12,20 @@ def fixture():
     b[512]=0xc3
     return bytes(b)
 MODE=sys.argv[1] if len(sys.argv)>1 else "length"
-assert MODE in ("length","close","chunked","large","sevenzip","msi")
+assert MODE in ("length","close","chunked","large","sevenzip","msi","browse")
 PAYLOAD=pathlib.Path(sys.argv[2]).read_bytes() if MODE in ("sevenzip","msi") else fixture()+ (bytes(range(256))*4092 if MODE=="large" else b"")
 assert len(PAYLOAD)<=4*1024*1024
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
+        if MODE=="browse" and self.path=="/index.html":
+            body=b"<html><body><h1>Hi5Browser qualification</h1><a href='/get.exe'>Download EXE</a></body></html>"
+            self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
+        if MODE=="browse" and self.path=="/get.exe":
+            self.send_response(302);self.send_header("Location","/hello.exe");self.send_header("Content-Length","0");self.send_header("Connection","close");self.end_headers();self.close_connection=True;return
         if self.path!="/hello.exe":self.send_error(404);return
         self.send_response(200);self.send_header("Content-Type","application/octet-stream")
-        if MODE in ("length","large","sevenzip","msi"):self.send_header("Content-Length",str(len(PAYLOAD)))
+        if MODE in ("length","large","sevenzip","msi","browse"):self.send_header("Content-Length",str(len(PAYLOAD)))
         elif MODE=="chunked":self.send_header("Transfer-Encoding","chunked")
         self.send_header("Connection","close");self.end_headers()
         if MODE=="chunked":
@@ -73,9 +78,16 @@ def main():
                     key("ctrl-l")
                     for ch in f"http://10.0.2.2:{server.server_port}/hello.exe":
                         key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
-                key("ret");wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",240 if MODE in ("large","sevenzip","msi") else 20)
+                if MODE=="browse":
+                    key("ctrl-l")
+                    for ch in "http://10.0.2.200:8080/index.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    key("ret");wait(b"BROWSER_PAGE_RENDERED",30);wait(b"BROWSER_LINKS=0x0000000000000001",5)
+                    call("screendump",{"filename":str(ROOT/"dist"/"browser-page-512m.ppm")})
+                    key("ctrl-1");wait(b"BROWSER_LINK_OPENED",5);wait(b"HTTP_REDIRECT_FOLLOWED",30)
+                else:key("ret")
+                wait(b"DHCP_ACK_OK",20);wait(b"HTTP_DOWNLOAD_OK",240 if MODE in ("large","sevenzip","msi") else 20)
                 wait(f"HTTP_DOWNLOAD_BYTES=0x{len(PAYLOAD):016x}".encode(),2)
-                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK","sevenzip":b"HTTP_LENGTH_OK","msi":b"HTTP_LENGTH_OK"}[MODE],2)
+                wait({"length":b"HTTP_LENGTH_OK","close":b"HTTP_CLOSE_OK","chunked":b"HTTP_CHUNKED_OK","large":b"HTTP_LENGTH_OK","sevenzip":b"HTTP_LENGTH_OK","msi":b"HTTP_LENGTH_OK","browse":b"HTTP_LENGTH_OK"}[MODE],2)
                 if MODE=="close":wait(b"HTTP_FIN_BYTES=",2)
                 if MODE=="msi":
                     key("esc");key("4");wait(b"GUI_TERMINAL_OPEN",5)

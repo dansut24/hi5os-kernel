@@ -105,6 +105,16 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                     ready=proc.poll() is None and screenshot.is_file() and screenshot.stat().st_size>1024 and not any(m in current for m in (b"ORIGINAL_GUI_LIVE_END",b"ORIGINAL_GUI_SESSION_DISCARDED",b"SHELL_ORIGINAL_GUI_LIVE_BLOCKED",b"H5K: PANIC",b"H5K: FAIL "))
                     if ready:
                         call("screendump",{"filename":str(ROOT/"dist"/"7zip-original-live-persistent.ppm")})
+                    # Separate interaction probe: actual guest key events and resulting list evidence.
+                    if ready:
+                        prior=len(log.read_bytes());key("down");key("ret");time.sleep(1)
+                        tail=log.read_bytes()[prior:]
+                        selected=b"GUI_LIST_SELECTED" in tail
+                        navigated=b"GUI_LIST_ROW|C:" in tail and b"ORIGINAL_GUI_LIVE_END" not in tail
+                        results["original list selection"]=selected
+                        results["original Computer navigation (diagnostic)"]=navigated
+                        print("ORIGINAL GUI INPUT:",selected,"NAVIGATION:",navigated,flush=True)
+                        call("screendump",{"filename":str(ROOT/"dist"/"7zip-original-interaction.ppm")})
                     key("ctrl-esc");key("f4")
                 results["original live persistence"]=ready
                 print("ORIGINAL GUI LIVE:",ready,flush=True)
