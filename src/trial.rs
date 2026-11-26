@@ -743,15 +743,15 @@ unsafe fn capture(v:u64,n:usize)->bool{
             if matches!(x,1|2)&&sync&&phys(w,4,true).is_some()&&capture(y,z as u32 as usize){write32(w,z as u32);f.rax=1;}else{LAST=87;}},
         8=>f.rax=allocate(x as usize),
         9=>{if !release(x){abort_import(id);}},
-        10=>{if z<=LIMIT as u64{if z==0{f.rax=x;}else if let(Some(d),Some(s))=(phys(x,z as usize,true),phys(y,z as usize,false)){ptr::copy(s,d,z as usize);f.rax=x;}else{abort_import(id);}}else{abort_import(id);}},
-        11=>{if z<=LIMIT as u64{if z==0{f.rax=x;}else if let Some(d)=phys(x,z as usize,true){ptr::write_bytes(d,y as u8,z as usize);f.rax=x;}else{abort_import(id);}}else{abort_import(id);}},
+        10=>{if z<=HEAP_BYTES as u64{if z==0{f.rax=x;}else if let(Some(d),Some(s))=(phys(x,z as usize,true),phys(y,z as usize,false)){ptr::copy(s,d,z as usize);f.rax=x;}else{abort_import(id);}}else{abort_import(id);}},
+        11=>{if z<=HEAP_BYTES as u64{if z==0{f.rax=x;}else if let Some(d)=phys(x,z as usize,true){ptr::write_bytes(d,y as u8,z as usize);f.rax=x;}else{abort_import(id);}}else{abort_import(id);}},
         12=>{if let Some(n)=c_len(x,false){f.rax=n as u64;}else{abort_import(id);}},
         13=>{if matches!(x,1|2){APP_TYPE=x as u32;}else{abort_import(id);}},
         14=>{if phys(x,4,true).is_some()&&phys(y,8,true).is_some()&&phys(z,8,true).is_some(){write32(x,ARGC);write64(y,ENV+0x600);write64(z,ENV+0x620);f.rax=0;}else{abort_import(id);}},
         15=>f.rax=platform::ticks().wrapping_mul(10)as u32 as u64,
         16=>f.rax=u64::MAX,
         17=>f.rax=module_handle(x,&a.name[..a.nn]==b"GetModuleHandleW"),
-        18=>{if z<=LIMIT as u64{if z==0{return;}if let (Some(a),Some(b))=(phys(x,z as usize,false),phys(y,z as usize,false)){for i in 0..z as usize{let d=*a.add(i)as i32-*b.add(i)as i32;if d!=0{f.rax=d as u32 as u64;break;}}}else{abort_import(id);}}else{abort_import(id);}},
+        18=>{if z<=HEAP_BYTES as u64{if z==0{return;}if let (Some(a),Some(b))=(phys(x,z as usize,false),phys(y,z as usize,false)){for i in 0..z as usize{let d=*a.add(i)as i32-*b.add(i)as i32;if d!=0{f.rax=d as u32 as u64;break;}}}else{abort_import(id);}}else{abort_import(id);}},
         19=>f.rax=realloc(x,y as usize),
         20|21=>{if let Some(d)=text_cmp(x,y,a.kind==21){f.rax=d as u32 as u64;}else{abort_import(id);}},
         22=>{if x==0||phys(x,1,false).is_some(){MATH_HANDLER=x;}else{abort_import(id);}},
@@ -859,8 +859,8 @@ unsafe fn capture(v:u64,n:usize)->bool{
         102=>{let mut times=[None;3];for(i,v)in [y,z,w].iter().enumerate(){if *v!=0{let Some(p)=phys(*v,8,false)else{LAST=87;return;};times[i]=Some(ptr::read_unaligned(p.cast::<u64>()));}}let r=fs().set_times(x,times);bool_result(f,r);},
         103=>{if let (Some(p),Some(q))=(phys(x,8,false),phys(y,8,true)){ptr::copy(p,q,8);f.rax=1;}else{LAST=87;}},
         104=>{if let (Some(p),Some(q))=(phys(x,8,false),phys(y,8,false)){let a=ptr::read_unaligned(p.cast::<u64>());let b=ptr::read_unaligned(q.cast::<u64>());f.rax=if a<b{u32::MAX as u64}else if a>b{1}else{0};}else{abort_import(id);}},
-        105=>{if x!=0&&path(x).is_none(){LAST=123;return;}let free=fs().free_bytes();for(v,n)in [(y,free),(z,524288),(w,free)]{if v!=0&&!write64(v,n){LAST=87;return;}}f.rax=1;},
-        106=>{if x!=0&&path(x).is_none(){LAST=123;return;}let Some(total)=arg(f,40)else{LAST=87;return;};for(v,n)in [(y,1),(z,512),(w,(fs().free_bytes()/512)as u32),(total,1024)]{if v!=0&&!write32(v,n){LAST=87;return;}}f.rax=1;},
+        105=>{if x!=0&&path(x).is_none(){LAST=123;return;}let free=fs().free_bytes();for(v,n)in [(y,free),(z,crate::trialfs::QUOTA as u64),(w,free)]{if v!=0&&!write64(v,n){LAST=87;return;}}f.rax=1;},
+        106=>{if x!=0&&path(x).is_none(){LAST=123;return;}let Some(total)=arg(f,40)else{LAST=87;return;};for(v,n)in [(y,1),(z,512),(w,(fs().free_bytes()/512)as u32),(total,(crate::trialfs::QUOTA/512)as u32)]{if v!=0&&!write32(v,n){LAST=87;return;}}f.rax=1;},
         107=>{let Some(p)=phys(x,64,true)else{LAST=87;return;};if ptr::read_unaligned(p.cast::<u32>())!=64{LAST=87;return;}ptr::write_bytes(p,0,64);ptr::write_unaligned(p.cast::<u32>(),64);let avail=HEAP_END.saturating_sub(NEXT);
             for(i,n)in [HEAP_BYTES as u64,avail,HEAP_BYTES as u64,avail,HEAP_BYTES as u64,avail,0].iter().enumerate(){ptr::write_unaligned(p.add(8+i*8).cast::<u64>(),*n);}f.rax=1;},
         108=>{if let Some(n)=c_len(x,true){f.rax=bstr_alloc(x,n);}else if x==0{f.rax=0;}},
@@ -1039,6 +1039,14 @@ pub fn workspace_ready(){unsafe{if !WORK_READY{WORK.reset();WORK_READY=true;}}}
 pub fn workspace_load(b:&[u8])->bool{unsafe{workspace_ready();WORK.unpack(b)}}
 pub fn workspace_pack(out:&mut[u8])->Option<usize>{unsafe{workspace_ready();WORK.pack(out)}}
 pub fn workspace_seed(data:&[u8])->bool{unsafe{workspace_ready();WORK.put(crate::trialfs::Path::parse(b"notes.txt").unwrap(),data)}}
+pub fn workspace_large_seed()->bool{unsafe{
+    workspace_ready();let p=|v:&[u8]|crate::trialfs::Path::parse(v).unwrap();let dir=p(b"batch");
+    if WORK.info(dir).is_none()&&WORK.mkdir(dir).is_err(){return false;}
+    let Ok((h,_))=WORK.open(p(b"batch\\large.bin"),0xc0000000,0,2)else{return false;};
+    let mut b=[0u8;4096];for i in 0..48usize{for j in 0..b.len(){b[j]=((i*17+j*31+(j>>8))&255)as u8;}if WORK.write(h,&b)!=Ok(b.len()){let _=WORK.close(h);return false;}}
+    WORK.close(h).is_ok()&&WORK.put(p(b"batch\\small.txt"),b"Hi5OS multi-file test\r\n")
+}}
+pub fn workspace_update_seed()->bool{unsafe{workspace_ready();WORK.put(crate::trialfs::Path::parse(b"batch\\small.txt").unwrap(),b"Hi5OS updated content\r\n")}}
 pub fn workspace_verify()->bool{unsafe{workspace_ready();let p=|s:&[u8]|crate::trialfs::Path::parse(s).unwrap();let Some(src)=WORK.contents(p(b"notes.txt"))else{return false;};WORK.contents(p(b"outzip\\notes.txt"))==Some(src)&&WORK.contents(p(b"out7z\\notes.txt"))==Some(src)}}
 pub fn command_ok()->bool{unsafe{H5_TRIAL_STATUS==1&&EXIT==0}}
 pub fn exit_code()->u32{unsafe{EXIT}}

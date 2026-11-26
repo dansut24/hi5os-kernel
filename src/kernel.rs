@@ -43,6 +43,8 @@ pub fn on_stack(info:BootInfo)->! {
     let mut tasks=services::Tasks::new();
     if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
     serial::line("H5K: COOPERATIVE_SCHEDULER_OK");
+    if !crate::procman::self_test(){fail(&mut screen,"PROCESS_MODEL_TEST");}
+    serial::line("H5K: PROCESS_MODEL_OK");
     let mut files=services::Files::new();
     if !files.self_test(){fail(&mut screen,"RAMFS_TEST");}
     serial::line("H5K: RAMFS_OK");

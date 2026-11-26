@@ -19,6 +19,7 @@ mod trial;
 mod trialfs;
 mod winwindow;
 mod msi;
+mod procman;
 mod net;
 mod http;
 mod heap;

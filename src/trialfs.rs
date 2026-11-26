@@ -1,7 +1,8 @@
 //! Volatile, single-process private file namespace for the pinned Windows trial.
 //! No access to host, real disk, saved downloads, other apps, devices or network shares.
-//! Eight 64 KiB file slots, eight directory slots (including root), sixteen handles.
-const FC:usize=8;const DC:usize=8;const HC:usize=16;const CAP:usize=65536;
+//! Sixteen 256 KiB file slots, sixteen directories, 32 handles, aggregate 2.75 MiB quota.
+const FC:usize=16;const DC:usize=16;const HC:usize=32;const CAP:usize=262144;
+pub const QUOTA:usize=2883584;
 pub const INVALID:u64=u64::MAX;
 #[derive(Clone,Copy,PartialEq,Eq)]pub struct Path{bytes:[u8;96],len:usize}
 impl Path{
@@ -34,7 +35,7 @@ const DIR:Dir=Dir{path:Path::empty(),used:false};
 #[derive(Clone,Copy)]struct Handle{file:usize,pos:usize,read:bool,write:bool,used:bool,share:u32}
 const HANDLE:Handle=Handle{file:0,pos:0,read:false,write:false,used:false,share:0};
 #[derive(Clone,Copy)]pub struct Info{pub path:Path,pub size:u32,pub attrs:u32,pub times:[u64;3]}
-pub const SNAP_CAP:usize=540672;
+pub const SNAP_CAP:usize=QUOTA+8192;
 pub struct Fs{files:[File;FC],dirs:[Dir;DC],handles:[Handle;HC],data:[[u8;CAP];FC]}
 impl Fs{
     pub const fn new()->Self{Self{files:[FILE;FC],dirs:[DIR;DC],handles:[HANDLE;HC],data:[[0;CAP];FC]}}
@@ -68,12 +69,12 @@ impl Fs{
     pub fn size(&self,h:u64)->Result<u32,u32>{let i=self.index(h)?;Ok(self.files[self.handles[i].file].len as u32)}
     pub fn seek(&mut self,h:u64,off:i64,origin:u32)->Result<u32,u32>{let i=self.index(h)?;let a=self.handles[i];let b=match origin{0=>0,1=>a.pos as i64,2=>self.files[a.file].len as i64,_=>return Err(87)};
         let pos=b.checked_add(off).ok_or(131u32)?;if !(0..=CAP as i64).contains(&pos){return Err(131);}self.handles[i].pos=pos as usize;Ok(pos as u32)}
-    pub fn truncate(&mut self,h:u64)->Result<(),u32>{let i=self.index(h)?;let a=self.handles[i];if !a.write{return Err(5);}let f=&mut self.files[a.file];
+    pub fn truncate(&mut self,h:u64)->Result<(),u32>{let i=self.index(h)?;let a=self.handles[i];if !a.write{return Err(5);}if a.pos.saturating_sub(self.files[a.file].len)>self.free_bytes()as usize{return Err(112);}let f=&mut self.files[a.file];
         if a.pos>f.len{self.data[a.file][f.len..a.pos].fill(0);}else{self.data[a.file][a.pos..f.len].fill(0);}f.len=a.pos;Ok(())}
     pub fn read(&mut self,h:u64,out:&mut[u8])->Result<usize,u32>{let i=self.index(h)?;let a=self.handles[i];if !a.read{return Err(5);}let n=out.len().min(self.files[a.file].len.saturating_sub(a.pos));
         if n!=0{out[..n].copy_from_slice(&self.data[a.file][a.pos..a.pos+n]);self.handles[i].pos+=n;}Ok(n)}
     pub fn write(&mut self,h:u64,src:&[u8])->Result<usize,u32>{let i=self.index(h)?;let a=self.handles[i];if !a.write{return Err(5);}let end=a.pos.checked_add(src.len()).ok_or(112u32)?;
-        if end>CAP{return Err(112);}let f=&mut self.files[a.file];if a.pos>f.len{self.data[a.file][f.len..a.pos].fill(0);}self.data[a.file][a.pos..end].copy_from_slice(src);f.len=f.len.max(end);self.handles[i].pos=end;Ok(src.len())}
+        if end>CAP||end.saturating_sub(self.files[a.file].len)>self.free_bytes()as usize{return Err(112);}let f=&mut self.files[a.file];if a.pos>f.len{self.data[a.file][f.len..a.pos].fill(0);}self.data[a.file][a.pos..end].copy_from_slice(src);f.len=f.len.max(end);self.handles[i].pos=end;Ok(src.len())}
     pub fn close_all(&mut self){self.handles.fill(HANDLE);}
     pub fn info(&self,p:Path)->Option<Info>{if let Some(i)=self.file(p){let f=self.files[i];Some(Info{path:p,size:f.len as u32,attrs:f.attrs,times:f.times})}else if self.dir(p){Some(Info{path:p,size:0,attrs:16,times:[stamp();3]})}else{None}}
     pub fn handle_info(&self,h:u64)->Result<Info,u32>{let i=self.index(h)?;self.info(self.files[self.handles[i].file].path).ok_or(6)}
@@ -89,8 +90,8 @@ impl Fs{
         while *cursor<FC+DC{let i=*cursor;*cursor+=1;if let Some(e)=self.entry(i){if e.path.parent()==parent&&wildcard(pat,e.path.name()){return Some(e);}}}None
     }
     pub fn contents(&self,p:Path)->Option<&[u8]>{let i=self.file(p)?;Some(&self.data[i][..self.files[i].len])}
-    pub fn put(&mut self,p:Path,b:&[u8])->bool{if b.len()>CAP{return false;}let Ok((h,_))=self.open(p,0xc0000000,0,2)else{return false;};let ok=self.write(h,b)==Ok(b.len());let _=self.close(h);ok}
-    pub fn free_bytes(&self)->u64{(CAP*FC-self.files.iter().filter(|f|f.used).map(|f|f.len).sum::<usize>())as u64}
+    pub fn put(&mut self,p:Path,b:&[u8])->bool{if b.len()>CAP||b.len().saturating_sub(self.file(p).map_or(0,|i|self.files[i].len))>self.free_bytes()as usize{return false;}let Ok((h,_))=self.open(p,0xc0000000,0,2)else{return false;};let ok=self.write(h,b)==Ok(b.len());let _=self.close(h);ok}
+    pub fn free_bytes(&self)->u64{QUOTA.saturating_sub(self.files.iter().filter(|f|f.used).map(|f|f.len).sum::<usize>())as u64}
     // Portable bounded snapshot: magic, count, per-record path length, flags, size, times, bytes.
     // Only the private workspace is serialized; real OS notes and downloads never become writable.
     pub fn pack(&self,out:&mut[u8])->Option<usize>{
@@ -108,7 +109,7 @@ impl Fs{
         if b.len()<12||&b[..8]!=b"H5WFS001"{return false;}let count=u32::from_le_bytes(b[8..12].try_into().unwrap())as usize;if count>FC+DC-1{return false;}let mut at=12usize;
         for _ in 0..count{
             let Some(h)=b.get(at..at+36)else{return false;};let n=u32::from_le_bytes(h[..4].try_into().unwrap())as usize;let attr=u32::from_le_bytes(h[4..8].try_into().unwrap());let len=u32::from_le_bytes(h[8..12].try_into().unwrap())as usize;
-            if n==0||n>96||len>CAP{return false;}let Some(name)=b.get(at+36..at+36+n)else{return false;};let Some(p)=Path::parse(name)else{return false;};if p.bytes()!=name||self.info(p).is_some(){return false;}
+            if n==0||n>96||len>CAP||len>self.free_bytes()as usize{return false;}let Some(name)=b.get(at+36..at+36+n)else{return false;};let Some(p)=Path::parse(name)else{return false;};if p.bytes()!=name||self.info(p).is_some(){return false;}
             let Some(data)=b.get(at+36+n..at+36+n+len)else{return false;};
             if attr==16{if len!=0||self.mkdir(p).is_err(){return false;}}else{if !self.put(p,data)||self.set_attrs(p,attr).is_err(){return false;}let i=self.file(p).unwrap();for j in 0..3{self.files[i].times[j]=u64::from_le_bytes(h[12+j*8..20+j*8].try_into().unwrap());}}
             at+=36+n+len;

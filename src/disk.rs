@@ -35,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if (lba>4161&&!(8192..=20479).contains(&lba))||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if (lba>4161&&!(8192..=32767).contains(&lba))||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -191,34 +191,48 @@ impl Store{
         let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len!=crate::trial::PACKAGE_SIZE{return None;}
         Some(Download{len,gen,sum:get(&h,16),url:[0;128],url_len:0})
     }
-    // Dedicated workspace snapshot banks, 1 MiB each, outside app and notes/downloads.
+    // Legacy 1 MiB banks retained for migration; new 3 MiB banks in unused sectors.
     fn work_header(p:Port,base:u32)->Option<Download>{
         let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=b"H5WORK01"||get(&h,508)!=crc(&h[..508]){return None;}
-        let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len<12||len>crate::trialfs::SNAP_CAP{return None;}
+        let gen=get(&h,8);let len=get(&h,12)as usize;let max=if base==16384||base==18432{1048576-512}else{3145728-512};if gen==0||len<12||len>crate::trialfs::SNAP_CAP||len>max{return None;}
         Some(Download{len,gen,sum:get(&h,16),url:[0;128],url_len:0})
     }
     pub fn load_workspace(&mut self,out:&mut[u8])->Option<usize>{
-        let p=self.port?;let a=Self::work_header(p,16384);let b=Self::work_header(p,18432);
-        let order=if b.map_or(0,|x|x.gen)>a.map_or(0,|x|x.gen){[(18432,b),(16384,a)]}else{[(16384,a),(18432,b)]};
+        let p=self.port?;let mut order=[(16384,Self::work_header(p,16384)),(18432,Self::work_header(p,18432)),(20480,Self::work_header(p,20480)),(26624,Self::work_header(p,26624))];
+        order.sort_unstable_by_key(|v|core::cmp::Reverse(v.1.map_or(0,|x|x.gen)));
         for(base,v)in order{if let Some(v)=v{if out.len()>=v.len&&Self::v2_read(p,base,v,Some(out),None){serial::line("H5K: WORKSPACE_LOADED");return Some(v.len);}}}None
     }
     pub fn save_workspace(&mut self,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};if data.len()<12||data.len()>crate::trialfs::SNAP_CAP{return false;}
         let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}
-        let a=Self::work_header(p,16384).filter(|v|Self::v2_read(p,16384,*v,None,None));let b=Self::work_header(p,18432).filter(|v|Self::v2_read(p,18432,*v,None,None));
-        let (base,gen)=if a.map_or(0,|v|v.gen)>b.map_or(0,|v|v.gen){(18432,a.unwrap().gen)}else{(16384,b.map_or(0,|v|v.gen))};
+        let mut gen=0;let mut latest=0;
+        for base in [16384,18432,20480,26624]{if let Some(v)=Self::work_header(p,base){if v.gen>gen&&Self::v2_read(p,base,v,None,None){gen=v.gen;latest=base;}}}
+        let base=if latest==20480{26624}else{20480};
         let Some(gen)=gen.checked_add(1)else{return false;};
         for(i,part)in data.chunks(512).enumerate(){let mut block=[0;512];block[..part.len()].copy_from_slice(part);if !p.write(base+1+i as u32,&mut block){return false;}}
         if !p.flush(){return false;}h.fill(0);h[..8].copy_from_slice(b"H5WORK01");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let sum=crc(&h[..508]);put(&mut h,508,sum);
         if !p.write(base,&mut h)||!p.flush(){return false;}let Some(v)=Self::work_header(p,base)else{return false;};if v.gen!=gen||!Self::v2_read(p,base,v,None,Some(data)){return false;}
         serial::line("H5K: WORKSPACE_SAVED");true
     }
+    fn package_enabled(p:Port)->bool{
+        let mut h=[0;512];if !p.read(9,&mut h){return false;}
+        h.iter().all(|v|*v==0)||&h[..8]==b"H5PKG001"&&h[8]==1&&get(&h,508)==crc(&h[..508])
+    }
+    fn package_state(p:Port,enabled:bool)->bool{
+        let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}h.fill(0);
+        h[..8].copy_from_slice(b"H5PKG001");h[8]=enabled as u8;let sum=crc(&h[..508]);put(&mut h,508,sum);
+        if !p.write(9,&mut h)||!p.flush(){return false;}let mut check=[0;512];p.read(9,&mut check)&&check==h
+    }
+    pub fn uninstall_7zip(&mut self)->bool{
+        let Some(p)=self.port else{return false;};if !Self::package_state(p,false){return false;}
+        serial::line("H5K: APP_7ZIP_UNINSTALLED");true
+    }
     pub fn install_7zip(&mut self,data:&[u8])->bool{
         let Some(p)=self.port else{return false;};if !crate::trial::verified(data){return false;}
         let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}
         let a=Self::app_header(p,8192);let b=Self::app_header(p,12288);
         // An exact existing valid copy need not be rewritten.
-        for (base,v) in [(8192,a),(12288,b)]{if let Some(v)=v{if Self::v2_read(p,base,v,None,Some(data)){serial::line("H5K: APP_7ZIP_INSTALLED");return true;}}}
+        for (base,v) in [(8192,a),(12288,b)]{if let Some(v)=v{if Self::v2_read(p,base,v,None,Some(data)){if !Self::package_state(p,true){return false;}serial::line("H5K: APP_7ZIP_INSTALLED");return true;}}}
         let (base,gen)=if a.map_or(0,|x|x.gen)>b.map_or(0,|x|x.gen){(12288,a.unwrap().gen)}else{(8192,b.map_or(0,|x|x.gen))};
         let Some(gen)=gen.checked_add(1)else{return false;};
         for (i,part) in data.chunks(512).enumerate(){let mut block=[0;512];block[..part.len()].copy_from_slice(part);if !p.write(base+1+i as u32,&mut block){return false;}}
@@ -226,10 +240,10 @@ impl Store{
         h.fill(0);h[..8].copy_from_slice(b"H5APP001");put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let sum=crc(&h[..508]);put(&mut h,508,sum);
         if !p.write(base,&mut h)||!p.flush(){return false;}
         let Some(v)=Self::app_header(p,base)else{return false;};if v.gen!=gen||!Self::v2_read(p,base,v,None,Some(data)){return false;}
-        serial::line("H5K: APP_7ZIP_INSTALLED");true
+        if !Self::package_state(p,true){return false;}serial::line("H5K: APP_7ZIP_INSTALLED");true
     }
     pub fn load_7zip(&mut self,out:&mut[u8])->Option<usize>{
-        let p=self.port?;let a=Self::app_header(p,8192);let b=Self::app_header(p,12288);
+        let p=self.port?;if !Self::package_enabled(p){return None;}let a=Self::app_header(p,8192);let b=Self::app_header(p,12288);
         let order=if b.map_or(0,|x|x.gen)>a.map_or(0,|x|x.gen){[(12288,b),(8192,a)]}else{[(8192,a),(12288,b)]};
         for(base,v)in order{if let Some(v)=v{if Self::v2_read(p,base,v,Some(out),None)&&crate::trial::verified(&out[..v.len]){serial::line("H5K: APP_7ZIP_LOADED");return Some(v.len);}}}None
     }
