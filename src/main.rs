@@ -20,6 +20,7 @@ mod trialfs;
 mod winwindow;
 mod winmenu;
 mod wincontrols;
+mod winpanel;
 mod msi;
 mod procman;
 mod pegraph;
