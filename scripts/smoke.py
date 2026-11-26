@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--memory', type=int, default=256)
     parser.add_argument('--timeout', type=int, default=60)
     parser.add_argument('--interactive', action='store_true')
+    parser.add_argument('--display-test', action='store_true')
     parser.add_argument('--cpu', default='qemu64')
     parser.add_argument('--security-test', choices=['available','unavailable'])
     args = parser.parse_args()
@@ -129,6 +130,19 @@ def main():
                         while b'GUI_MAXIMIZED' not in log.read_bytes() and time.monotonic()<deadline:time.sleep(.1)
                         if b'GUI_MAXIMIZED' not in log.read_bytes():raise RuntimeError('Maximise failed')
                         call('screendump',{'filename':str(ROOT/'dist'/f'settings-{args.memory}m.ppm')})
+                        if args.display_test:
+                            for key,w,h in [('ctrl-1',640,480),('ctrl-2',800,600),('ctrl-3',1024,768),('ctrl-4',1280,720),('ctrl-5',1600,900),('ctrl-6',1920,1080),('ctrl-2',800,600)]:
+                                prior=len(log.read_bytes())
+                                call('human-monitor-command',{'command-line':'sendkey '+key})
+                                deadline=time.monotonic()+10
+                                while b'GRAPHICS_MODE_OK' not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.1)
+                                tail=log.read_bytes()[prior:]
+                                assert b'GRAPHICS_MODE_OK' in tail and f'GRAPHICS_WIDTH=0x{w:016x}'.encode() in tail and f'GRAPHICS_HEIGHT=0x{h:016x}'.encode() in tail,tail
+                                shot=ROOT/'dist'/f'display-{w}x{h}.ppm'
+                                call('screendump',{'filename':str(shot)})
+                                header=shot.read_bytes().split(None,4)
+                                assert header[:3]==[b'P6',str(w).encode(),str(h).encode()],header[:3]
+                                print(f'GRAPHICS MODE {w}x{h}: PASS (hardware readback and QMP screenshot)',flush=True)
                     time.sleep(1)
                     if proc.poll() is not None: raise RuntimeError('QEMU exited after kernel-ready marker')
                     validate(log.read_bytes())

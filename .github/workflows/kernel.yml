@@ -25,7 +25,7 @@ jobs:
       - name: Qualify 256 MiB VM
         run: python3 scripts/smoke.py --memory 256
       - name: Qualify 512 MiB VM
-        run: python3 scripts/smoke.py --memory 512
+        run: python3 scripts/smoke.py --memory 512 --display-test
       - name: Qualify 1024 MiB VM
         run: python3 scripts/smoke.py --memory 1024
       - name: Clock and fail-closed entropy on CPU without RNG

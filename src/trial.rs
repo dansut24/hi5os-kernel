@@ -63,7 +63,7 @@ const SHELL_EMPTY:ShellId=ShellId{ptr:0,folder:0};
 static mut SHELL_IDS:[ShellId;32]=[SHELL_EMPTY;32];
 static mut SHELL_TASK:[u64;64]=[0;64];
 // Logical desktop used by the isolated startup probe, not host display access.
-const GUI_WORK_WIDTH:i32=800;const GUI_WORK_HEIGHT:i32=560;
+static mut GUI_WORK_WIDTH:i32=800;static mut GUI_WORK_HEIGHT:i32=560;
 const GUI_DIALOG_X:u32=6;const GUI_DIALOG_Y:u32=12;
 static mut COMMON_INIT_SEEN:bool=false;
 static mut PRNG:u32=1;
@@ -852,7 +852,7 @@ unsafe fn gui_api(f:&mut Frame,k:u8,x:u64,y:u64,z:u64,w:u64){
                 if !child&&LIVE_ROOT==0{LIVE_ROOT=h;}
                 serial::line(if child{"H5K: ORIGINAL_GUI_CHILD_OBJECT_CREATED"}else{"H5K: ORIGINAL_GUI_TOPLEVEL_OBJECT_CREATED"});
             }},
-        127=>{let old=g.visible(x);if !g.show(x,y as u32!=0){LAST=6;return;}if ORIGINAL_GUI&&x==LIVE_ROOT&&y!=0{if let Some(r)=g.rect(x){g.post(crate::winwindow::Message{hwnd:x,id:5,wparam:0,lparam:r[2]as u16 as u64|((r[3]as u16 as u64)<<16)});}}f.rax=old as u64;},
+        127=>{let old=g.visible(x);if LIVE_REQUEST&&x==LIVE_ROOT&&y!=0&&!old{g.move_window(x,0,0,GUI_WORK_WIDTH,GUI_WORK_HEIGHT);}if !g.show(x,y as u32!=0){LAST=6;return;}if ORIGINAL_GUI&&x==LIVE_ROOT&&y!=0{if let Some(r)=g.rect(x){g.post(crate::winwindow::Message{hwnd:x,id:5,wparam:0,lparam:r[2]as u16 as u64|((r[3]as u16 as u64)<<16)});}}f.rax=old as u64;},
         128=>{if !g.visible(x)||GUI_DC!=0{LAST=6;return;}GUI_DC=x;f.rax=0x40000+x;},
         129=>{if GUI_DC==x&&x!=0&&y==0x40000+x{GUI_DC=0;f.rax=1;}else{LAST=6;}},
         130=>{if GUI_DC==0||x!=0x40000+GUI_DC{LAST=6;return;}let Some(bottom)=arg(f,40).map(|v|v as i32)else{LAST=87;return;};let (l,top,r)=(y as i32,z as i32,w as i32);let Some(rect)=g.rect(GUI_DC)else{LAST=6;return;};if l<0||top<0||r<=l||bottom<=top||r>rect[2]||bottom>rect[3]{LAST=87;return;}GUI_RECT=Some((l as u32,top as u32,(r-l)as u32,(bottom-top)as u32));f.rax=1;},
@@ -1485,9 +1485,9 @@ unsafe fn startup_api(f:&mut Frame,k:u8,x:u64,y:u64,z:u64,w:u64){
 }
 /// The original executable is pinned, and receives only an isolated RAM namespace.
 /// This is an entry-point diagnostic, not a persistent interactive GUI session.
-pub fn original_gui_probe()->bool{original_gui_start(false)}
-pub fn original_gui_live()->bool{original_gui_start(true)&&live_active()}
-fn original_gui_start(live:bool)->bool{unsafe{
+pub fn original_gui_probe()->bool{original_gui_start(false,800,560)}
+pub fn original_gui_live(width:usize,height:usize)->bool{original_gui_start(true,width,height)&&live_active()}
+fn original_gui_start(live:bool,width:usize,height:usize)->bool{unsafe{
     const EXE:&[u8]=include_bytes!("../target/hi5-fixture/7zfm.exe");
     const DLL:&[u8]=include_bytes!("../target/hi5-fixture/7z.dll");
     const EXE_PIN:&[u8;32]=include_bytes!("../target/hi5-fixture/7zfm.exe.sha256");
@@ -1495,7 +1495,7 @@ fn original_gui_start(live:bool)->bool{unsafe{
     GUI_STARTUP_RESULT=0;
     if sha256(EXE)!=*EXE_PIN||sha256(DLL)!=*DLL_PIN||!self_test(){serial::line("H5K: ORIGINAL_GUI_PIN_OR_CONTAINMENT_FAILED");return false;}
     if relocate::inspect_codec(DLL).is_err(){serial::line("H5K: ORIGINAL_GUI_CODEC_STAGE_FAILED");return false;}
-    reset();GUI_RECT=None;GUI_DC=0;GUI=crate::winwindow::Desktop::new();ORIGINAL_GUI=true;LIVE_REQUEST=live;
+    reset();GUI_RECT=None;GUI_DC=0;GUI=crate::winwindow::Desktop::new();ORIGINAL_GUI=true;LIVE_REQUEST=live;GUI_WORK_WIDTH=width.clamp(640,2048)as i32;GUI_WORK_HEIGHT=height.clamp(400,1536)as i32;
     for name in [b"C:\\Documents".as_slice(),b"C:\\Desktop".as_slice(),b"C:\\AppData".as_slice(),b"C:\\LocalAppData".as_slice()]{if let Some(p)=crate::trialfs::Path::parse(name){let _=fs().mkdir(p);}}
     let result=(||->Result<u64,&'static str>{
         if !original_crt_env(){return Err("GUI CRT setup");}
@@ -1547,11 +1547,12 @@ pub fn live_draw(c:&crate::ui::Canvas,x:usize,y:usize,width:usize,height:usize){
         if let Some(img)=img{if img.offset.checked_add(img.len).is_some_and(|e|e<=IMAGE_SIZE){let data=core::slice::from_raw_parts(ptr::addr_of!(IMAGE.0).cast::<u8>().add(img.offset),img.len);if let Some((w,h))=crate::wincontrols::dib_size(data){for yy in 0..h.min(36)as usize{for xx in 0..w.min(48)as usize{if let Some(rgb)=crate::wincontrols::dib_pixel(data,xx,yy){let mask=(rgb[0]as u32)|((rgb[1]as u32)<<8)|((rgb[2]as u32)<<16);if mask!=img.mask&&by+yy+2<bottom{c.pixel(bx+6+xx,by+yy+2,rgb);}}}}}}}
         let mut b=[0;96];let n=label_ascii(&v.text[..v.len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(bx+2,by+36,t,[0,0,0],false,(bx+62).min(right));}
     }}}
-    for i in 0..32{let Some(h)=GUI.handle_at(i)else{continue;};if !GUI.visible(h)||PANELS.kind(h)!=Some(crate::winpanel::LIST){continue;}let Some(r)=GUI.screen_rect(h)else{continue;};let Some(root)=GUI.screen_rect(LIVE_ROOT)else{continue;};let lx=x+(r[0]-root[0]).max(0)as usize;let ly=(y+(r[1]-root[1]).max(0)as usize).max(y+96);let lw=(r[2]-r[0]).max(0)as usize;let lh=(r[3]-r[1]).max(0)as usize;let rr=lx.saturating_add(lw).min(right);let bb=ly.saturating_add(lh).min(bottom);if rr<=lx||bb<=ly{continue;}
-        c.rect(lx,ly,rr-lx,bb-ly,[255,255,255]);let mut cx=lx;for col in 0..PANELS.cols(h){let Some(v)=PANELS.col(h,col)else{break;};let next=cx.saturating_add(v.width.max(1)as usize).min(rr);if next<=cx{break;}c.rect(cx,ly,next-cx,24.min(bb-ly),[224,224,224]);let mut b=[0;128];let n=label_ascii(&v.text.buf[..v.text.len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(cx+2,ly,t,[0,0,0],false,next);}cx=next;}
-        for row in 0..PANELS.count(h){let top=ly+24+row*24;if top+24>bb{break;}let Some(v)=PANELS.row(h,row)else{break;};if v.state&2!=0{c.rect(lx,top,rr-lx,24,[201,224,248]);}let mut cx=lx;for col in 0..PANELS.cols(h){let Some(k)=PANELS.col(h,col)else{break;};let next=cx.saturating_add(k.width.max(1)as usize).min(rr);if next<=cx{break;}let mut b=[0;128];let n=label_ascii(&v.cells[col].buf[..v.cells[col].len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(cx+2,top,t,[0,0,0],false,next);}cx=next;}}
+    let list_count=(0..32).filter(|i|GUI.handle_at(*i).is_some_and(|h|GUI.visible(h)&&PANELS.kind(h)==Some(crate::winpanel::LIST))).count();let combo_visible=(0..32).any(|i|GUI.handle_at(i).is_some_and(|h|GUI.visible(h)&&PANELS.kind(h)==Some(crate::winpanel::COMBO)));
+    for i in 0..32{let Some(h)=GUI.handle_at(i)else{continue;};if !GUI.visible(h)||PANELS.kind(h)!=Some(crate::winpanel::LIST){continue;}let Some(r)=GUI.screen_rect(h)else{continue;};let Some(root)=GUI.screen_rect(LIVE_ROOT)else{continue;};let (lx,ly,lw,lh)=if list_count==1{let top=y+if combo_visible{124}else{96};(x,top,width,bottom.saturating_sub(top+24))}else{let lx=x+(r[0]-root[0]).max(0)as usize;let ly=(y+(r[1]-root[1]).max(0)as usize).max(y+96);(lx,ly,(r[2]-r[0]).max(0)as usize,(r[3]-r[1]).max(0)as usize)};let rr=lx.saturating_add(lw).min(right);let bb=ly.saturating_add(lh).min(bottom);if rr<=lx||bb<=ly{continue;}
+        c.rect(lx,ly,rr-lx,bb-ly,[255,255,255]);let mut cx=lx;for col in 0..PANELS.cols(h){let Some(v)=PANELS.col(h,col)else{break;};let next=if PANELS.cols(h)==1{rr}else{cx.saturating_add(v.width.max(1)as usize).min(rr)};if next<=cx{break;}c.rect(cx,ly,next-cx,24.min(bb-ly),[224,224,224]);let mut b=[0;128];let n=label_ascii(&v.text.buf[..v.text.len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(cx+2,ly,t,[0,0,0],false,next);}cx=next;}
+        for row in 0..PANELS.count(h){let top=ly+24+row*24;if top+24>bb{break;}let Some(v)=PANELS.row(h,row)else{break;};if v.state&2!=0{c.rect(lx,top,rr-lx,24,[201,224,248]);}let mut cx=lx;for col in 0..PANELS.cols(h){let Some(k)=PANELS.col(h,col)else{break;};let next=if PANELS.cols(h)==1{rr}else{cx.saturating_add(k.width.max(1)as usize).min(rr)};if next<=cx{break;}let mut b=[0;128];let n=label_ascii(&v.cells[col].buf[..v.cells[col].len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..n]){c.text_limit(cx+2,top,t,[0,0,0],false,next);}cx=next;}}
     }
-    for i in 0..32{let Some(h)=GUI.handle_at(i)else{continue;};if !GUI.visible(h){continue;}let Some(k)=PANELS.kind(h)else{continue;};if !matches!(k,crate::winpanel::COMBO|crate::winpanel::STATUS){continue;}let Some(r)=GUI.screen_rect(h)else{continue;};let Some(root)=GUI.screen_rect(LIVE_ROOT)else{continue;};let px=x+(r[0]-root[0]).max(0)as usize;let py=(y+(r[1]-root[1]).max(0)as usize).max(y+96);let rr=px.saturating_add((r[2]-r[0]).max(0)as usize).min(right);if rr<=px||py+24>bottom{continue;}c.rect(px,py,rr-px,24,[232,232,232]);let mut cx=px;if k==crate::winpanel::COMBO{if let Some(t)=PANELS.text(h,None){let mut b=[0;128];let n=label_ascii(&t.buf[..t.len],&mut b);if let Ok(v)=core::str::from_utf8(&b[..n]){c.text_limit(px+2,py,v,[0,0,0],false,rr);}}}else{for j in 0..8{let Some(t)=PANELS.part(h,j,None)else{break;};let edge=PANELS.part_edge(h,j).unwrap_or(-1);let end=if edge<0{rr}else{px.saturating_add(edge as usize).min(rr)};if end<=cx{continue;}let mut b=[0;128];let n=label_ascii(&t.buf[..t.len],&mut b);if let Ok(v)=core::str::from_utf8(&b[..n]){c.text_limit(cx+2,py,v,[0,0,0],false,end);}cx=end;if cx>=rr{break;}}}}
+    for i in 0..32{let Some(h)=GUI.handle_at(i)else{continue;};if !GUI.visible(h){continue;}let Some(k)=PANELS.kind(h)else{continue;};if !matches!(k,crate::winpanel::COMBO|crate::winpanel::STATUS){continue;}let Some(r)=GUI.screen_rect(h)else{continue;};let Some(root)=GUI.screen_rect(LIVE_ROOT)else{continue;};let (px,py,rr)=if k==crate::winpanel::STATUS{(x,bottom.saturating_sub(24),right)}else if list_count==1{(x,y+98,right)}else{let px=x+(r[0]-root[0]).max(0)as usize;(px,(y+(r[1]-root[1]).max(0)as usize).max(y+96),px.saturating_add((r[2]-r[0]).max(0)as usize).min(right))};if rr<=px||py+24>bottom{continue;}c.rect(px,py,rr-px,24,[232,232,232]);let mut cx=px;if k==crate::winpanel::COMBO{if let Some(t)=PANELS.text(h,None){let mut b=[0;128];let n=label_ascii(&t.buf[..t.len],&mut b);if let Ok(v)=core::str::from_utf8(&b[..n]){c.text_limit(px+2,py,v,[0,0,0],false,rr);}}}else{for j in 0..8{let Some(t)=PANELS.part(h,j,None)else{break;};let edge=PANELS.part_edge(h,j).unwrap_or(-1);let end=if edge<0{rr}else{px.saturating_add(edge as usize).min(rr)};if end<=cx{continue;}let mut b=[0;128];let n=label_ascii(&t.buf[..t.len],&mut b);if let Ok(v)=core::str::from_utf8(&b[..n]){c.text_limit(cx+2,py,v,[0,0,0],false,end);}cx=end;if cx>=rr{break;}}}}
     if LIVE_MENU!=0{let n=MENUS.count(LIVE_MENU).unwrap_or(0).min(height.saturating_sub(30)/25);let mw=width.min(320);c.rect(x,y+30,mw,n*25,[255,255,255]);for i in 0..n{if let Some(v)=MENUS.get(LIVE_MENU,i as u32,true){let mut b=[0;128];let len=label_ascii(&v.text[..v.len],&mut b);if let Ok(t)=core::str::from_utf8(&b[..len]){c.text_limit(x+5,y+30+i*25,t,if v.state&3!=0{[130,130,130]}else{[0,0,0]},false,x+mw);}}}}
 }}
 pub fn live_click(x:usize,y:usize){unsafe{

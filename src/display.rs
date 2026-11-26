@@ -92,3 +92,35 @@ impl Screen {
         self.y+=10*self.scale;
     }
 }
+
+// Runtime modes for the identified QEMU Standard VGA PCI adapter only.
+pub const MODES:[(usize,usize,&str);6]=[(640,480,"640x480"),(800,600,"800x600"),(1024,768,"1024x768"),(1280,720,"1280x720"),(1600,900,"1600x900"),(1920,1080,"1920x1080")];
+fn pci(slot:u32,reg:u32)->u32{crate::platform::out32(0xcf8,0x80000000|(slot<<11)|reg);crate::platform::input32(0xcfc)}
+fn out16(port:u16,value:u16){unsafe{core::arch::asm!("out dx, ax",in("dx")port,in("ax")value,options(nomem,nostack,preserves_flags));}}
+fn in16(port:u16)->u16{let v:u16;unsafe{core::arch::asm!("in ax, dx",in("dx")port,out("ax")v,options(nomem,nostack,preserves_flags));}v}
+fn reg(i:u16)->u16{out16(0x1ce,i);in16(0x1cf)}
+fn put(i:u16,v:u16){out16(0x1ce,i);out16(0x1cf,v)}
+fn aperture(fb:Framebuffer)->Option<usize>{
+    if fb.base<0x80000000||fb.base>=0x1_0000_0000||fb.format!=1{return None;}
+    let mut found=false;
+    for slot in 0..32{if pci(slot,0)!=0x11111234{continue;}let bar=pci(slot,0x10);if bar&7==0&&(bar&!15)as usize==fb.base&&pci(slot,4)&2!=0{found=true;break;}}
+    if !found||!(0xb0c4..=0xb0c5).contains(&reg(0))||reg(4)&1==0||reg(3)!=32{return None;}
+    let n=reg(10)as usize*65536;
+    if n==0||n>256*1024*1024||fb.base.checked_add(n)?>0x1_0000_0000||fb.stride.checked_mul(fb.height)?.checked_mul(4)?>n{return None;}
+    Some(n)
+}
+pub fn mode_available(fb:Framebuffer,i:usize)->bool{let Some(&(w,h,_))=MODES.get(i)else{return false;};aperture(fb).is_some_and(|n|w*h*4<=n)}
+pub fn runtime_available(fb:Framebuffer)->bool{aperture(fb).is_some()}
+fn program(w:u16,h:u16,bpp:u16,enable:u16,virtual_width:u16,xoff:u16,yoff:u16){
+    put(4,0);put(1,w);put(2,h);put(3,bpp);put(4,enable);put(6,virtual_width);put(8,xoff);put(9,yoff);
+}
+pub fn set_mode(fb:Framebuffer,i:usize)->Option<Framebuffer>{
+    let &(w,h,_)=MODES.get(i)?;let size=aperture(fb)?;if w*h*4>size{return None;}
+    let old=[reg(1),reg(2),reg(3),reg(4),reg(6),reg(8),reg(9)];
+    program(w as u16,h as u16,32,0x41,w as u16,0,0);let stride=reg(6)as usize;
+    if reg(1)as usize!=w||reg(2)as usize!=h||reg(3)!=32||reg(4)&1==0||stride<w||stride.checked_mul(h).and_then(|n|n.checked_mul(4)).is_none_or(|n|n>size){
+        program(old[0],old[1],old[2],old[3],old[4],old[5],old[6]);
+        if [reg(1),reg(2),reg(3),reg(4),reg(6),reg(8),reg(9)]!=old{crate::serial::line("H5K: FAIL GRAPHICS_ROLLBACK");crate::kernel::halt();}return None;
+    }
+    Some(Framebuffer{base:fb.base,size,width:w,height:h,stride,format:1})
+}

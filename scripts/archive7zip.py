@@ -86,6 +86,12 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 key("f4");tail=command("7zfm",b"SHELL_ORIGINAL_GUI_PROBED",extra=b"SHELL_ORIGINAL_GUI_BLOCKED")
                 results["original File Manager runtime reached"]=b"ORIGINAL_GUI_RUNTIME_REACHED" in tail
                 print("ORIGINAL GUI PROBE:",results["original File Manager runtime reached"],flush=True)
+                # Exercise the actual display device before the mandatory GUI launch.
+                key("f1");prior=len(log.read_bytes());key("ctrl-6")
+                deadline=time.monotonic()+10
+                while b"GRAPHICS_MODE_OK" not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.1)
+                assert b"GRAPHICS_MODE_OK" in log.read_bytes()[prior:], "Full HD display mode unavailable"
+                key("f4")
                 # Explicit live test, independent of the diagnostic startup result.
                 tail=command("7zlive",b"GUI_WINLIVE_OPEN",extra=b"SHELL_ORIGINAL_GUI_LIVE_BLOCKED")
                 ready=b"ORIGINAL_GUI_LIVE_WAIT" in tail and b"GUI_WINLIVE_OPEN" in tail
@@ -93,6 +99,7 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 if ready:
                     screenshot=ROOT/"dist"/"7zip-original-live.ppm"
                     call("screendump",{"filename":str(screenshot)})
+                    assert screenshot.read_bytes().split(None,4)[:3]==[b"P6",b"1920",b"1080"],"Live GUI screenshot is not Full HD"
                     time.sleep(5)
                     current=log.read_bytes().rsplit(b"ORIGINAL_GUI_LIVE_WAIT",1)[-1]
                     ready=proc.poll() is None and screenshot.is_file() and screenshot.stat().st_size>1024 and not any(m in current for m in (b"ORIGINAL_GUI_LIVE_END",b"ORIGINAL_GUI_SESSION_DISCARDED",b"SHELL_ORIGINAL_GUI_LIVE_BLOCKED",b"H5K: PANIC",b"H5K: FAIL "))
