@@ -86,6 +86,15 @@ with tempfile.TemporaryDirectory(prefix="hi5os-offline-") as td:
                 key("f4");tail=command("7zfm",b"SHELL_ORIGINAL_GUI_PROBED",extra=b"SHELL_ORIGINAL_GUI_BLOCKED")
                 results["original File Manager runtime reached"]=b"ORIGINAL_GUI_RUNTIME_REACHED" in tail
                 print("ORIGINAL GUI PROBE:",results["original File Manager runtime reached"],flush=True)
+                # Explicit live test, independent of the diagnostic startup result.
+                tail=command("7zlive",b"GUI_WINLIVE_OPEN",extra=b"SHELL_ORIGINAL_GUI_LIVE_BLOCKED")
+                ready=b"ORIGINAL_GUI_LIVE_WAIT" in tail and b"GUI_WINLIVE_OPEN" in tail
+                results["original live window"]=ready
+                if ready:
+                    call("screendump",{"filename":str(ROOT/"dist"/"7zip-original-live.ppm")})
+                    key("ctrl-esc");key("f4")
+                print("ORIGINAL GUI LIVE:",ready,flush=True)
+                if "--require-live" in sys.argv:assert ready,"Original 7-Zip never reached visible message wait"
                 key("f12");wait(b"GUI_STORE_OPEN",30);key("u");wait(b"STORE_UNINSTALL_OK",30);key("ret")
                 results["portable uninstall blocks execution"]=b"SHELL_7ZIP_BLOCKED" in command("7za -h")
                 key("f12");key("i");wait(b"STORE_INSTALL_OK",120);key("ret")
