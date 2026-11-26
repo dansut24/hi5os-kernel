@@ -705,24 +705,44 @@ static mut GUI:crate::winwindow::Desktop=crate::winwindow::Desktop::new();
 static mut GUI_ACTIVE:bool=false;
 static mut GUI_RECT:Option<(u32,u32,u32,u32)>=None;
 static mut GUI_DC:u64=0;
+#[derive(Clone,Copy)]struct GuiResource{handle:u64,kind:u16,id:u16,offset:usize,len:usize}
+const EMPTY_GUI_RESOURCE:GuiResource=GuiResource{handle:0,kind:0,id:0,offset:0,len:0};
+static mut GUI_RESOURCES:[GuiResource;64]=[EMPTY_GUI_RESOURCE;64];
+static mut GUI_CLASS_MENU:[u64;16]=[0;16];
+#[derive(Clone,Copy)]struct Creation{handle:u64,proc:u64,struct_at:u64,sp:u64,rip:u64,phase:u8}
+const NO_CREATION:Creation=Creation{handle:0,proc:0,struct_at:0,sp:0,rip:0,phase:0};
+static mut CREATION:Creation=NO_CREATION;
 pub fn gui_rect()->Option<(u32,u32,u32,u32)>{unsafe{GUI_RECT}}
 unsafe fn gui_api(f:&mut Frame,k:u8,x:u64,y:u64,z:u64,w:u64){
     if !GUI_ACTIVE{LAST=50;return;}
     let g=&mut *ptr::addr_of_mut!(GUI);
     match k{
-        125=>{let Some(p)=phys(x,72,false)else{LAST=87;return;};let proc=ptr::read_unaligned(p.add(8).cast::<u64>());let name=ptr::read_unaligned(p.add(64).cast::<u64>());let mut b=[0u8;64];let Some(n)=read_ascii(name,true,&mut b)else{LAST=87;return;};if !executable(proc){LAST=87;return;}f.rax=g.register(&b[..n],proc).unwrap_or(0)as u64;},
+        125=>{let Some(p)=phys(x,72,false)else{LAST=87;return;};let proc=ptr::read_unaligned(p.add(8).cast::<u64>());let name=ptr::read_unaligned(p.add(64).cast::<u64>());let mut b=[0u8;64];let Some(n)=read_ascii(name,true,&mut b)else{LAST=87;return;};if !executable(proc){LAST=87;return;}
+            let mut menu=0;
+            if ORIGINAL_GUI{
+                let module=ptr::read_unaligned(p.add(24).cast::<u64>());
+                let icon=ptr::read_unaligned(p.add(32).cast::<u64>());let cursor=ptr::read_unaligned(p.add(40).cast::<u64>());
+                let menu_id=ptr::read_unaligned(p.add(56).cast::<u64>());
+                if module!=BASE||icon!=0&&!gui_resource_valid(icon,14)||cursor!=0&&!gui_resource_valid(cursor,12){LAST=87;return;}
+                if menu_id!=0{match gui_resource(module,menu_id,4){Ok(h)=>menu=h,Err(e)=>{LAST=e;return;}}}
+            }
+            if let Some(atom)=g.register(&b[..n],proc){GUI_CLASS_MENU[atom as usize-1]=menu;f.rax=atom as u64;}else{LAST=1410;}
+        },
         126=>{let mut b=[0u8;64];let Some(n)=read_ascii(y,true,&mut b)else{LAST=87;return;};let Some(atom)=g.atom(&b[..n])else{LAST=87;return;};
             let (Some(px),Some(py),Some(ww),Some(hh),Some(parent),Some(menu),Some(instance),Some(param))=(arg(f,40),arg(f,48),arg(f,56),arg(f,64),arg(f,72),arg(f,80),arg(f,88),arg(f,96))else{LAST=87;return;};
             if !ORIGINAL_GUI{
                 if x as u32!=0||w as u32!=0||menu!=0||instance!=0||param!=0||c_len(z,true).is_none(){LAST=87;return;}
                 f.rax=g.create(atom,parent,[px as i32,py as i32,ww as i32,hh as i32]).unwrap_or(0);
             }else{
-                // Only the top-level overlapped window object is supported here.
-                // WM_NCCREATE/WM_CREATE synchronous delivery and rendering remain separate milestones.
-                if x as u32!=0||parent!=0||menu!=0||instance!=BASE||param!=0||w as u32&!0x10cf0000!=0||c_len(z,true).is_none(){LAST=50;return;}
+                // Bounded top-level window startup. Nested child creation is not yet supported.
+                if CREATION.phase!=0||x as u32!=0||parent!=0||menu!=0||instance!=BASE||param!=0||w as u32&!0x10cf0000!=0||c_len(z,true).is_none(){LAST=50;return;}
                 let default=|v:u64,d:i32|if v as u32==0x80000000{d}else{v as i32};
-                f.rax=g.create(atom,0,[default(px,20),default(py,20),default(ww,GUI_WORK_WIDTH-40),default(hh,GUI_WORK_HEIGHT-40)]).unwrap_or(0);
-                if f.rax!=0{serial::line("H5K: ORIGINAL_GUI_TOPLEVEL_OBJECT_CREATED");}else{LAST=87;}
+                let rect=[default(px,20),default(py,20),default(ww,GUI_WORK_WIDTH-40),default(hh,GUI_WORK_HEIGHT-40)];
+                let Some(h)=g.create_sync(atom,0,rect)else{LAST=87;return;};
+                let Some(proc)=g.procedure(h)else{g.destroy(h);LAST=87;return;};
+                let menu=GUI_CLASS_MENU[atom as usize-1];
+                if !begin_creation(f,h,proc,rect,w as u32,x as u32,instance,menu,parent,param,z,y){GUI.destroy(h);LAST=87;return;}
+                serial::line("H5K: ORIGINAL_GUI_TOPLEVEL_OBJECT_CREATED");
             }},
         127=>{let old=g.visible(x);if !g.show(x,y as u32!=0){LAST=6;return;}f.rax=old as u64;},
         128=>{if !g.visible(x)||GUI_DC!=0{LAST=6;return;}GUI_DC=x;f.rax=0x40000+x;},
@@ -759,6 +779,62 @@ fn image_resource(b:&[u8],typ:u16,id:u16)->Option<(usize,usize)>{
     let data=u32at(b,p)? as usize;let len=u32at(b,p+4)? as usize;
     if data.checked_add(len)?>b.len(){return None;}Some((data,len))
 }
+unsafe fn gui_resource_valid(h:u64,typ:u16)->bool{
+    (&*ptr::addr_of!(GUI_RESOURCES)).iter().any(|r|r.handle==h&&h!=0&&r.kind==typ)
+}
+unsafe fn gui_resource(module:u64,id:u64,typ:u16)->Result<u64,u32>{
+    if id==0||id>0xffff{return Err(87);}
+    let (offset,len)=if module==0&&typ==12&&matches!(id,32512..=32516|32640..=32651){(0,0)}
+        else{
+            if module!=BASE{return Err(87);}
+            let b=core::slice::from_raw_parts(ptr::addr_of!(IMAGE.0).cast::<u8>(),IMAGE_SIZE);
+            let (off,len)=image_resource(b,typ,id as u16).ok_or(1814u32)?;
+            if len==0{return Err(13);}
+            if typ==14||typ==12{
+                let group=&b[off..off+len];let expected=if typ==14{1}else{2};
+                if u16at(group,0)!=Some(0)||u16at(group,2)!=Some(expected){return Err(13);}
+                let count=u16at(group,4).ok_or(13u32)? as usize;
+                if count==0||count>256||6+14*count>len{return Err(13);}
+                for i in 0..count{
+                    let p=6+14*i;let size=u32at(group,p+8).ok_or(13u32)? as usize;
+                    let child=u16at(group,p+12).ok_or(13u32)?;
+                    let (_,actual)=image_resource(b,if typ==14{3}else{1},child).ok_or(1814u32)?;
+                    if size==0||size!=actual{return Err(13);}
+                }
+            }(off,len)
+        };
+    if let Some(r)=(&*ptr::addr_of!(GUI_RESOURCES)).iter().find(|r|r.handle!=0&&r.kind==typ&&r.id==id as u16&&r.offset==offset&&r.len==len){return Ok(r.handle);}
+    let i=(&*ptr::addr_of!(GUI_RESOURCES)).iter().position(|r|r.handle==0).ok_or(8u32)?;
+    let h=0x51000000+i as u64;GUI_RESOURCES[i]=GuiResource{handle:h,kind:typ,id:id as u16,offset,len};
+    if ORIGINAL_GUI&&typ==14{serial::line("H5K: ORIGINAL_GUI_ICON_RESOURCE_LOADED");}
+    Ok(h)
+}
+// Windows x64 CREATESTRUCTW in trial-owned memory. The callback returns to a
+// dedicated RX trampoline, then the dispatcher resumes the original API caller.
+unsafe fn begin_creation(f:&mut Frame,h:u64,proc:u64,rect:[i32;4],style:u32,ex:u32,instance:u64,menu:u64,parent:u64,param:u64,title:u64,class:u64)->bool{
+    if CREATION.phase!=0||!executable(proc)||f.rsp<STACK+256||f.rsp>TOP{return false;}
+    let Some(sp)=f.rsp.checked_sub(184).map(|v|(v&!15)-8)else{return false;};
+    let at=sp+48;
+    let Some(p)=phys(at,80,true)else{return false;};ptr::write_bytes(p,0,80);
+    for(i,v)in [param,instance,menu,parent].iter().enumerate(){ptr::write_unaligned(p.add(i*8).cast::<u64>(),*v);}
+    for(i,v)in [rect[3],rect[2],rect[1],rect[0],style as i32].iter().enumerate(){ptr::write_unaligned(p.add(32+i*4).cast::<i32>(),*v);}
+    ptr::write_unaligned(p.add(56).cast::<u64>(),title);ptr::write_unaligned(p.add(64).cast::<u64>(),class);ptr::write_unaligned(p.add(72).cast::<u32>(),ex);
+    if !write64(sp,AUX+0xe40){return false;}
+    CREATION=Creation{handle:h,proc,struct_at:at,sp:f.rsp,rip:f.rip,phase:1};
+    f.rsp=sp;f.rip=proc;f.rcx=h;f.rdx=0x81;f.r8=0;f.r9=at;true
+}
+unsafe fn creation_return(f:&mut Frame,value:u64){
+    let c=CREATION;
+    if c.phase==0||f.rip!=AUX+0xe4a||!GUI_ACTIVE{H5_TRIAL_STATUS=4;return;}
+    if c.phase==1&&value!=0{
+        let sp=c.struct_at-48;if !write64(sp,AUX+0xe40){H5_TRIAL_STATUS=4;return;}
+        CREATION.phase=2;f.rsp=sp;f.rip=c.proc;f.rcx=c.handle;f.rdx=1;f.r8=0;f.r9=c.struct_at;
+        serial::line("H5K: GUI_NCCREATE_CALLBACK_RETURNED");return;
+    }
+    let accepted=c.phase==2&&value as u32!=u32::MAX;
+    CREATION=NO_CREATION;f.rsp=c.sp;f.rip=c.rip;f.rax=if accepted{c.handle}else{GUI.destroy(c.handle);0};
+    if accepted{serial::line("H5K: GUI_CREATE_CALLBACK_RETURNED");}else{LAST=1407;}
+}
 unsafe fn load_string_resource(module:u64,id:u32,dest:u64,cap:u32)->Result<u64,u32>{
     if module!=BASE||id>0xffff{return Err(87);}
     let b=core::slice::from_raw_parts(ptr::addr_of!(IMAGE.0).cast::<u8>(),IMAGE_SIZE);
@@ -793,6 +869,11 @@ unsafe fn gui_startup_api(f:&mut Frame,k:u8,x:u64,y:u64,z:u64,w:u64){
         156=>f.rax=0x80004001,
         157=>{}, // No apartment was acquired.
         158=>{match load_string_resource(x,y as u32,z,w as u32){Ok(n)=>f.rax=n,Err(e)=>LAST=e}},
+        161..=164=>{let typ=match k{161=>14,162=>12,163=>4,_=>9};match gui_resource(x,y,typ){Ok(h)=>f.rax=h,Err(e)=>LAST=e}},
+        165=>{if GUI.rect(x).is_none(){LAST=6;return;}match y as u32{0x81=>f.rax=1,1|0x82|0x18=>{},_=>LAST=50}},
+        166=>{let Some(r)=GUI.rect(x)else{LAST=6;return;};let Some(p)=phys(y,16,true)else{LAST=87;return;};let v=[0,0,r[2],r[3]];for(i,n)in v.iter().enumerate(){ptr::write_unaligned(p.add(i*4).cast::<i32>(),*n);}f.rax=1;},
+        167=>{if GUI.rect(x).is_some(){f.rax=1;}else{LAST=6;}},
+        168=>{if GUI.rect(x).is_none(){LAST=6;return;}f.rax=GUI.visible(x) as u64;},
         _=>LAST=50
     }
 }
@@ -807,6 +888,26 @@ unsafe fn gui_startup_test()->bool{
     let geom=f.rax==1&&rect;f.rax=0;gui_startup_api(&mut f,155,0x30,0,1,0);let bad=f.rax==0&&LAST==87;
     gui_startup_api(&mut f,156,0,0,0,0);let ole=f.rax==0x80004001;
     GUI_ACTIVE=false;common&&units&&geom&&bad&&ole
+}
+unsafe fn gui_creation_test()->bool{
+    GUI=crate::winwindow::Desktop::new();GUI_ACTIVE=true;
+    let r=(||{
+        if gui_resource(0,999,12).is_ok(){return false;}
+        let Ok(cursor)=gui_resource(0,32644,12)else{return false;};if !gui_resource_valid(cursor,12)||gui_resource_valid(cursor,14){return false;}
+        IMAGE_SIZE=4096;ptr::addr_of_mut!(PT0.0).cast::<u64>().write(ptr::addr_of!(IMAGE)as u64|5);
+        let raw=ptr::addr_of_mut!(IMAGE.0).cast::<u8>();
+        // First stage simulates a successful NCCREATE return; second is a real guest
+        // callback returning zero via RET through the production callback trampoline.
+        // First stage jumps into the same trampoline with RAX=1.
+        let first=[0xb8u8,1,0,0,0,0x48,0xb9,0x40,0x0e,0x20,0,1,0,0,0,0xff,0xe1];
+        ptr::copy_nonoverlapping(first.as_ptr(),raw,first.len());
+        let proc=[0x31u8,0xc0,0xc3];ptr::copy_nonoverlapping(proc.as_ptr(),raw.add(32),proc.len());
+        let Some(atom)=GUI.register(b"CallbackTest",BASE+32)else{return false;};
+        let Some(h)=GUI.create_sync(atom,0,[0,0,100,100])else{return false;};
+        let mut f=Frame{rax:0,rcx:0,rdx:0,r8:0,r9:0,rip:AUX+0xe00,cs:0,flags:0,rsp:TOP-40,ss:0};
+        if !begin_creation(&mut f,h,BASE+32,[0,0,100,100],0,0,BASE,0,0,0,0,0)||GUI.peek(false).is_some(){return false;}
+        enter(BASE,50)==1&&EXIT==h as u32&&CREATION.phase==0&&GUI.rect(h).is_some()
+    })();GUI_ACTIVE=false;GUI=crate::winwindow::Desktop::new();r
 }
 unsafe fn map_fixture_pages(file:&[u8],offset:usize,size:usize)->bool{
     let Some(pe)=u32at(file,60).map(|v|v as usize)else{return false;};let opt=pe+24;
@@ -982,6 +1083,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
 }
 #[no_mangle]unsafe extern "efiapi" fn h5_trial_dispatch(f:*mut Frame){
     let f=&mut *f;let raw=f.rax as usize;let id=if raw>=1232&&raw<1024+API_LIMIT{raw-1024}else{raw};if raw==256{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;return;}
+    if raw==258{let value=f.rcx;creation_return(f,value);return;}
     if raw==257{if !CLEANUP_ACTIVE||ONEXIT_LEN!=0{H5_TRIAL_STATUS=4;return;}CLEANUP_ACTIVE=false;if f.rdx==1{EXIT=f.rcx as u32;H5_TRIAL_STATUS=1;}else{f.rax=0;}return;}if id>=N||raw>=208&&raw<256||raw>=258&&raw<1232{H5_TRIAL_STATUS=4;return;}
     CALLS+=1;LAST_API=id;
     let a=ptr::addr_of!(APIS).cast::<Api>().add(id).read();
@@ -1138,6 +1240,7 @@ unsafe fn capture(v:u64,n:usize)->bool{
         150|151=>{let r=event_set(x,a.kind==150);bool_result(f,r);},
         152=>{match event_wait(x,y as u32){Ok(v)=>f.rax=v as u64,Err(e)=>{LAST=e;f.rax=u32::MAX as u64;}}},
         153..=158=>gui_startup_api(f,a.kind,x,y,z,w),
+        161..=168=>gui_startup_api(f,a.kind,x,y,z,w),
         159=>f.rax=lsa_open_restricted(y,w) as u64,
         160=>f.rax=lsa_win_error(x as u32) as u64,
         _=>{if &a.name[..a.nn]==b"_CxxThrowException"{serial::metric("H5K: TRIAL_CXX_OBJECT=",x);serial::metric("H5K: TRIAL_CXX_THROWINFO=",y);serial::metric("H5K: TRIAL_CXX_LAST_ERROR=",LAST as u64);if let Some(p)=phys(f.rsp,8,false){serial::metric("H5K: TRIAL_CXX_RETURN=",ptr::read_unaligned(p.cast::<u64>()));}}abort_import(id)}
@@ -1226,7 +1329,7 @@ unsafe fn text_cmp(x:u64,y:u64,wide:bool)->Option<i32>{
 }
 fn kind(d:&str,n:&str)->u8{
     if d.eq_ignore_ascii_case("kernel32.dll"){match n{"ExitProcess"=>1,"GetCurrentProcessId"|"GetCurrentThreadId"=>2,"SetLastError"=>3,"GetLastError"=>4,"GetCommandLineW"=>5,"GetStdHandle"=>6,"WriteFile"=>7,"GetTickCount"=>15,"GetCurrentProcess"=>16,"GetModuleHandleA"|"GetModuleHandleW"=>17,"CreateFileW"=>25,"ReadFile"=>26,"CloseHandle"=>27,"GetFileSize"=>28,"SetFilePointer"=>29,"SetEndOfFile"=>30,"CreateDirectoryW"=>31,"RemoveDirectoryW"=>32,"DeleteFileW"=>33,"GetFileAttributesW"=>34,"GetCurrentDirectoryW"=>35,"GetLargePageMinimum"=>39,"GetOEMCP"=>40,"GetConsoleMode"=>41,"SetConsoleMode"=>42,"LoadLibraryW"=>43,"QueryPerformanceFrequency"=>44,"QueryPerformanceCounter"=>45,"GetProcessAffinityMask"=>46,"SetProcessAffinityMask"=>47,"GetSystemInfo"|"GetNativeSystemInfo"=>48,"GetProcAddress"=>49,"FreeLibrary"=>50,"GetTickCount64"=>51,"GetModuleFileNameW"=>52,"GetSystemTimeAsFileTime"|"GetSystemTimePreciseAsFileTime"=>53,"GetActiveProcessorCount"=>54,"IsWow64Process"=>55,"VirtualAlloc"=>58,"VirtualFree"=>59,"IsProcessorFeaturePresent"=>60,"InitializeCriticalSection"=>61,"EnterCriticalSection"=>62,"LeaveCriticalSection"=>63,"DeleteCriticalSection"=>64,"InitializeCriticalSectionAndSpinCount"=>65,"TryEnterCriticalSection"=>66,"InitializeCriticalSectionEx"=>67,"GetConsoleScreenBufferInfo"=>68,"SetConsoleCtrlHandler"=>69,"GetFileType"=>71,"GetVersion"=>73,"GetVersionExA"|"GetVersionExW"=>74,"SetFileApisToOEM"=>76,"SetFileApisToANSI"=>77,"AreFileApisANSI"=>78,"GetACP"=>79,"MultiByteToWideChar"=>80,"WideCharToMultiByte"=>81,"GetLogicalDriveStringsW"=>83,"GetTempPathW"=>84,"LocalFree"=>85,"GetConsoleOutputCP"=>86,"SetDefaultDllDirectories"=>90,"FindFirstFileW"=>96,"FindNextFileW"=>97,"FindClose"=>98,"GetFileInformationByHandle"=>99,"SetFileAttributesW"=>100,"MoveFileW"=>101,"SetFileTime"=>102,"FileTimeToLocalFileTime"|"LocalFileTimeToFileTime"=>103,"CompareFileTime"=>104,"GetDiskFreeSpaceExW"=>105,"GetDiskFreeSpaceW"=>106,"GlobalMemoryStatusEx"=>107,"FlushFileBuffers"=>114,"SetFilePointerEx"=>115,"GetFileSizeEx"=>116,"GetFileAttributesExW"=>117,"FormatMessageW"=>118,"FileTimeToDosDateTime"=>119,"DosDateTimeToFileTime"=>120,"FileTimeToSystemTime"=>121,"SystemTimeToFileTime"=>122,"lstrlenW"=>133,"GetStartupInfoA"=>134,"GetSystemDefaultLangID"|"GetUserDefaultLangID"=>135,"GetProcessHeap"=>136,"HeapAlloc"=>137,"HeapFree"=>138,"LoadLibraryA"=>139,"LoadLibraryExW"=>140,"GetWindowsDirectoryW"=>143,"GetDriveTypeW"=>144,"LocalAlloc"|"GlobalAlloc"=>145,"GlobalFree"=>146,"CreateEventW"|"CreateEventA"=>149,"SetEvent"=>150,"ResetEvent"=>151,"WaitForSingleObject"=>152,_=>0}}
-    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,"wcslen"=>133,"srand"=>141,"rand"=>142,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,"LsaOpenPolicy"=>159,"LsaNtStatusToWinError"=>160,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,"RegisterClassW"=>125,"CreateWindowExW"=>126,"ShowWindow"=>127,"GetDC"=>128,"ReleaseDC"=>129,"PostMessageW"=>131,"PeekMessageW"=>132,"DispatchMessageW"=>147,"CallWindowProcW"=>148,"GetDialogBaseUnits"=>154,"SystemParametersInfoW"|"SystemParametersInfoA"=>155,"LoadStringW"=>158,_=>0}}else if d.eq_ignore_ascii_case("comctl32.dll"){match n{"#0011"|"InitCommonControls"=>153,_=>0}}else if d.eq_ignore_ascii_case("ole32.dll"){match n{"OleInitialize"=>156,"OleUninitialize"=>157,_=>0}}else if d.eq_ignore_ascii_case("gdi32.dll"){match n{"Rectangle"=>130,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
+    else if d.eq_ignore_ascii_case("msvcrt.dll"){match n{"exit"|"_exit"=>1,"malloc"=>8,"free"=>9,"memcpy"|"memmove"=>10,"memset"=>11,"strlen"=>12,"__set_app_type"=>13,"__getmainargs"=>14,"memcmp"=>18,"realloc"=>19,"strcmp"=>20,"wcscmp"=>21,"__setusermatherr"=>22,"_isatty"=>23,"_get_osfhandle"=>24,"fputs"=>36,"fputc"=>37,"fflush"=>38,"_onexit"=>56,"_cexit"|"_c_exit"=>57,"wcsstr"=>70,"wcslen"=>133,"srand"=>141,"rand"=>142,_=>0}}else if d.eq_ignore_ascii_case("oleaut32.dll"){match n{"#0002"|"SysAllocString"=>108,"#0004"|"SysAllocStringLen"=>109,"#0006"|"SysFreeString"=>110,"#0007"|"SysStringLen"=>111,"#0009"|"VariantClear"=>112,"#000a"|"VariantCopy"=>113,_=>0}}else if d.eq_ignore_ascii_case("advapi32.dll"){match n{"OpenProcessToken"=>87,"LookupPrivilegeValueW"=>88,"AdjustTokenPrivileges"=>89,"SystemFunction036"=>91,"RegOpenKeyExW"=>92,"RegQueryValueExW"|"RegCloseKey"=>93,"GetFileSecurityW"|"SetFileSecurityW"=>94,"GetTokenInformation"=>95,"LsaOpenPolicy"=>159,"LsaNtStatusToWinError"=>160,_=>0}}else if d.eq_ignore_ascii_case("user32.dll"){match n{"CharPrevExA"=>123,"CharUpperW"=>124,"RegisterClassW"=>125,"CreateWindowExW"=>126,"ShowWindow"=>127,"GetDC"=>128,"ReleaseDC"=>129,"PostMessageW"=>131,"PeekMessageW"=>132,"DispatchMessageW"=>147,"CallWindowProcW"=>148,"GetDialogBaseUnits"=>154,"SystemParametersInfoW"|"SystemParametersInfoA"=>155,"LoadStringW"=>158,"LoadIconW"=>161,"LoadCursorW"=>162,"LoadMenuW"=>163,"LoadAcceleratorsW"=>164,"DefWindowProcW"=>165,"GetClientRect"=>166,"IsWindow"=>167,"IsWindowVisible"=>168,_=>0}}else if d.eq_ignore_ascii_case("comctl32.dll"){match n{"#0011"|"InitCommonControls"=>153,_=>0}}else if d.eq_ignore_ascii_case("ole32.dll"){match n{"OleInitialize"=>156,"OleUninitialize"=>157,_=>0}}else if d.eq_ignore_ascii_case("gdi32.dll"){match n{"Rectangle"=>130,_=>0}}else if d.eq_ignore_ascii_case("ntdll.dll"){match n{"RtlInitializeCriticalSection"=>61,"RtlEnterCriticalSection"=>62,"RtlLeaveCriticalSection"=>63,"RtlDeleteCriticalSection"=>64,"RtlTryEnterCriticalSection"=>66,"RtlGetVersion"=>75,"RtlNtStatusToDosError"=>82,_=>0}}else{0}
 }
 unsafe fn init_env(){
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>();
@@ -1245,7 +1348,7 @@ unsafe fn init_env(){
 unsafe fn reset(){
     ptr::write_bytes(ptr::addr_of_mut!(DATA.0).cast::<u8>(),0,LIMIT);
     ptr::write_bytes(ptr::addr_of_mut!(PT0.0).cast::<u64>(),0,512);ptr::write_bytes(ptr::addr_of_mut!(PT1.0).cast::<u64>(),0,512);
-    WORK_ACTIVE=false;ORIGINAL_GUI=false;COMMON_INIT_SEEN=false;PRNG=1;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;EVENTS=[EMPTY_EVENT;64];EVENT_NEXT=0x40000000;CLEANUP_ACTIVE=false;DLL_POLICY=0;ptr::write_bytes(ptr::addr_of_mut!(BLOCKS).cast::<Block>(),0,2048);NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
+    WORK_ACTIVE=false;ORIGINAL_GUI=false;COMMON_INIT_SEEN=false;GUI_RESOURCES=[EMPTY_GUI_RESOURCE;64];GUI_CLASS_MENU=[0;16];CREATION=NO_CREATION;PRNG=1;fs().reset();FIND=[EMPTY_SEARCH;16];ARGC=2;MATH_HANDLER=0;CALLS=0;LAST_API=usize::MAX;HELP_OK=false;DETAIL_LEN=0;ONEXIT_LEN=0;LOCKS=[EMPTY_LOCK;128];CONSOLE_MODE=3;CTRL_HANDLER=0;FILE_OEM=false;TOKENS=[EMPTY_TOKEN;16];TOKEN_NEXT=0x10000;EVENTS=[EMPTY_EVENT;64];EVENT_NEXT=0x40000000;CLEANUP_ACTIVE=false;DLL_POLICY=0;ptr::write_bytes(ptr::addr_of_mut!(BLOCKS).cast::<Block>(),0,2048);NEXT=HEAP;N=0;IMAGE_SIZE=0;OUT_LEN=0;LAST=0;EXIT=0;APP_TYPE=0;
     H5_TRIAL_STATUS=0;H5_TRIAL_FAULT=0;H5_TRIAL_RIP=0;
     let d=ptr::addr_of_mut!(DATA.0).cast::<u8>()as u64;
     let t=ptr::addr_of_mut!(PT1.0).cast::<u64>();
@@ -1279,6 +1382,9 @@ unsafe fn enter(ip:u64,budget:u64)->u64{
     // Return trampoline: propagate the entry point's EAX as exit status.
     let ret=[0x89u8,0xc1,0xb8,0x00,0x01,0x00,0x00,0xcd,0x81,0x0f,0x0b];
     ptr::copy_nonoverlapping(ret.as_ptr(),d.add(0xe00),ret.len());
+    // mov rcx,rax; mov eax,258; int 81h; ud2 (return RIP is +10)
+    let callback=[0x48u8,0x89,0xc1,0xb8,0x02,0x01,0x00,0x00,0xcd,0x81,0x0f,0x0b];
+    ptr::copy_nonoverlapping(callback.as_ptr(),d.add(0xe40),callback.len());
     H5_TRIAL_BUDGET=budget;H5_TRIAL_ACTIVE=1;h5_trial_enter(ip,sp);H5_TRIAL_ACTIVE=0;
     pd.write(a);pd.add(1).write(b);for i in 0..16{pd.add(i+2).write(old[i]);}flush();set_msr(0xc0000101,oldgs);set_msr(0xc0000100,oldfs);set_msr(0xc0000080,efer);
     asm!("mov cr4,{}",in(reg)cr4,options(nostack));
@@ -1337,6 +1443,7 @@ pub fn self_test()->bool{unsafe{
     reset();if !event_test(){return false;}serial::line("H5K: TRIAL_EVENT_OBJECTS_OK");
     reset();if !gui_startup_test(){return false;}serial::line("H5K: TRIAL_GUI_STARTUP_ABI_OK");
     reset();if !lsa_test(){return false;}serial::line("H5K: TRIAL_RESTRICTED_LSA_OK");
+    reset();if !gui_creation_test(){return false;}serial::line("H5K: TRIAL_GUI_CREATION_CALLBACK_OK");
     // The second RX stub page must not collide with the reserved exit/cleanup IDs.
     for i in [256usize,257,API_LIMIT-1]{reset();N=i+1;let mut a=EMPTY;a.kind=2;ptr::addr_of_mut!(APIS).cast::<Api>().add(i).write(a);let entry=api_stub(i);if enter(entry,50)!=1||EXIT!=1{return false;}}
     serial::line("H5K: TRIAL_EXTENDED_STUBS_OK");

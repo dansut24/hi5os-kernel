@@ -16,9 +16,15 @@ impl Desktop{
     pub fn visible(&self,h:u64)->bool{self.window(h).is_some_and(|i|self.windows[i].visible)}
     fn window(&self,h:u64)->Option<usize>{if h==0{return None;}self.windows.iter().position(|w|w.handle==h)}
     pub fn create(&mut self,atom:u16,parent:u64,rect:[i32;4])->Option<u64>{
+        self.create_mode(atom,parent,rect,true)
+    }
+    pub fn create_sync(&mut self,atom:u16,parent:u64,rect:[i32;4])->Option<u64>{
+        self.create_mode(atom,parent,rect,false)
+    }
+    fn create_mode(&mut self,atom:u16,parent:u64,rect:[i32;4],queued:bool)->Option<u64>{
         if atom==0||!self.classes.iter().any(|c|c.atom==atom)||parent!=0&&self.window(parent).is_none()||rect[2]<=0||rect[3]<=0||rect[2]>16384||rect[3]>16384||self.len==128{return None;}
         let i=self.windows.iter().position(|w|w.handle==0)?;let h=self.next;self.next=self.next.checked_add(1)?;
-        self.windows[i]=Window{handle:h,atom,parent,rect,visible:false};self.post(Message{hwnd:h,id:1,wparam:0,lparam:0});Some(h)
+        self.windows[i]=Window{handle:h,atom,parent,rect,visible:false};if queued{self.post(Message{hwnd:h,id:1,wparam:0,lparam:0});}Some(h)
     }
     pub fn procedure(&self,h:u64)->Option<u64>{let w=self.windows[self.window(h)?];self.classes.iter().find(|c|c.atom==w.atom).map(|c|c.proc)}
     pub fn show(&mut self,h:u64,visible:bool)->bool{
