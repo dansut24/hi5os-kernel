@@ -182,6 +182,15 @@ impl Nic{
         if url.len()>128{return Err("URL too long");}let mut current=[0;128];current[..url.len()].copy_from_slice(url);let mut n=url.len();
         for _ in 0..5{match self.get_once(&current[..n],response)?{Ok((size,status))=>return Ok((size,current,n,status)),Err((next,len))=>{if current[..n].starts_with(b"https://")&&!next[..len].starts_with(b"https://"){return Err("HTTPS downgrade blocked");}if next[..len]==current[..n]{return Err("HTTP redirect loop");}current=next;n=len;serial::line("H5K: HTTP_REDIRECT_FOLLOWED");}}}Err("HTTP redirect limit")
     }
+    // External classic scripts are restricted to the document origin, including redirects.
+    pub fn get_script(&mut self,base:&[u8],url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{
+        if url.len()>128||!crate::hi5webcore::same_origin(base,url){return Err("Cross-origin script blocked");}
+        let mut current=[0u8;128];let mut len=url.len();current[..len].copy_from_slice(url);
+        for _ in 0..3{match self.get_once(&current[..len],response)?{
+            Ok((n,200))=>return Ok(n),Ok(_)=>return Err("Script HTTP status"),
+            Err((next,n))=>{if !crate::hi5webcore::same_origin(base,&next[..n])||next[..n]==current[..len]{return Err("Script redirect blocked");}current=next;len=n;}
+        }}Err("Script redirect limit")
+    }
     pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{self.get_follow(url,response).and_then(|v|if v.3==200{Ok(v.0)}else{Err("HTTP response not successful")})}
     fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<Result<(usize,u16),([u8;128],usize)>,&'static str>{
         let secure=url.starts_with(b"https://");let (host,port,path)=parse_url(url).ok_or("Use http:// or https://host/path")?;let scheme=if secure{8}else{7};

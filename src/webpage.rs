@@ -14,8 +14,8 @@ static mut PHOTOS:[Photo;IMAGE_LIMIT]=[NO_PHOTO;IMAGE_LIMIT];
 const EMPTY_RULE:Rule=Rule{selector:[0;96],len:0,style:EMPTY,spec:0};
 static mut RULES:[Rule;256]=[EMPTY_RULE;256];
 const TEXT:usize=192;
-#[derive(Clone,Copy)]struct Block{buf:[u8;TEXT],len:usize,kind:u8,color:Option<Color>,bg:Option<Color>,id:[u8;32],id_len:usize,link:Link,image:u8,align:u8,padding:u8,margin:u8,hidden:bool,display:Option<bool>,align_set:bool,layout:u8,columns:u8,gap:u8,group:u16,item:u16,group_cols:u8,group_gap:u8,flow:u16,node:u16}
-const EMPTY:Block=Block{buf:[0;TEXT],len:0,kind:0,color:None,bg:None,id:[0;32],id_len:0,link:EMPTY_LINK,image:0,align:0,padding:0,margin:0,hidden:false,display:None,align_set:false,layout:0,columns:0,gap:0,group:0,item:0,group_cols:0,group_gap:0,flow:0,node:0};
+#[derive(Clone,Copy)]struct Block{buf:[u8;TEXT],len:usize,kind:u8,color:Option<Color>,bg:Option<Color>,id:[u8;32],id_len:usize,link:Link,image:u8,align:u8,padding:u8,margin:u8,hidden:bool,display:Option<bool>,align_set:bool,layout:u8,columns:u8,gap:u8,group:u16,item:u16,group_cols:u8,group_gap:u8,flow:u16,node:u16,width_px:u16,width_pct:u8,max_px:u16,min_h:u16,auto_margin:bool,list_none:bool}
+const EMPTY:Block=Block{buf:[0;TEXT],len:0,kind:0,color:None,bg:None,id:[0;32],id_len:0,link:EMPTY_LINK,image:0,align:0,padding:0,margin:0,hidden:false,display:None,align_set:false,layout:0,columns:0,gap:0,group:0,item:0,group_cols:0,group_gap:0,flow:0,node:0,width_px:0,width_pct:0,max_px:0,min_h:0,auto_margin:false,list_none:false};
 #[derive(Clone,Copy)]pub struct Page{blocks:[Block;MAX],pub count:usize,pub styled:usize,pub images:usize,pub scripts:usize,pub stylesheets:[Link;CSS_LIMIT],pub stylesheet_count:usize,pub image_urls:[Link;IMAGE_LIMIT],pub image_count:usize,pub loaded_images:usize,pub dom_nodes:usize,pub requires_js:bool,pub empty_document:bool,pub truncated:bool,pub form:Form,pub form_focus:bool,title:[u8;96],title_len:usize}
 pub static mut PAGE:Page=Page::new();
 static mut TAB_PAGES:[Page;4]=[Page::new();4];
@@ -27,9 +27,11 @@ fn attr<'a>(mut a:&'a[u8],want:&[u8])->Option<&'a[u8]>{
 }
 fn rgb(s:&[u8])->Option<Color>{let s=trim(s);let named=[(b"red".as_slice(),[220,30,30]),(b"blue",[20,90,210]),(b"black",[0,0,0]),(b"white",[255,255,255]),(b"green",[0,128,0]),(b"navy",[0,0,128]),(b"gray",[128,128,128])];for(n,c)in named{if s.eq_ignore_ascii_case(n){return Some(c);}}if s.len()!=7||s[0]!=b'#'{return None;}let mut c=[0;3];for i in 0..3{let h=(s[1+i*2]as char).to_digit(16)?;let l=(s[2+i*2]as char).to_digit(16)?;c[i]=(h*16+l)as u8;}Some(c)}
 fn px(s:&[u8])->Option<u8>{let s=s.strip_suffix(b"px").unwrap_or(s);if s.is_empty()||s.len()>3||!s.iter().all(u8::is_ascii_digit){return None;}let mut n=0u16;for v in s{n=n*10+(v-48)as u16;}Some(n.min(40)as u8)}
-fn style(b:&mut Block,s:&[u8]){for decl in s.split(|v|*v==b';'){if let Some(i)=decl.iter().position(|v|*v==b':'){let k=trim(&decl[..i]);let v=trim(&decl[i+1..]);if k.eq_ignore_ascii_case(b"color"){if let Some(c)=rgb(v){b.color=Some(c);}}else if k.eq_ignore_ascii_case(b"background-color"){if let Some(c)=rgb(v){b.bg=Some(c);}}else if k.eq_ignore_ascii_case(b"font-weight")&&matches!(v,b"bold"|b"700"){b.kind=1;}else if k.eq_ignore_ascii_case(b"font-size")&&matches!(v,b"24px"|b"28px"|b"32px"){b.kind=1;}else if k.eq_ignore_ascii_case(b"text-align"){b.align_set=true;b.align=if v.eq_ignore_ascii_case(b"center"){1}else if v.eq_ignore_ascii_case(b"right"){2}else{0};}else if k.eq_ignore_ascii_case(b"padding"){if let Some(n)=px(v){b.padding=n;}}else if k.eq_ignore_ascii_case(b"margin"){if let Some(n)=px(v){b.margin=n;}}else if k.eq_ignore_ascii_case(b"gap"){if let Some(n)=px(v){b.gap=n.min(24);}}else if k.eq_ignore_ascii_case(b"grid-template-columns"){let count=v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).count();if (2..=4).contains(&count)&&v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).all(|x|x==b"1fr"){b.columns=count as u8;}}else if k.eq_ignore_ascii_case(b"flex-direction")&&v.eq_ignore_ascii_case(b"column"){b.layout=3;}else if k.eq_ignore_ascii_case(b"display"){if v.eq_ignore_ascii_case(b"none"){b.display=Some(false);}else if [b"block".as_slice(),b"inline",b"inline-block",b"flex",b"grid",b"table",b"list-item",b"contents"].iter().any(|x|v.eq_ignore_ascii_case(x)){b.display=Some(true);if v.eq_ignore_ascii_case(b"flex"){if b.layout!=3{b.layout=1;}}else if v.eq_ignore_ascii_case(b"grid"){b.layout=2;}else{b.layout=0;}}}}}}
+fn dim(s:&[u8])->Option<u16>{let s=s.strip_suffix(b"px").unwrap_or(s);if s.is_empty()||s.len()>4||!s.iter().all(u8::is_ascii_digit){return None;}let mut n=0u16;for v in s{n=n*10+(v-48)as u16;}Some(n.min(2048))}
+fn style(b:&mut Block,s:&[u8]){for decl in s.split(|v|*v==b';'){if let Some(i)=decl.iter().position(|v|*v==b':'){let k=trim(&decl[..i]);let v=trim(&decl[i+1..]);if k.eq_ignore_ascii_case(b"color"){if let Some(c)=rgb(v){b.color=Some(c);}}else if k.eq_ignore_ascii_case(b"background-color"){if let Some(c)=rgb(v){b.bg=Some(c);}}else if k.eq_ignore_ascii_case(b"font-weight")&&matches!(v,b"bold"|b"700"){b.kind=1;}else if k.eq_ignore_ascii_case(b"font-size")&&matches!(v,b"24px"|b"28px"|b"32px"){b.kind=1;}else if k.eq_ignore_ascii_case(b"text-align"){b.align_set=true;b.align=if v.eq_ignore_ascii_case(b"center"){1}else if v.eq_ignore_ascii_case(b"right"){2}else{0};}else if k.eq_ignore_ascii_case(b"width"){if let Some(n)=v.strip_suffix(b"%").and_then(dim){b.width_pct=n.min(100)as u8;b.width_px=0;}else if let Some(n)=dim(v){b.width_px=n;b.width_pct=0;}}else if k.eq_ignore_ascii_case(b"max-width"){if let Some(n)=dim(v){b.max_px=n;}}else if k.eq_ignore_ascii_case(b"height")||k.eq_ignore_ascii_case(b"min-height"){if let Some(n)=dim(v){b.min_h=n.min(600);}}else if k.eq_ignore_ascii_case(b"list-style")||k.eq_ignore_ascii_case(b"list-style-type"){if v==b"none"{b.list_none=true;}}else if k.eq_ignore_ascii_case(b"padding"){if let Some(n)=px(v){b.padding=n;}}else if k.eq_ignore_ascii_case(b"margin"){if let Some(n)=px(v){b.margin=n;}else if v==b"auto"||v.ends_with(b" auto"){b.auto_margin=true;}}else if k.eq_ignore_ascii_case(b"gap"){if let Some(n)=px(v){b.gap=n.min(24);}}else if k.eq_ignore_ascii_case(b"grid-template-columns"){let count=v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).count();if (2..=4).contains(&count)&&v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).all(|x|x==b"1fr"){b.columns=count as u8;}}else if k.eq_ignore_ascii_case(b"flex-direction")&&v.eq_ignore_ascii_case(b"column"){b.layout=3;}else if k.eq_ignore_ascii_case(b"display"){if v.eq_ignore_ascii_case(b"none"){b.display=Some(false);}else if [b"block".as_slice(),b"inline",b"inline-block",b"flex",b"grid",b"table",b"list-item",b"contents"].iter().any(|x|v.eq_ignore_ascii_case(x)){b.display=Some(true);if v.eq_ignore_ascii_case(b"flex"){if b.layout!=3{b.layout=1;}}else if v.eq_ignore_ascii_case(b"grid"){b.layout=2;}else{b.layout=0;}}}}}}
 #[derive(Clone,Copy)]struct Cell{index:usize,start:usize,end:usize,x:usize,w:usize}
 struct LayoutRow{cells:[Cell;4],len:usize,h:usize}
+#[derive(Default)]pub struct JsReport{pub executed:usize,pub skipped:usize,pub errors:usize,pub external:usize,pub changes:usize}
 impl Page{
     pub const fn new()->Self{Self{blocks:[EMPTY;MAX],count:0,styled:0,images:0,scripts:0,stylesheets:[EMPTY_LINK;CSS_LIMIT],stylesheet_count:0,image_urls:[EMPTY_LINK;IMAGE_LIMIT],image_count:0,loaded_images:0,dom_nodes:0,requires_js:false,empty_document:false,truncated:false,form:Form::new(),form_focus:false,title:[0;96],title_len:0}}
     pub fn clear(&mut self){self.count=0;self.styled=0;self.images=0;self.scripts=0;self.title_len=0;self.stylesheet_count=0;self.image_count=0;self.loaded_images=0;self.dom_nodes=0;self.requires_js=false;self.empty_document=false;self.truncated=false;self.form=Form::new();self.form_focus=false;unsafe{for p in (&mut *core::ptr::addr_of_mut!(PHOTOS)).iter_mut(){p.w=0;p.h=0;}}}
@@ -89,13 +91,13 @@ impl Page{
             if depth>=coreweb::DEPTH&&!void{self.push(&mut b);overflow=1;continue;}
             // Keep each source element with explicit parent/child/sibling relationships.
             let node=dom.append(parents[depth-1],start,p-start,false).unwrap_or(parents[depth-1]);
-            let mut next=computed[depth-1];next.len=0;next.id_len=0;next.image=0;next.node=node as u16;next.padding=0;next.margin=0;next.display=None;next.align_set=false;next.layout=0;next.columns=0;next.gap=0;if !void&&!inline_tag(tag){next.flow=node as u16;}let parent=computed[depth-1];if parent.layout==1||parent.layout==2{next.group=parent.node;next.item=node as u16;next.group_cols=if parent.layout==2{parent.columns.max(2).min(4)}else{4};next.group_gap=parent.gap.max(4);}
+            let mut next=computed[depth-1];next.len=0;next.id_len=0;next.image=0;next.node=node as u16;next.padding=0;next.margin=0;next.display=None;next.align_set=false;next.layout=0;next.columns=0;next.gap=0;next.width_px=0;next.width_pct=0;next.min_h=0;if !void&&!inline_tag(tag){next.flow=node as u16;}let parent=computed[depth-1];if parent.layout==1||parent.layout==2{next.group=parent.node;next.item=node as u16;next.group_cols=if parent.layout==2{parent.columns.max(2).min(4)}else{4};next.group_gap=parent.gap.max(4);}
             self.push(&mut b);
             if heading||tag.eq_ignore_ascii_case(b"strong"){next.kind=1;}
             if tag.eq_ignore_ascii_case(b"center")||attr(a,b"align").is_some_and(|v|v.eq_ignore_ascii_case(b"center")){next.align=1;}
             if tag.eq_ignore_ascii_case(b"a"){next.link=attr(a,b"href").and_then(|v|url(base,v)).unwrap_or(EMPTY_LINK);}
             // Cascade in ascending specificity, then inline declarations. Inherit text style.
-            for rule in &rules[..nr]{if selector_match(&rule.selector[..rule.len],tag,a,src,dom,parents[depth-1]){let st=rule.style;if st.color.is_some(){next.color=st.color;}if st.bg.is_some(){next.bg=st.bg;}if st.kind==1{next.kind=1;}if st.align_set{next.align=st.align;}if st.padding>0{next.padding=st.padding;}if st.margin>0{next.margin=st.margin;}if st.display.is_some(){next.display=st.display;next.layout=st.layout;}if st.columns>0{next.columns=st.columns;}if st.gap>0{next.gap=st.gap;}if st.layout==3{next.layout=3;}}}
+            for rule in &rules[..nr]{if selector_match(&rule.selector[..rule.len],tag,a,src,dom,parents[depth-1]){let st=rule.style;if st.color.is_some(){next.color=st.color;}if st.bg.is_some(){next.bg=st.bg;}if st.kind==1{next.kind=1;}if st.align_set{next.align=st.align;}if st.padding>0{next.padding=st.padding;}if st.margin>0{next.margin=st.margin;}if st.display.is_some(){next.display=st.display;next.layout=st.layout;}if st.columns>0{next.columns=st.columns;}if st.gap>0{next.gap=st.gap;}if st.width_px>0||st.width_pct>0{next.width_px=st.width_px;next.width_pct=st.width_pct;}if st.max_px>0{next.max_px=st.max_px;}if st.min_h>0{next.min_h=st.min_h;}next.auto_margin|=st.auto_margin;next.list_none|=st.list_none;if st.layout==3{next.layout=3;}}}
             if let Some(v)=attr(a,b"style"){style(&mut next,v);}if let Some(v)=attr(a,b"id"){let n=v.len().min(32);next.id[..n].copy_from_slice(&v[..n]);next.id_len=n;}
             // aria-hidden affects accessibility, not visual display. An ancestor display:none cannot be overridden by a descendant.
             next.hidden=computed[depth-1].hidden||next.display==Some(false)||attr(a,b"hidden").is_some();
@@ -112,17 +114,17 @@ impl Page{
             if tag.eq_ignore_ascii_case(b"textarea"){if let Some(e)=src[p..].windows(10).position(|v|v.eq_ignore_ascii_case(b"</textarea")){let at=p+e;if let Some(end)=tag_end(&src[at..]){p=at+end+1;}}b=computed[depth-1];active=b.link;continue;}
             if tag.eq_ignore_ascii_case(b"button")&&in_form&&self.form.ready&&!submit&&!next.hidden&&attr(a,b"type").map_or(true,|v|v.eq_ignore_ascii_case(b"submit")){next.kind=4;submit=true;}
             if tag.eq_ignore_ascii_case(b"img"){
-                let mut pic=next;pic.kind=2;if !pic.hidden{self.images+=1;if self.image_count<IMAGE_LIMIT{if let Some(l)=attr(a,b"src").or_else(||attr(a,b"data-src")).and_then(|v|url(base,v)){self.image_urls[self.image_count]=l;self.image_count+=1;pic.image=self.image_count as u8;}}self.text(&mut pic,b"[Image] ");if let Some(v)=attr(a,b"alt"){self.text(&mut pic,v);}self.push(&mut pic);}
+                let mut pic=next;pic.kind=2;if pic.width_px==0&&pic.width_pct==0{pic.width_px=attr(a,b"width").and_then(dim).unwrap_or(0); }if !pic.hidden{self.images+=1;if self.image_count<IMAGE_LIMIT{if let Some(l)=attr(a,b"src").or_else(||attr(a,b"data-src")).and_then(|v|url(base,v)){self.image_urls[self.image_count]=l;self.image_count+=1;pic.image=self.image_count as u8;}}self.text(&mut pic,b"[Image] ");if let Some(v)=attr(a,b"alt"){self.text(&mut pic,v);}self.push(&mut pic);}
             }
             if !void{
                 tags[depth]=(tag.as_ptr() as usize-src.as_ptr() as usize,tag.len());parents[depth]=node;computed[depth]=next;depth+=1;b=next;active=b.link;
-                if tag.eq_ignore_ascii_case(b"li"){self.text(&mut b,b"- ");}
+                if tag.eq_ignore_ascii_case(b"li")&&!next.list_none{self.text(&mut b,b"- ");}
             }else{b=computed[depth-1];active=b.link;}
 
         }
         self.push(&mut b);self.dom_nodes=dom.len.saturating_sub(1);self.truncated=dom.truncated||p<src.len();
         self.empty_document=self.count==0;
-        if self.empty_document||self.requires_js{let mut notice=EMPTY;notice.kind=1;self.text(&mut notice,if self.requires_js{b"Website requires JavaScript".as_slice()}else{b"No visible content in this response".as_slice()});self.push(&mut notice);let mut detail=EMPTY;self.text(&mut detail,if self.requires_js{b"The server returned a JavaScript interstitial, not search results. Hi5WebCore does not execute general website scripts.".as_slice()}else{b"HTML received, but no supported visible content was found. Scripts are disabled.".as_slice()});self.push(&mut detail);}
+        if self.empty_document||self.requires_js{let mut notice=EMPTY;notice.kind=1;self.text(&mut notice,if self.requires_js{b"Website requires JavaScript".as_slice()}else{b"No visible content in this response".as_slice()});self.push(&mut notice);let mut detail=EMPTY;self.text(&mut detail,if self.requires_js{b"The server returned a JavaScript interstitial, not search results. Website browser APIs may be incomplete.".as_slice()}else{b"HTML received, but no supported visible content was found. Scripts are disabled.".as_slice()});self.push(&mut detail);}
     }
     // Deliberately tiny, opt-in textContent assignment subset. No eval, loops,
     // functions, networking, native calls, HTML injection or external scripts.
@@ -139,9 +141,9 @@ impl Page{
         }changed
     }
 
-    pub fn run_js(&mut self,src:&[u8])->Result<(usize,usize),&'static str>{
+    pub fn run_js(&mut self,src:&[u8],base:&[u8],ram_mib:u64,mut fetch:impl FnMut(&Link)->Option<alloc::vec::Vec<u8>>)->Result<JsReport,&'static str>{
         use alloc::vec::Vec;
-        let mut snippets=[(0usize,0usize);16];let mut script_count=0usize;let mut total=0usize;let mut pos=0usize;
+        let mut snippets=[(0usize,0usize,EMPTY_LINK);32];let mut script_count=0usize;let mut pos=0usize;let mut report=JsReport::default();
         while pos<src.len()&&script_count<snippets.len(){
             let Some(i)=src[pos..].iter().position(|b|*b==b'<')else{break;};pos+=i;
             if src[pos..].starts_with(b"<!--"){if let Some(end)=src[pos+4..].windows(3).position(|v|v==b"-->"){pos+=end+7;continue;}break;}
@@ -151,11 +153,17 @@ impl Page{
             if !tag.eq_ignore_ascii_case(b"script"){continue;}
             let Some(end)=src[pos..].windows(8).position(|v|v.eq_ignore_ascii_case(b"</script"))else{break;};
             let a=&raw[k..];let classic=attr(a,b"type").map_or(true,|v|matches!(v,b""|b"text/javascript"|b"application/javascript"));
-            if classic&&attr(a,b"src").is_none()&&end>0{if end>32*1024||total+end>48*1024{return Err("Inline JavaScript exceeds current page budget");}snippets[script_count]=(pos,end);script_count+=1;total+=end;}
+            if classic{
+                if let Some(href)=attr(a,b"src"){
+                    // No module, credential, SRI, or CSP implementation yet. Do not execute integrity-bearing resources without verification.
+                    if attr(a,b"integrity").is_some(){report.skipped+=1;}
+                    else if let Some(l)=url(base,href).filter(|l|coreweb::same_origin(base,&l.url[..l.len])){snippets[script_count]=(0,0,l);script_count+=1;}else{report.skipped+=1;}
+                }else if end>0{if end>crate::webjs::SOURCE_CAP{report.skipped+=1;}else{snippets[script_count]=(pos,end,EMPTY_LINK);script_count+=1;}}
+            }else if attr(a,b"type")==Some(b"module".as_slice()){report.skipped+=1;}
             pos+=end;
         }
-        if script_count==0{return Err("No supported inline JavaScript");}
-        let mut session=crate::webjs::Session::new()?;
+        if script_count==0{return Ok(report);}
+        let mut session=crate::webjs::Session::new(ram_mib)?;
         let mut bootstrap=Vec::with_capacity(8192);
         bootstrap.extend_from_slice(b"globalThis.window=globalThis; const __h5nodes=Object.create(null),__h5added=[],__h5events=[]; const __h5on=(t,f)=>{if((t==='DOMContentLoaded'||t==='load')&&typeof f==='function'&&__h5events.length<16)__h5events.push(f)}; globalThis.document={getElementById:id=>__h5nodes[String(id)]||null,querySelector:s=>typeof s==='string'&&s[0]==='#'?__h5nodes[s.slice(1)]||null:null,createElement:t=>({tagName:String(t).toUpperCase(),textContent:''}),body:{appendChild(n){if(n&&__h5added.length<8)__h5added.push(n);return n}},addEventListener:__h5on};globalThis.addEventListener=__h5on;globalThis.console={log(){},warn(){},error(){}};");
         let mut targets=[0usize;48];let mut target_count=0;
@@ -163,10 +171,20 @@ impl Page{
             let id=&b.id[..b.id_len];if !id.iter().all(|v|v.is_ascii_alphanumeric()||matches!(*v,b'-'|b'_'|b'.'|b':'))||targets[..target_count].iter().any(|&j|&self.blocks[j].id[..self.blocks[j].id_len]==id){continue;}
             targets[target_count]=i;target_count+=1;bootstrap.extend_from_slice(b"__h5nodes[");js_quote(&mut bootstrap,id);bootstrap.extend_from_slice(b"]={id:");js_quote(&mut bootstrap,id);bootstrap.extend_from_slice(b",textContent:");js_quote(&mut bootstrap,&b.buf[..b.len]);bootstrap.extend_from_slice(b"};");
         }
-        if bootstrap.len()>48*1024{return Err("DOM bootstrap exceeds budget");}
+        if bootstrap.len()>crate::webjs::SOURCE_CAP{return Err("DOM bootstrap exceeds budget");}
         session.exec(&bootstrap)?;
-        for &(start,len) in &snippets[..script_count]{session.exec(&src[start..start+len])?;}
-        session.exec(b"for(const f of __h5events){f.call(window)};")?;
+        let mut total=0usize;let mut external=0usize;
+        for &(start,len,link) in &snippets[..script_count]{
+            let downloaded;
+            let source=if link.len>0{
+                if external>=8{report.skipped+=1;continue;}external+=1;
+                downloaded=match fetch(&link){Some(v)=>v,None=>{report.skipped+=1;continue;}};
+                report.external+=1;downloaded.as_slice()
+            }else{&src[start..start+len]};
+            if source.len()>crate::webjs::SOURCE_CAP||source.len()>1024*1024-total||core::str::from_utf8(source).is_err(){report.skipped+=1;continue;}total+=source.len();
+            match session.exec(source){Ok(())=>report.executed+=1,Err("JavaScript exception - unsupported API or syntax")=>report.errors+=1,Err(e)=>return Err(e)}
+        }
+        match session.exec(b"for(const f of __h5events){try{f.call(window)}catch(e){}};"){Ok(())=>{},Err("JavaScript exception - unsupported API or syntax")=>report.errors+=1,Err(e)=>return Err(e)}
         let mut edits=Vec::with_capacity(target_count);let mut output=[0u8;768];let mut query=Vec::with_capacity(128);
         for &i in &targets[..target_count]{let b=&self.blocks[i];query.clear();query.extend_from_slice(b"String(__h5nodes[");js_quote(&mut query,&b.id[..b.id_len]);query.extend_from_slice(b"].textContent).slice(0,192)");
             let n=session.eval(&query,&mut output)?;let mut buf=[0u8;TEXT];let len=js_text(&output[..n],&mut buf);if &b.buf[..b.len]!=&buf[..len]{edits.push((i,buf,len));}
@@ -174,7 +192,7 @@ impl Page{
         let mut added=Vec::new();for i in 0..8{query.clear();query.extend_from_slice(b"String(__h5added[");query.push(b'0'+i);query.extend_from_slice(b"]?.textContent??'').slice(0,192)");let n=session.eval(&query,&mut output)?;if n>0{let mut buf=[0u8;TEXT];let len=js_text(&output[..n],&mut buf);added.push((buf,len));}}
         let mut changed=edits.len();for (i,buf,len) in edits{self.blocks[i].buf=buf;self.blocks[i].len=len;}
         for (buf,len) in added{if len==0||self.count>=MAX{continue;}let mut block=EMPTY;block.buf=buf;block.len=len;self.push(&mut block);changed+=1;}
-        Ok((script_count,changed))
+        report.changes=changed;Ok(report)
     }
 
     pub fn load_image(&mut self,i:usize,bytes:&[u8])->bool{
@@ -183,7 +201,8 @@ impl Page{
         if photo.w==0{self.loaded_images+=1;}photo.w=w as usize;photo.h=h as usize;true
     }
     fn cols(b:&Block,width:usize)->usize{if matches!(b.kind,3|4){return TEXT;}(width.saturating_sub((b.padding as usize+b.margin as usize)*2)/if b.kind==1{14}else{9}).clamp(8,TEXT)}
-    fn height(b:&Block)->usize{(if b.kind==1{30}else if matches!(b.kind,3|4){38}else{22})+2*(b.padding as usize+b.margin as usize)}
+    fn height(b:&Block)->usize{((if b.kind==1{30}else if matches!(b.kind,3|4){38}else{22})+2*(b.padding as usize+b.margin as usize)).max(b.min_h as usize)}
+    fn box_width(b:&Block,w:usize)->usize{let mut n=w;if b.width_px>0{n=n.min(b.width_px as usize);}else if b.width_pct>0{n=n.min(w*b.width_pct as usize/100);}if b.max_px>0{n=n.min(b.max_px as usize);}n.max(1)}
     fn photo(b:&Block)->Option<&'static Photo>{if b.image==0{return None;}let p=unsafe{&(*core::ptr::addr_of!(PHOTOS))[b.image as usize-1]};(p.w>0&&p.h>0).then_some(p)}
     fn image_size(p:&Photo,width:usize)->(usize,usize){let w=p.w.min(width.saturating_sub(8)).max(1);(w,(w*p.h/p.w).max(1))}
     fn cell_height(b:&Block,width:usize)->usize{Self::photo(b).map_or(Self::height(b),|p|Self::image_size(p,width).1+8)}
@@ -198,13 +217,14 @@ impl Page{
                 row.len=count;row.h=0;for i in 0..count{let v=&self.blocks[*index+i];row.cells[i]=Cell{index:*index+i,start:0,end:v.len,x:i*(cw+gap),w:cw};row.h=row.h.max(Self::cell_height(v,cw));}*index+=count;return Some(row);
             }
         }
-        if *offset==0&&b.flow!=0&&b.group==0&&b.kind==0&&b.align==0&&b.bg.is_none()&&b.padding==0&&b.margin==0{
+        if *offset==0&&b.width_px==0&&b.width_pct==0&&b.max_px==0&&b.flow!=0&&b.group==0&&b.kind==0&&b.align==0&&b.bg.is_none()&&b.padding==0&&b.margin==0{
             let mut count=0;let mut used=0usize;
-            while count<4&&*index+count<self.count{let v=&self.blocks[*index+count];if v.flow!=b.flow||v.group!=0||v.kind!=0||v.align!=0||v.bg.is_some()||v.padding!=0||v.margin!=0||v.len==0{break;}
+            while count<4&&*index+count<self.count{let v=&self.blocks[*index+count];if v.flow!=b.flow||v.width_px!=0||v.width_pct!=0||v.max_px!=0||v.group!=0||v.kind!=0||v.align!=0||v.bg.is_some()||v.padding!=0||v.margin!=0||v.len==0{break;}
                 let cw=Canvas::measure_text(&v.buf[..v.len],false)+8;if used+cw>width{break;}row.cells[count]=Cell{index:*index+count,start:0,end:v.len,x:used,w:cw};used+=cw;count+=1;
             }if count>1{row.len=count;row.h=22;*index+=count;return Some(row);}row.cells[0]=Cell{index:*index,start:*offset,end:b.len,x:0,w:width};
         }
-        let end=if Self::photo(b).is_some(){b.len}else{let limit=(*offset+Self::cols(b,width)).min(b.len);if limit<b.len{b.buf[*offset..limit].iter().rposition(|v|*v==b' ').filter(|i|*i>0).map_or(limit,|i|*offset+i+1)}else{limit}};
+        let bw=Self::box_width(b,width);let bx=if b.auto_margin{width.saturating_sub(bw)/2}else{0};row.cells[0].x=bx;row.cells[0].w=bw;row.h=Self::cell_height(b,bw);
+        let end=if Self::photo(b).is_some(){b.len}else{let limit=(*offset+Self::cols(b,bw)).min(b.len);if limit<b.len{b.buf[*offset..limit].iter().rposition(|v|*v==b' ').filter(|i|*i>0).map_or(limit,|i|*offset+i+1)}else{limit}};
         row.cells[0].end=end;if end>=b.len{*index+=1;*offset=0;}else{*offset=end;}Some(row)
     }
     pub fn rows(&self,width:usize)->usize{let(mut i,mut off,mut n)=(0,0,0);while self.next_row(width,&mut i,&mut off).is_some(){n+=1;}n}
@@ -266,7 +286,7 @@ fn css_rules(mut css:&[u8],out:&mut[Rule;256],count:&mut usize,viewport:usize,le
         let mut depth=1usize;let mut end=None;let mut quote=0u8;let mut escaped=false;
         for (j,&v) in css[i+1..].iter().enumerate(){if quote!=0{if escaped{escaped=false;}else if v==b'\\'{escaped=true;}else if v==quote{quote=0;}continue;}if matches!(v,b'\''|b'"'){quote=v;continue;}if v==b'{'{depth+=1;}else if v==b'}'{depth-=1;if depth==0{end=Some(i+1+j);break;}}}
         let Some(j)=end else{break;};let sel=trim(&css[..i]);let body=&css[i+1..j];css=&css[j+1..];if sel.starts_with(b"@"){if level<4{if let Some(q)=sel.strip_prefix(b"@media"){if media_applies(q,viewport){css_rules(body,out,count,viewport,level+1);}}}continue;}
-        let mut b=EMPTY;style(&mut b,body);if b.color.is_none()&&b.bg.is_none()&&b.kind==0&&!b.align_set&&b.padding==0&&b.margin==0&&b.display.is_none()&&b.columns==0&&b.gap==0&&b.layout==0{continue;}
+        let mut b=EMPTY;style(&mut b,body);if b.color.is_none()&&b.bg.is_none()&&b.kind==0&&!b.align_set&&b.padding==0&&b.margin==0&&b.display.is_none()&&b.columns==0&&b.gap==0&&b.layout==0&&b.width_px==0&&b.width_pct==0&&b.max_px==0&&b.min_h==0&&!b.auto_margin&&!b.list_none{continue;}
         for s in sel.split(|v|*v==b','){let s=trim(s);if s.len()>96||*count>=out.len(){continue;}let Some(spec)=selector_spec(s)else{continue;};let mut r=EMPTY_RULE;r.selector[..s.len()].copy_from_slice(s);r.len=s.len();r.spec=spec;r.style=b;out[*count]=r;*count+=1;}
     }
 }
@@ -290,5 +310,6 @@ pub fn self_test()->bool{
     p.parse(b"<p id='demo'>Before</p>");let script_ok=p.literal_update(b"<script>document.getElementById('demo').textContent = 'Hi5' + 'Browser';</script>")==1&&&p.blocks[0].buf[..p.blocks[0].len]==b"Hi5Browser"&&p.literal_update(b"<script>document.getElementById('demo').textContent = 'a' + evil();</script>")==0;
     p.parse_at_width(b"<p>Hello <a href='/next'>world</a> again</p><style>@media (max-width: 500px){p{color:#123456}}</style>",b"https://example.test/",&[],400);let responsive_ok=p.count==3&&p.rows(400)==1&&p.blocks[0].color==Some([18,52,86]);
     p.parse_at_width(b"<p>Hello</p><style>@media (max-width: 500px){p{color:#123456}}</style>",b"https://example.test/",&[],900);let wide_ok=p.blocks[0].color.is_none();
-    p.clear();ok&&css_ok&&form_ok&&result_ok&&interstitial_ok&&empty_ok&&layout_ok&&script_ok&&responsive_ok&&wide_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
+    p.parse_at(b"<ul style='list-style:none'><li>News</li></ul><p style='width:50%;margin:auto'>Centered</p>",b"https://example.test/",&[]);let box_ok=p.count==2&&&p.blocks[0].buf[..p.blocks[0].len]==b"News"&&{let(mut i,mut off)=(1,0);p.next_row(400,&mut i,&mut off).is_some_and(|r|r.cells[0].x==100&&r.cells[0].w==200)};
+    p.clear();ok&&css_ok&&form_ok&&result_ok&&interstitial_ok&&empty_ok&&layout_ok&&script_ok&&responsive_ok&&wide_ok&&box_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
 }

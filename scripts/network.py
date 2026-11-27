@@ -22,8 +22,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body=(b"<html><body><center><form action='/search'><input name='q' type='text'><input type='submit' value='Search'></form></center></body></html>" if self.path=="/form.html" else b"<html><head><style>div{display:none}.result{display:block}.result a.link{color:#123456}</style></head><body><div class='result'><h1>Search received</h1><a class='link' href='/index.html'>Open real result</a></div></body></html>")
             if self.path.startswith("/search?"):self.server.form_received=True
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
+        if MODE=="browse" and self.path=="/dynamic.js":
+            body=b"let externalValue=7; document.getElementById('external').textContent='External script OK';"
+            self.server.script_received=True
+            self.send_response(200);self.send_header("Content-Type","application/javascript");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/dynamic.html":
-            body=b"<html><body><p id='demo'>Before</p><div id='empty'></div><script>let n=[1,2,3,4].reduce((a,b)=>a+b,0);document.addEventListener('DOMContentLoaded',()=>{document.getElementById('demo').textContent='Calculated '+n;document.getElementById('empty').textContent='Empty node updated';let p=document.createElement('p');p.textContent='Generated content';document.body.appendChild(p);});</script></body></html>"
+            body=(b"<html><body><p id='demo'>Before</p><div id='empty'></div><p id='external'>Before external</p><script>/*"+b"x"*(257*1024)+b"*/</script><script>throw new Error('fixture');</script><script src='/dynamic.js'></script><script src='https://example.invalid/no.js'></script><script>/*"+b"x"*(40*1024)+b"*/let n=[1,2,3,4].reduce((a,b)=>a+b,0)+externalValue;document.addEventListener('DOMContentLoaded',()=>{document.getElementById('demo').textContent='Calculated '+n;document.getElementById('empty').textContent='Empty node updated';let p=document.createElement('p');p.textContent='Generated content';document.body.appendChild(p);});</script></body></html>")
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/index.html":
             body=b"<html><head><title>Hi5 test</title><link rel='stylesheet' href='/style.css'></head><body><h1 style='color:#112233'>Hi5Browser qualification</h1><p id='demo' class='copy'>Before</p><img src='/photo.png' alt='PNG'><img src='/photo.jpg' alt='JPEG'><script>document.getElementById('demo').textContent = 'After';</script><a href='/get.exe'>Download EXE</a></body></html>"
@@ -198,7 +202,9 @@ def main():
                     deadline=time.monotonic()+30
                     while log.read_bytes().count(b"BROWSER_PAGE_RENDERED")<=prior and time.monotonic()<deadline:time.sleep(.1)
                     assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Dynamic fixture did not render"
-                    key("ctrl-j");wait(b"WEB_CORE_JS_EXECUTED=0x0000000000000001",90);wait(b"WEB_CORE_JS_DOM_UPDATES=0x0000000000000003",5)
+                    key("ctrl-j");wait(b"WEB_CORE_JS_EXECUTED=0x0000000000000002",90);wait(b"WEB_CORE_JS_DOM_UPDATES=0x0000000000000004",5)
+                    wait(b"WEB_CORE_JS_EXTERNAL=0x0000000000000001",5);wait(b"WEB_CORE_JS_SKIPPED=0x0000000000000002",5);wait(b"WEB_CORE_JS_ERRORS=0x0000000000000001",5)
+                    assert getattr(server,"script_received",False),"External script request missing"
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-dynamic-512m.ppm")})
                     key("ctrl-w");wait(b"BROWSER_TAB_COUNT=0x0000000000000001",30)
                 call("quit")
