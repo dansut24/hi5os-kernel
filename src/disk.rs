@@ -35,7 +35,7 @@ impl Port{
     }
     fn transfer(self,cmd:u8,lba:u32,buf:&mut [u8;512],write:bool)->bool{
         let a=self.base;
-        if (lba>4161&&!(8192..=32767).contains(&lba))||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
+        if (lba>32767)||!wait(a+0x20,0x88,0)||rd(a+0x38)!=0{serial::metric("H5K: AHCI_NOT_READY_TFD=",rd(a+0x20)as u64);return false;}
         let flush=cmd==0xea;
         unsafe{
             let cl=ptr::addr_of_mut!(CL.0).cast::<u8>();let ct=ptr::addr_of_mut!(CT.0).cast::<u8>();let db=ptr::addr_of_mut!(DB.0).cast::<u8>();
@@ -200,6 +200,31 @@ impl Store{
         let Some(d)=Self::v2_header(p,base)else{self.port=None;return false;};
         if d.gen!=gen||d.len!=data.len()||d.sum!=sum||&d.url[..d.url_len]!=url||!Self::v2_read(p,base,d,None,Some(data)){self.port=None;return false;}
         serial::metric("H5K: DOWNLOAD_SAVED_CRC=",sum as u64);serial::metric("H5K: DOWNLOAD_URL_CRC=",crc(url)as u64);serial::line("H5K: DOWNLOAD_SAVED");true
+    }
+    // Hi5Office: four named document slots, native and exported OOXML each
+    // with alternating generations. 4162..6465, outside all existing banks.
+    fn office_banks(slot:usize,docx:bool)->Option<(u32,u32,u32)>{if slot>=4{return None;}let b=4162+slot as u32*576;Some(if docx{(b+64,b+320,256)}else{(b,b+32,32)})}
+    fn office_header(p:Port,base:u32,span:u32,docx:bool)->Option<Download>{
+        let mut h=[0;512];if !p.read(base,&mut h)||&h[..8]!=if docx{b"H5DOCX01"}else{b"H5OFF001"}||get(&h,508)!=crc(&h[..508]){return None;}
+        let gen=get(&h,8);let len=get(&h,12)as usize;if gen==0||len==0||len>(span as usize-1)*512{return None;}
+        Some(Download{len,gen,sum:get(&h,16),url:[0;128],url_len:0})
+    }
+    pub fn load_office(&self,slot:usize,docx:bool,out:&mut[u8])->Option<usize>{
+        let p=self.port?;let(a,b,span)=Self::office_banks(slot,docx)?;
+        let mut order=[(a,Self::office_header(p,a,span,docx)),(b,Self::office_header(p,b,span,docx))];
+        order.sort_unstable_by_key(|v|core::cmp::Reverse(v.1.map_or(0,|d|d.gen)));
+        for(base,d)in order{if let Some(d)=d{if out.len()>=d.len&&Self::v2_read(p,base,d,None,None)&&Self::v2_read(p,base,d,Some(out),None){return Some(d.len);}}}None
+    }
+    pub fn save_office(&self,slot:usize,docx:bool,data:&[u8])->bool{
+        let Some(p)=self.port else{return false;};let Some((a,b,span))=Self::office_banks(slot,docx)else{return false;};
+        if data.is_empty()||data.len()>(span as usize-1)*512{return false;}
+        let mut h=[0;512];if !p.read(0,&mut h)||!header_ok(&h){return false;}
+        let valid=|base|Self::office_header(p,base,span,docx).filter(|d|Self::v2_read(p,base,*d,None,None)).map_or(0,|d|d.gen);
+        let ga=valid(a);let gb=valid(b);let base=if ga<=gb{a}else{b};let Some(gen)=ga.max(gb).checked_add(1)else{return false;};
+        for(i,part)in data.chunks(512).enumerate(){let mut block=[0;512];block[..part.len()].copy_from_slice(part);if !p.write(base+1+i as u32,&mut block){return false;}}
+        if !p.flush(){return false;}h.fill(0);h[..8].copy_from_slice(if docx{b"H5DOCX01"}else{b"H5OFF001"});put(&mut h,8,gen);put(&mut h,12,data.len()as u32);put(&mut h,16,crc(data));let sum=crc(&h[..508]);put(&mut h,508,sum);
+        if !p.write(base,&mut h)||!p.flush(){return false;}let Some(d)=Self::office_header(p,base,span,docx)else{return false;};
+        d.gen==gen&&Self::v2_read(p,base,d,None,Some(data))
     }
     // Separate application bank, never overlaps the legacy notes/download sectors.
     // Single pinned package; immutable contents and idempotent reinstallation.

@@ -41,6 +41,8 @@ pub fn on_stack(info:BootInfo)->! {
     if !crate::security::init(info.clock){fail(&mut screen,"SECURITY_FOUNDATIONS_TEST");}
     if !crate::sheet::self_test(){fail(&mut screen,"SHEET_TEST");}
     serial::line("H5K: SHEET_FORMULAS_OK");
+    if !crate::office::self_test(){fail(&mut screen,"OFFICE_FORMAT_TEST");}
+    serial::line("H5K: OFFICE_FORMATS_OK");
     let mut tasks=services::Tasks::new();
     if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
     serial::line("H5K: COOPERATIVE_SCHEDULER_OK");

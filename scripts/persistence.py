@@ -51,6 +51,13 @@ def main():
                         for k in "office":key(k)
                         key("f6");wait(f"H5K: DATA_SAVED_CRC=0x{zlib.crc32(b'office'):016x}".encode(),5)
                         call("screendump",{"filename":str(ROOT/"dist"/"notepad-512m.ppm")})
+                        key("ctrl-shift-w");wait(b"GUI_WORD_OPEN",5)
+                        for k in "hello":key(k)
+                        key("spc");key("ctrl-b")
+                        for k in "office":key(k)
+                        key("ctrl-b");key("ctrl-s");wait(b"OFFICE_WORD_SAVED",10)
+                        key("ctrl-e");wait(b"OFFICE_DOCX_SAVED",20)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5word-512m.ppm")})
                         call("quit")
                     proc.wait(timeout=10)
                     with data.open("rb") as fh:
@@ -59,13 +66,34 @@ def main():
                     assert int.from_bytes(record[508:512],"little")==zlib.crc32(record[:508])
                     assert second[:8]==b"H5NOTE01" and second[20:26]==b"office"
                     assert int.from_bytes(second[508:512],"little")==zlib.crc32(second[:508])
+                    from office_extract import read_slot
+                    import io,zipfile,xml.etree.ElementTree as ET
+                    native=read_slot(data,0,False)
+                    assert native[:8]==b"H5DOC001" and native[16:-4:2]==b"hello office" and native[17:-4:2]==bytes([0]*6+[1]*6)
+                    native_crc=zlib.crc32(native[:-4])
+                    with zipfile.ZipFile(io.BytesIO(read_slot(data,0,True))) as z:
+                        assert z.testzip() is None
+                        for name in z.namelist():ET.fromstring(z.read(name))
+                        assert b"<w:b/>" in z.read("word/document.xml") and b"office" in z.read("word/document.xml")
                 else:
                     wait(b"H5K: DATA_DISK_LOADED",2)
                     wait(f"H5K: DATA_CRC=0x{zlib.crc32(b'persist'):016x}".encode(),2)
                     wait(b"H5K: DATA_LENGTH=0x0000000000000007",2)
                     wait(f"H5K: DATA_CRC=0x{zlib.crc32(b'office'):016x}".encode(),2)
                     wait(b"DISPLAY_SETTINGS_RESTORED",5);wait(b"DISPLAY_SCALE=0x0000000000000096",5)
-                    print("PASS: two typed documents and display preferences survived cold restart")
+                    with socket.socket(socket.AF_UNIX) as sock:
+                        sock.settimeout(5);sock.connect(str(qmp));stream=sock.makefile("rwb");json.loads(stream.readline())
+                        def call(name,args=None):
+                            stream.write((json.dumps({"execute":name,**({"arguments":args} if args else {})})+"\n").encode());stream.flush()
+                            while True:
+                                reply=json.loads(stream.readline())
+                                if "error" in reply:raise RuntimeError(reply["error"])
+                                if "return" in reply:return reply["return"]
+                        call("qmp_capabilities")
+                        call("human-monitor-command",{"command-line":"sendkey ctrl-shift-w"})
+                        wait(b"OFFICE_WORD_LOADED",10)
+                        wait(f"H5K: OFFICE_WORD_CRC=0x{native_crc:016x}".encode(),5)
+                    print("PASS: notes, native styled Hi5Word document, DOCX export and display preferences survived cold restart")
             finally:
                 if proc.poll() is None:
                     proc.terminate()

@@ -60,6 +60,14 @@ impl Canvas{
             x+=width;
         }
     }
+    pub fn office_glyph(&self,x:usize,y:usize,b:u8,style:u8,c:Color,right:usize,floor:usize){
+        let big=style&crate::office::LARGE!=0;let(atlas,adv)=if big{(BIG,BIG_ADV)}else{(REG,REG_ADV)};let idx=if (32..127).contains(&b){(b-32)as usize}else{31};
+        for yy in 0..32{if y+yy>=floor||y+yy>=self.fb.height{break;}let slant=if style&crate::office::ITALIC!=0{(31-yy)/8}else{0};
+            for xx in 0..32{let px=x+xx+slant;if px>=right||px>=self.fb.width{break;}let a=atlas[idx*1024+yy*32+xx]as u32;if a==0{continue;}
+                let paint=|px:usize|{let old=unsafe{ptr::read_volatile(self.target(px,y+yy))};let bg=self.unpack(old);let mix=|i:usize|((c[i]as u32*a+bg[i]as u32*(255-a)+127)/255)as u8;self.pixel(px,y+yy,[mix(0),mix(1),mix(2)]);};paint(px);if style&crate::office::BOLD!=0&&px+1<right&&px+1<self.fb.width{paint(px+1);}
+            }}
+        let baseline=if big{29}else{19};if style&crate::office::UNDER!=0&&y+baseline<floor&&x<right{self.rect(x,y+baseline,(adv[idx]as usize).min(right-x),1,c);}
+    }
     pub fn num(&self,x:usize,y:usize,mut n:u64,c:Color){let mut b=[b'0';20];let mut i=20;loop{i-=1;b[i]=b'0'+(n%10)as u8;n/=10;if n==0{break;}}if let Ok(t)=core::str::from_utf8(&b[i..]){self.text(x,y,t,c);}}
     pub fn present(&self){if !self.buffered{return;}unsafe{
         let src=ptr::addr_of!(BACK.0).cast::<u32>();let dst=self.fb.base as *mut u32;
