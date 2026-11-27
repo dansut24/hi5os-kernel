@@ -21,6 +21,7 @@ lld-link /lib /def:fixtures/gdi32-gui.def /machine:x64 /out:target/hi5-fixture/g
 lld-link /entry:hi5_entry /subsystem:windows /nodefaultlib /dynamicbase /base:0x140000000 /timestamp:0 /out:target/hi5-fixture/h5gui.exe target/hi5-fixture/h5gui.obj target/hi5-fixture/h5dll.lib target/hi5-fixture/user32-gui.lib target/hi5-fixture/gdi32-gui.lib
 /usr/bin/python3 scripts/prepare_tls.py
 /usr/bin/python3 scripts/prepare_image.py
+/usr/bin/python3 scripts/prepare_wasmi.py
 /usr/bin/python3 scripts/prepare_js.py
 RUSTFLAGS="-Lnative=$PWD/target/hi5-tls -Lnative=$PWD/target/hi5-image" cargo build --release --locked --target x86_64-unknown-uefi
 mkdir -p dist

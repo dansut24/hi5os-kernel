@@ -24,7 +24,7 @@ fn put32(b:&mut[u8],i:usize,v:u32){b[i..i+4].copy_from_slice(&v.to_be_bytes());}
 fn sum(b:&[u8])->u32{let mut s=0;let mut i=0;while i+1<b.len(){s+=be16(b,i)as u32;i+=2;}if i<b.len(){s+=(b[i]as u32)<<8;}s}
 fn fold(mut s:u32)->u16{while s>>16!=0{s=(s&65535)+(s>>16);}!(s as u16)}
 fn tcp_sum(src:[u8;4],dst:[u8;4],b:&[u8])->u16{fold(sum(&src)+sum(&dst)+6+b.len()as u32+sum(b))}
-fn before(deadline:u64)->bool{p::ticks()<deadline}
+fn before(deadline:u64)->bool{!crate::desktop::browser_poll()&&p::ticks()<deadline}
 pub struct Nic{base:usize,mac:[u8;6],rx:usize,tx:usize,seq:u32,port:u16,ip:[u8;4],mask:[u8;4],gateway:[u8;4],dns:[u8;4],until:u64}
 impl Nic{
     pub fn open()->Option<Self>{
@@ -198,7 +198,7 @@ impl Nic{
     }
     pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{self.get_follow(url,response).and_then(|v|if v.3==200{Ok(v.0)}else{Err("HTTP response not successful")})}
     fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE],script:Option<Option<&[u8]>>)->Result<Result<(usize,u16),([u8;128],usize)>,&'static str>{
-        let secure=url.starts_with(b"https://");let (host,port,path)=parse_url(url).ok_or("Use http:// or https://host/path")?;let scheme=if secure{8}else{7};
+        if crate::desktop::browser_poll(){return Err("Navigation cancelled");}let secure=url.starts_with(b"https://");let (host,port,path)=parse_url(url).ok_or("Use http:// or https://host/path")?;let scheme=if secure{8}else{7};
         let mut req=[0u8;768];let mut k=0;let cors=script.flatten();
         for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[scheme..url.iter().enumerate().skip(scheme).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nUser-Agent: Hi5Browser/0.3.5\r\nAccept: text/html,application/xhtml+xml,application/octet-stream,*/*\r\nAccept-Encoding: identity\r\nConnection: close\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
         if let Some(origin)=cors{for part in [b"Origin: ".as_slice(),origin,b"\r\n"]{if k+part.len()+2>req.len(){return Err("Origin too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}}req[k..k+2].copy_from_slice(b"\r\n");k+=2;
@@ -207,7 +207,7 @@ impl Nic{
         let overall=p::ticks()+budget;let mut headers_checked=false;let mut used=0;let mut next_log=65536;let mut status=0u16;
         let mut buf=[0u8;B];
         loop{
-            let (n,fin)=stream.read(&mut buf,overall)?;
+            if crate::desktop::browser_poll(){return Err("Navigation cancelled");}let (n,fin)=stream.read(&mut buf,overall)?;
             if used+n>response.len(){return Err("Response exceeds preview limit");}
             response[used..used+n].copy_from_slice(&buf[..n]);used+=n;
             if used>=next_log{serial::metric("H5K: HTTP_WIRE_PROGRESS=",used as u64);next_log+=65536;}

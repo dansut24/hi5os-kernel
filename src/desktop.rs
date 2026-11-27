@@ -32,7 +32,43 @@ const EMPTY_WEB:CachedWeb=CachedWeb{valid:false,len:0,source:crate::http::EMPTY_
 static mut WEB_CACHE:[CachedWeb;4]=[EMPTY_WEB;4];
 static mut WEB_CACHE_BYTES:[[u8;CACHE_CAP];4]=[[0;CACHE_CAP];4];
 struct Ui{auth:Auth,auto_graphics:bool,auto_script:bool,browser_settings:bool,browser_diagnostics:bool,tabs:[crate::http::Link;4],tab_count:usize,tab_index:usize,page:&'static mut crate::webpage::Page,history:[crate::http::Link;16],history_len:usize,history_pos:usize,history_replay:bool,web_status:u16,web_links:[crate::http::Link;8],web_link_count:usize,web_scroll:usize,web_text:bool,background:[Option<WindowSlot>;9],display_msg:&'static str,package_installed:bool,store_msg:&'static str,c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,rebase:crate::relocate::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
+// Single-CPU cooperative input pump. Only called from the desktop or its
+// synchronous browser work, never from interrupt context. No nested UI actions.
+struct PointerPacket{bytes:[u8;3],pos:usize,down:bool}
+static mut POINTER_PACKET:PointerPacket=PointerPacket{bytes:[0;3],pos:0,down:false};
+fn mouse_byte(b:u8)->Option<(isize,isize,bool,bool)>{
+    let p=unsafe{&mut *ptr::addr_of_mut!(POINTER_PACKET)};
+    if p.pos==0&&b&8==0{return None;}p.bytes[p.pos]=b;p.pos+=1;if p.pos!=3{return None;}p.pos=0;
+    let flags=p.bytes[0];if flags&0xc0!=0{return None;}
+    let dx=p.bytes[1]as isize-if flags&0x10!=0{256}else{0};let dy=p.bytes[2]as isize-if flags&0x20!=0{256}else{0};
+    let pressed=flags&1!=0;let was=p.down;p.down=pressed;Some((dx,dy,pressed,was))
+}
+struct BusyCursor{canvas:Canvas,x:usize,y:usize,visible:bool,cancelled:bool,moved:bool,last:u64,ext:bool}
+static mut BUSY_CURSOR:Option<BusyCursor>=None;
+fn busy_hide(b:&BusyCursor){if b.visible&&b.canvas.buffered{for y in 0..16{for x in 0..16{b.canvas.restore_pixel(b.x+x,b.y+y);}}}}
+fn busy_show(b:&BusyCursor){if b.visible&&b.canvas.buffered{for y in 0..14{for x in 0..=y/2{b.canvas.front_pixel(b.x+x,b.y+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}}}
+// Returns true if Escape cancelled this operation. Other clicks/keys are
+// deliberately consumed rather than replayed against a different document.
+pub fn browser_poll()->bool{
+    let state=unsafe{&mut *ptr::addr_of_mut!(BUSY_CURSOR)};let Some(b)=state.as_mut()else{return false;};
+    let now=p::ticks();if now==b.last{return b.cancelled;}b.last=now;
+    for _ in 0..64{let st=p::input(0x64);if st&1==0{break;}let v=p::input(0x60);
+        if st&0x20!=0{if let Some((dx,dy,_,_))=mouse_byte(v){if dx!=0||dy!=0{busy_hide(b);b.visible=true;b.x=(b.x as isize+dx).clamp(0,b.canvas.fb.width as isize-1)as usize;b.y=(b.y as isize-dy).clamp(0,b.canvas.fb.height as isize-1)as usize;busy_show(b);if !b.moved{b.moved=true;serial::line("H5K: BROWSER_BUSY_POINTER_MOVED");}}}}
+        else if v==0xe0{b.ext=true;}else{if !b.ext&&v==0x01&&!b.cancelled{b.cancelled=true;serial::line("H5K: BROWSER_CANCEL_REQUESTED");}b.ext=false;}
+    }b.cancelled
+}
 impl Ui{
+    fn browser_busy_begin(&mut self){
+        // Drawing is complete before this snapshot; no back-buffer mutation
+        // or desktop dispatch until browser_busy_end restores the cursor.
+        let c=Canvas{fb:self.c.fb,physical:self.c.physical,scale:self.c.scale,buffered:self.c.buffered};
+        unsafe{*ptr::addr_of_mut!(BUSY_CURSOR)=Some(BusyCursor{canvas:c,x:self.mx,y:self.my,visible:self.mouse,cancelled:false,moved:false,last:u64::MAX,ext:false});}
+        serial::line("H5K: BROWSER_BUSY_BEGIN");
+    }
+    fn browser_busy_end(&mut self)->bool{
+        browser_poll();let state=unsafe{(&mut *ptr::addr_of_mut!(BUSY_CURSOR)).take()};
+        if let Some(b)=state{busy_hide(&b);self.mx=b.x;self.my=b.y;self.mouse=b.visible;self.saved_valid=false;self.ctrl=false;self.term.shift=false;self.cursor_show();serial::line("H5K: BROWSER_BUSY_END");b.cancelled}else{false}
+    }
     fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{self.c.restore_pixel(self.mx+x,self.my+y);}}self.saved_valid=false;}
     fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..14{for x in 0..=y/2{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}self.saved_valid=true;}
     fn bar_y(&self)->usize{self.c.fb.height.saturating_sub(52)}
@@ -330,26 +366,27 @@ impl Ui{
     fn literal_preview(&mut self){if !self.web_text{return;}let n=self.page.literal_update(&self.web[..self.web_len]);self.web_msg=if n>0{"Limited textContent update applied"}else{"No supported script update (general JS disabled)"};serial::metric("H5K: BROWSER_LITERAL_UPDATES=",n as u64);self.draw();}
     fn dynamic_preview(&mut self){
         if !self.web_text||self.page.scripts==0{return;}
-        self.web_msg="Running bounded QuickJS WebAssembly";self.draw();
+        self.web_msg="Running JavaScript - Esc to stop";self.draw();self.browser_busy_begin();
         let base=&self.source[..self.source_len];let nic=&mut self.nic;
         let result=self.page.run_js(&self.web[..self.web_len],base,self.ram,|l|{
-            let nic=nic.as_mut()?;let buffer=unsafe{&mut *ptr::addr_of_mut!(WEB_ASSET)};
+            if browser_poll(){return None;}let nic=nic.as_mut()?;let buffer=unsafe{&mut *ptr::addr_of_mut!(WEB_ASSET)};
             let n=nic.get_script(base,&l.url[..l.len],buffer).ok()?;
             if n==0||n>crate::webjs::SOURCE_CAP{return None;}
             let mut out=alloc::vec::Vec::new();out.try_reserve_exact(n).ok()?;out.extend_from_slice(&buffer[..n]);Some(out)
         });
+        let cancelled=self.browser_busy_end();if cancelled{self.web_msg="JavaScript stopped - static page retained";self.draw();return;}
         match result{Ok(r)=>{
             self.web_msg=if self.page.requires_js{"JavaScript pass - website browser APIs still incomplete"}else if r.errors>0||r.skipped>0{"JavaScript partial - unsupported or over-budget scripts skipped"}else if r.executed==0{"No supported JavaScript executed"}else{"QuickJS execution complete - limited DOM bindings"};
             serial::metric("H5K: WEB_CORE_JS_EXECUTED=",r.executed as u64);serial::metric("H5K: WEB_CORE_JS_DOM_UPDATES=",r.changes as u64);serial::metric("H5K: WEB_CORE_JS_EXTERNAL=",r.external as u64);serial::metric("H5K: WEB_CORE_JS_SKIPPED=",r.skipped as u64);serial::metric("H5K: WEB_CORE_JS_ERRORS=",r.errors as u64);serial::metric("H5K: WEB_CORE_JS_MODULES=",r.modules as u64);serial::metric("H5K: WEB_CORE_JS_MODULE_ERRORS=",r.module_errors as u64);
         },Err(e)=>{self.web_msg=e;serial::line("H5K: WEB_CORE_JS_FAILED");serial::line(e);}}self.draw();
     }
     fn load_graphics(&mut self){
-        if !self.web_ok||!self.web_text||self.web_status!=200{return;}self.web_msg="Loading bounded stylesheet and image resources";self.draw();let Some(nic)=self.nic.as_mut()else{return;};
+        if !self.web_ok||!self.web_text||self.web_status!=200{return;}self.web_msg="Loading graphics - Esc to stop";self.draw();if self.nic.is_none(){return;}self.browser_busy_begin();let nic=self.nic.as_mut().unwrap();
         let buffer=unsafe{&mut *ptr::addr_of_mut!(WEB_ASSET)};let css=unsafe{&mut *ptr::addr_of_mut!(WEB_CSS)};let mut used=0;let mut sheets=0;
         self.web_msg="Loading bounded stylesheet and image resources";
-        let list=self.page.stylesheets;for l in &list[..self.page.stylesheet_count]{if let Ok((n,final_url,len,status))=nic.get_follow(&l.url[..l.len],buffer){if status==200&&(!self.source[..self.source_len].starts_with(b"https://")||final_url[..len].starts_with(b"https://"))&&n<css.len().saturating_sub(used+1)&&core::str::from_utf8(&buffer[..n]).is_ok(){css[used..used+n].copy_from_slice(&buffer[..n]);used+=n;css[used]=b'\n';used+=1;sheets+=1;}}}
-        self.page.parse_at_width(&self.web[..self.web_len],&self.source[..self.source_len],&css[..used],self.win.w.saturating_sub(57));let list=self.page.image_urls;for (i,l) in list[..self.page.image_count].iter().enumerate(){if let Ok((n,final_url,len,status))=nic.get_follow(&l.url[..l.len],buffer){if status==200&&(!self.source[..self.source_len].starts_with(b"https://")||final_url[..len].starts_with(b"https://")){self.page.load_image(i,&buffer[..n]);}}}
-        self.web_msg="Graphics pass complete - limited CSS and images";self.web_document_diagnostics();self.web_scroll=0;serial::metric("H5K: BROWSER_STYLESHEETS_LOADED=",sheets as u64);serial::metric("H5K: BROWSER_STYLE_BLOCKS=",self.page.styled as u64);serial::metric("H5K: BROWSER_IMAGES_LOADED=",self.page.loaded_images as u64);self.draw();
+        let list=self.page.stylesheets;for l in &list[..self.page.stylesheet_count]{if browser_poll(){break;}if let Ok((n,final_url,len,status))=nic.get_follow(&l.url[..l.len],buffer){if status==200&&(!self.source[..self.source_len].starts_with(b"https://")||final_url[..len].starts_with(b"https://"))&&n<css.len().saturating_sub(used+1)&&core::str::from_utf8(&buffer[..n]).is_ok(){css[used..used+n].copy_from_slice(&buffer[..n]);used+=n;css[used]=b'\n';used+=1;sheets+=1;}}}
+        self.page.parse_at_width(&self.web[..self.web_len],&self.source[..self.source_len],&css[..used],self.win.w.saturating_sub(57));let list=self.page.image_urls;for (i,l) in list[..self.page.image_count].iter().enumerate(){if browser_poll(){break;}if let Ok((n,final_url,len,status))=nic.get_follow(&l.url[..l.len],buffer){if status==200&&(!self.source[..self.source_len].starts_with(b"https://")||final_url[..len].starts_with(b"https://")){self.page.load_image(i,&buffer[..n]);}}}
+        let cancelled=self.browser_busy_end();self.web_msg=if cancelled{"Graphics stopped - partial page retained"}else{"Graphics pass complete - limited CSS and images"};if !cancelled{self.web_document_diagnostics();}self.web_scroll=0;serial::metric("H5K: BROWSER_STYLESHEETS_LOADED=",sheets as u64);serial::metric("H5K: BROWSER_STYLE_BLOCKS=",self.page.styled as u64);serial::metric("H5K: BROWSER_IMAGES_LOADED=",self.page.loaded_images as u64);self.draw();
     }
     fn tab_save(&mut self){self.tabs[self.tab_index]=crate::http::Link{url:self.url,len:self.url_len};unsafe{(*ptr::addr_of_mut!(TAB_HISTORIES))[self.tab_index]=BrowserHistory{links:self.history,len:self.history_len,pos:self.history_pos};}}
     fn tab_cache_save(&mut self){let i=self.tab_index;unsafe{(*ptr::addr_of_mut!(WEB_CACHE))[i]=EMPTY_WEB;}if !self.web_ok||!self.web_text||self.web_len>CACHE_CAP||self.source_len==0{return;}self.page.cache_save(i);unsafe{ptr::copy_nonoverlapping(self.web.as_ptr(),ptr::addr_of_mut!(WEB_CACHE_BYTES).cast::<[u8;CACHE_CAP]>().add(i).cast::<u8>(),self.web_len);(*ptr::addr_of_mut!(WEB_CACHE))[i]=CachedWeb{valid:true,len:self.web_len,source:crate::http::Link{url:self.source,len:self.source_len},status:self.web_status,links:self.web_links,link_count:self.web_link_count,scroll:self.web_scroll,msg:self.web_msg};}}
@@ -367,15 +404,15 @@ impl Ui{
     fn tab_close_at(&mut self,index:usize){if self.tab_count<=1||index>=self.tab_count{return;}self.tab_save();self.tab_cache_save();let active=self.tab_index;let histories=unsafe{&mut *ptr::addr_of_mut!(TAB_HISTORIES)};for i in index..self.tab_count-1{self.tabs[i]=self.tabs[i+1];histories[i]=histories[i+1];crate::webpage::Page::cache_move(i+1,i);unsafe{(*ptr::addr_of_mut!(WEB_CACHE))[i]=(*ptr::addr_of!(WEB_CACHE))[i+1];ptr::copy_nonoverlapping(ptr::addr_of!(WEB_CACHE_BYTES).cast::<[u8;CACHE_CAP]>().add(i+1),ptr::addr_of_mut!(WEB_CACHE_BYTES).cast::<[u8;CACHE_CAP]>().add(i),1);}}self.tab_count-=1;self.tabs[self.tab_count]=crate::http::EMPTY_LINK;histories[self.tab_count]=EMPTY_HISTORY;unsafe{(*ptr::addr_of_mut!(WEB_CACHE))[self.tab_count]=EMPTY_WEB;}self.tab_index=if index<active{active-1}else{active.min(self.tab_count-1)};if index==active{self.tab_open();}else{serial::metric("H5K: BROWSER_TAB_COUNT=",self.tab_count as u64);self.draw();}}
     fn submit_form(&mut self){let Some(l)=self.page.form.target()else{self.web_msg="Search URL too long or unsupported form";self.draw();return;};self.page.form_focus=false;self.url=l.url;self.url_len=l.len;serial::line("H5K: WEB_CORE_FORM_SUBMITTED");self.fetch_web();}
     fn fetch_web(&mut self){
-        self.browser_settings=false;unsafe{(*ptr::addr_of_mut!(WEB_CACHE))[self.tab_index]=EMPTY_WEB;}self.web_ok=false;self.web_len=0;self.web_status=0;self.web_text=false;self.web_link_count=0;self.web_msg="Connecting via DHCP / HTTP...";self.draw();
+        self.browser_settings=false;unsafe{(*ptr::addr_of_mut!(WEB_CACHE))[self.tab_index]=EMPTY_WEB;}self.web_ok=false;self.web_len=0;self.web_status=0;self.web_text=false;self.web_link_count=0;self.web_msg="Connecting - Esc to stop";self.draw();
         if self.url_len==0{self.web_msg="Enter a website or search term";self.draw();return;}
         let raw=&self.url[..self.url_len];if !raw.starts_with(b"http://")&&!raw.starts_with(b"https://")&&(raw.contains(&b' ')||(!raw.contains(&b'.')&&!raw.contains(&b'/')&&!raw.contains(&b':'))){
             let mut form=crate::hi5webcore::Form::new();let prefix=b"https://www.google.com/search";form.action.url[..prefix.len()].copy_from_slice(prefix);form.action.len=prefix.len();form.name[0]=b'q';form.name_len=1;form.ready=true;if raw.len()>form.value.len(){self.web_msg="Search text too long";self.draw();return;}for &v in raw{form.input(v);}let Some(l)=form.target()else{self.web_msg="Encoded search URL too long";self.draw();return;};self.url=l.url;self.url_len=l.len;
         }
         if !self.url[..self.url_len].starts_with(b"http://")&&!self.url[..self.url_len].starts_with(b"https://")&&self.url_len+8<=self.url.len(){self.url.copy_within(..self.url_len,8);self.url[..8].copy_from_slice(b"https://");self.url_len+=8;}
-        if self.nic.is_none(){self.nic=Nic::open();}
-        if let Some(nic)=&mut self.nic{match nic.get_follow(&self.url[..self.url_len],self.web){Ok((n,url,len,status))=>{self.web_len=n;self.web_ok=true;self.web_status=status;self.source=url;self.source_len=len;self.url=url;self.url_len=len;self.web_msg=if status!=200{"Server returned an HTTP error page"}else if url[..len].starts_with(b"https://"){"HTTPS - certificate validated"}else{"HTTP response complete - not authenticated"};},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}else{self.web_msg="No supported E1000 network adapter";}
-        self.classify_web();self.remember_page();self.tab_save();self.draw();if self.auto_graphics&&self.web_text&&(self.page.stylesheet_count>0||self.page.image_count>0){self.load_graphics();}if self.auto_script&&self.web_text{self.dynamic_preview();}
+        self.browser_busy_begin();if self.nic.is_none(){self.nic=Nic::open();}
+        if let Some(nic)=&mut self.nic{match nic.get_follow(&self.url[..self.url_len],self.web){Ok((n,url,len,status))=>{self.web_len=n;self.web_ok=true;self.web_status=status;self.source=url;self.source_len=len;self.url=url;self.url_len=len;self.web_msg=if status!=200{"Server returned an HTTP error page"}else if url[..len].starts_with(b"https://"){"HTTPS - certificate validated"}else{"HTTP response complete - not authenticated"};},Err(e)=>{self.web_msg=e;if !browser_poll(){serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}}else{self.web_msg="No supported E1000 network adapter";}
+        self.classify_web();let cancelled=self.browser_busy_end();self.remember_page();self.tab_save();if cancelled{self.web_msg="Navigation stopped";}self.draw();if cancelled{return;}if self.auto_graphics&&self.web_text&&(self.page.stylesheet_count>0||self.page.image_count>0){self.load_graphics();if self.web_msg=="Graphics stopped - partial page retained"{return;}}if self.auto_script&&self.web_text{self.dynamic_preview();}
     }
     fn previous_download(&mut self){if let Some(d)=self.store.load_previous_download(self.web){self.web_len=d.len;self.web_ok=true;self.web_status=200;self.source=d.url;self.source_len=d.url_len;self.url=d.url;self.url_len=d.url_len;self.web_msg="Previous saved download - not authenticated";self.classify_web();serial::line("H5K: BROWSER_PREVIOUS_DOWNLOAD");}else{self.web_msg="No previous valid download";}self.draw();}
     fn save_web(&mut self){if self.web_ok&&self.web_status==200{if self.web_len>crate::disk::DL_CAP{self.web_msg="Save limit 1 MiB - preview only";self.draw();return;}self.web_msg=if self.store.save_download(&self.web[..self.web_len],&self.source[..self.source_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
@@ -501,10 +538,10 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     ui.draw();if ui.auth.stage==1{serial::line("H5K: ACCOUNT_SETUP_READY");}else if ui.auth.stage==7{serial::line("H5K: ACCOUNT_LOGIN_READY");}serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");
     p::timer_init();let start=p::ticks();while p::ticks().wrapping_sub(start)<3{p::wait_tick();}
     serial::line("H5K: TIMER_IRQ_OK");if !crate::net::self_test()||!crate::http::navigation_test()||!crate::account::self_test()||!crate::webpage::self_test(){serial::line("H5K: FAIL NETWORK_FORMAT_TEST");crate::kernel::halt();}serial::line("H5K: NET_FORMAT_TEST_OK");serial::line("H5K: BROWSER_LAYOUT_SELFTEST_OK");serial::line("H5K: KERNEL_READY");
-    let mut packet=[0u8;3];let mut pos=0;let mut down=false;let mut ext=false;
+    let mut ext=false;
     loop{match ui.tasks.dispatch(){
         0=>{for _ in 0..32{let st=p::input(0x64);if st&1==0{break;}let b=p::input(0x60);if st&0x20!=0{
-            if pos==0&&b&8==0{continue;}packet[pos]=b;pos+=1;if pos==3{pos=0;let flags=packet[0];if flags&0xc0!=0{continue;}let dx=packet[1]as isize-if flags&0x10!=0{256}else{0};let dy=packet[2]as isize-if flags&0x20!=0{256}else{0};let pressed=flags&1!=0;ui.move_pointer(dx,dy,pressed,down);down=pressed;}
+            if let Some((dx,dy,pressed,was))=mouse_byte(b){ui.move_pointer(dx,dy,pressed,was);}
         }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.auth.stage!=0{ }else if ui.app==Some(App::WinLive)&&b&0x80==0{let vk=match b{0x48=>38,0x50=>40,0x4b=>37,0x4d=>39,0x47=>36,0x4f=>35,0x49=>33,0x51=>34,0x53=>46,_=>0};if vk!=0{crate::trial::live_key(vk,None);if !crate::trial::live_active(){ui.close();}else{ui.draw();}}}else if ui.app==Some(App::Browser)&&ui.web_text&&b&0x80==0{if b==0x49||b==0x48{ui.web_scroll=ui.web_scroll.saturating_sub(if b==0x49{5}else{1});ui.draw();}else if b==0x51||b==0x50{ui.web_scroll=(ui.web_scroll+if b==0x51{5}else{1}).min(ui.page.rows(ui.win.w.saturating_sub(57)).saturating_sub(1));ui.draw();}}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
         1=>{if ui.auth.stage==0&&ui.app==Some(App::WinLive){crate::trial::live_tick();if !crate::trial::live_active(){ui.close();}}else{core::hint::spin_loop();}},_=>p::wait_tick(),
     }}

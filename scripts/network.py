@@ -18,6 +18,14 @@ assert len(PAYLOAD)<=4*1024*1024
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
+        if MODE=="browse" and self.path=="/long.html":
+            body=b"<html><body><p>Static page survives a stopped script</p><script>let n=0;while(true){n++;}</script></body></html>"
+            self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
+        if MODE=="browse" and self.path=="/slow.html":
+            self.server.slow_started=True
+            time.sleep(4)
+            body=b"<html><body><p>Slow page loaded</p></body></html>"
+            self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path in ("/form.html","/search?q=hi5+test"):
             body=(b"<html><body><center><form action='/search'><input name='q' type='text'><input type='submit' value='Search'></form></center></body></html>" if self.path=="/form.html" else b"<html><head><style>div{display:none}.result{display:block}.result a.link{color:#123456}</style></head><body><div class='result'><h1>Search received</h1><a class='link' href='/index.html'>Open real result</a></div></body></html>")
             if self.path.startswith("/search?"):self.server.form_received=True
@@ -109,8 +117,23 @@ def main():
                         key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
                 if MODE=="browse":
                     key("ctrl-l")
+                    for ch in f"http://10.0.2.2:{server.server_port}/slow.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    prior=len(log.read_bytes());key("ret")
+                    deadline=time.monotonic()+8
+                    while not getattr(server,"slow_started",False) and time.monotonic()<deadline:time.sleep(.05)
+                    assert getattr(server,"slow_started",False),"Slow fixture did not start"
+                    call("human-monitor-command",{"command-line":"mouse_move 30 12"})
+                    deadline=time.monotonic()+3
+                    while b"BROWSER_BUSY_POINTER_MOVED" not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.05)
+                    tail=log.read_bytes()[prior:]
+                    assert b"BROWSER_BUSY_POINTER_MOVED" in tail and b"BROWSER_PAGE_RENDERED" not in tail,"Pointer did not move while HTTP pending"
+                    wait(b"BROWSER_PAGE_RENDERED",30)
+                    key("ctrl-l")
                     for ch in f"http://10.0.2.2:{server.server_port}/index.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
-                    key("ret");wait(b"BROWSER_PAGE_RENDERED",30);wait(b"BROWSER_LINKS=0x0000000000000001",5)
+                    prior=log.read_bytes().count(b"BROWSER_PAGE_RENDERED");key("ret");deadline=time.monotonic()+30
+                    while log.read_bytes().count(b"BROWSER_PAGE_RENDERED")<=prior and time.monotonic()<deadline:time.sleep(.1)
+                    assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Index document did not render"
+                    wait(b"BROWSER_LINKS=0x0000000000000001",5)
                     wait(b"BROWSER_STYLE_BLOCKS=0x0000000000000001",5)
                     key("ctrl-i");wait(b"BROWSER_STYLESHEETS_LOADED=0x0000000000000001",45);wait(b"BROWSER_IMAGES_LOADED=0x0000000000000002",45);wait(b"BROWSER_STYLE_BLOCKS=0x0000000000000002",5)
                     key("ctrl-shift-j");wait(b"BROWSER_LITERAL_UPDATES=0x0000000000000001",5)
@@ -226,6 +249,27 @@ def main():
                     assert b"WEB_CORE_JS_MODULES=0x0000000000000002" in tail and b"WEB_CORE_JS_DOM_UPDATES=0x0000000000000002" in tail and b"WEB_CORE_JS_MODULE_ERRORS=0x0000000000000000" in tail,"Module import or Promise DOM update failed"
                     assert getattr(server,"module_received",0)==2,"Module resources not downloaded"
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-module-512m.ppm")})
+                    key("ctrl-l")
+                    for ch in f"http://10.0.2.2:{server.server_port}/long.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    prior=log.read_bytes().count(b"BROWSER_PAGE_RENDERED");key("ret")
+                    deadline=time.monotonic()+30
+                    while log.read_bytes().count(b"BROWSER_PAGE_RENDERED")<=prior and time.monotonic()<deadline:time.sleep(.05)
+                    assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Long-script fixture did not render"
+                    prior=len(log.read_bytes());call("human-monitor-command",{"command-line":"sendkey ctrl-j"})
+                    deadline=time.monotonic()+5
+                    while b"BROWSER_BUSY_BEGIN" not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.01)
+                    assert b"BROWSER_BUSY_BEGIN" in log.read_bytes()[prior:],"Long JS workload did not start"
+                    call("human-monitor-command",{"command-line":"mouse_move 24 10"})
+                    deadline=time.monotonic()+4
+                    while b"BROWSER_BUSY_POINTER_MOVED" not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.01)
+                    tail=log.read_bytes()[prior:]
+                    assert b"BROWSER_BUSY_POINTER_MOVED" in tail and b"BROWSER_BUSY_END" not in tail,"Pointer did not move during JavaScript"
+                    call("human-monitor-command",{"command-line":"sendkey esc"})
+                    deadline=time.monotonic()+15
+                    while b"BROWSER_BUSY_END" not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.05)
+                    tail=log.read_bytes()[prior:]
+                    assert b"BROWSER_CANCEL_REQUESTED" in tail and b"BROWSER_BUSY_END" in tail,"Escape did not cancel JavaScript"
+                    call("screendump",{"filename":str(ROOT/"dist"/"browser-cancel-512m.ppm")})
                     key("ctrl-w");wait(b"BROWSER_TAB_COUNT=0x0000000000000001",30)
                 call("quit")
             proc.wait(timeout=10)

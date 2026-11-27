@@ -1,12 +1,18 @@
 //! Fuel-limited QuickJS-NG WebAssembly adapter. No host filesystem, sockets,
  //! DOM pointers or arbitrary native calls are exposed to the module.
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64,Ordering};
 use wasmi::{Caller,Config, Engine, ExternType, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Value};
 const WASM:&[u8]=include_bytes!("../target/hi5-js/quickjs.wasm");
 pub const SOURCE_CAP:usize=512*1024;
-const FUEL:u64=360_000_000;
+const FUEL_SMALL:u64=480_000_000;
+const FUEL_LARGE:u64=720_000_000;
+const CALL_TICKS:u64=1500;
+// Single active browser session on the desktop thread.
+static CALL_DEADLINE:AtomicU64=AtomicU64::new(u64::MAX);
+fn cooperative_poll()->bool{crate::desktop::browser_poll()||crate::platform::ticks()>=CALL_DEADLINE.load(Ordering::Relaxed)}
 const MODULE_CAP:usize=2*1024*1024;
-struct Host{limits:StoreLimits,modules:Vec<(Vec<u8>,Vec<u8>)>,bytes:usize}
+struct Host{limits:StoreLimits,modules:Vec<(Vec<u8>,Vec<u8>)>,bytes:usize,deadline:u64,job_errors:usize}
 pub struct Session{store:Store<Host>,instance:Instance,memory:Memory}
 impl Session{
     pub fn new(ram_mib:u64)->Result<Self,&'static str>{
@@ -14,14 +20,15 @@ impl Session{
         let mut config=Config::default();config.consume_fuel(true);
         let engine=Engine::new(&config);
         let module=Module::new(&engine,WASM).map_err(|_|"invalid WASM module")?;
-        let mut store=Store::new(&engine,Host{limits:StoreLimitsBuilder::new().memory_size(memory_limit).table_elements(8192).instances(1).memories(1).tables(1).trap_on_grow_failure(true).build(),modules:Vec::new(),bytes:0});
-        store.limiter(|v|&mut v.limits);store.add_fuel(FUEL).map_err(|_|"fuel setup")?;
-        let mut linker=Linker::new(&engine);
+        let mut store=Store::new(&engine,Host{limits:StoreLimitsBuilder::new().memory_size(memory_limit).table_elements(8192).instances(1).memories(1).tables(1).trap_on_grow_failure(true).build(),modules:Vec::new(),bytes:0,deadline:u64::MAX,job_errors:0});
+        CALL_DEADLINE.store(crate::platform::ticks().saturating_add(CALL_TICKS),Ordering::Relaxed);store.set_hi5_fuel_poll(cooperative_poll);
+        store.limiter(|v|&mut v.limits);store.add_fuel(if ram_mib>=384{FUEL_LARGE}else{FUEL_SMALL}).map_err(|_|"fuel setup")?;
+        let mut linker=Linker::<Host>::new(&engine);
         for import in module.imports(){
             let ExternType::Func(ty)=import.ty() else{return Err("non-function import");};
             let kind=match (import.module(),import.name()){
                 ("env","host_get_timezone_offset")=>0,
-                ("env","host_interrupt")=>0,
+                ("env","host_interrupt")=>5,
                 ("env","host_promise_rejection")=>0,
                 ("env","host_module_normalize")=>3,
                 ("env","host_module_load")=>4,
@@ -36,7 +43,7 @@ impl Session{
                     let success=params.get(2).and_then(Value::i32).filter(|v|*v>=0)
                         .and_then(|at|caller.get_export("memory").and_then(|v|v.into_memory()).map(|m|m.write(&mut caller,at as usize,&0u64.to_le_bytes()).is_ok())).unwrap_or(false);
                     if let Some(out)=results.first_mut(){*out=Value::I32(if success{0}else{21});}
-                }else if kind==2{if let Some(out)=results.first_mut(){*out=Value::I32(52);}}else if kind==3||kind==4{let p=module_host(&mut caller,kind,params).unwrap_or(0);if let Some(out)=results.first_mut(){*out=Value::I32(p);}}
+                }else if kind==2{if let Some(out)=results.first_mut(){*out=Value::I32(52);}}else if kind==5{if let Some(out)=results.first_mut(){*out=Value::I32((crate::desktop::browser_poll()||crate::platform::ticks()>=caller.data().deadline) as i32);}}else if kind==3||kind==4{let p=module_host(&mut caller,kind,params).unwrap_or(0);if let Some(out)=results.first_mut(){*out=Value::I32(p);}}
                 // The env shims deliberately return typed zero/null defaults.
                 Ok(())
             }).map_err(|_|"WASM import setup")?;
@@ -49,6 +56,7 @@ impl Session{
         if init.call(&mut store,()).map_err(|_|"QuickJS initialization trapped")?!=0{return Err("QuickJS initialization failed");}
         instance.get_typed_func::<i32,()>(&store,"qjs_set_memory_limit").map_err(|_|"memory limit export")?.call(&mut store,js_limit).map_err(|_|"memory limit setup")?;
         instance.get_typed_func::<i32,()>(&store,"qjs_set_module_loader").map_err(|_|"module loader export")?.call(&mut store,1).map_err(|_|"module loader init")?;
+        instance.get_typed_func::<i32,()>(&store,"qjs_set_interrupt_handler").map_err(|_|"interrupt handler export")?.call(&mut store,1).map_err(|_|"interrupt handler init")?;
         Ok(Self{store,instance,memory})
     }
     fn alloc(&mut self,n:usize)->Result<i32,&'static str>{
@@ -58,14 +66,16 @@ impl Session{
     }
     fn free(&mut self,p:i32){if let Ok(f)=self.instance.get_typed_func::<i32,()>(&self.store,"wasm_free"){let _=f.call(&mut self.store,p);}}
     fn input(&mut self,b:&[u8])->Result<i32,&'static str>{let p=self.alloc(b.len()+1)?;self.memory.write(&mut self.store,p as usize,b).map_err(|_|"WASM write")?;self.memory.write(&mut self.store,p as usize+b.len(),&[0]).map_err(|_|"WASM write")?;Ok(p)}
+    fn begin_call(&mut self){let deadline=crate::platform::ticks().saturating_add(CALL_TICKS);self.store.data_mut().deadline=deadline;CALL_DEADLINE.store(deadline,Ordering::Relaxed);}
+    fn check_call(&self)->Result<(),&'static str>{if crate::desktop::browser_poll(){Err("JavaScript cancelled")}else if crate::platform::ticks()>=self.store.data().deadline{Err("JavaScript time slice exceeded")}else{Ok(())}}
     fn evaluate(&mut self,src:&[u8])->Result<i32,&'static str>{
-        if src.len()>SOURCE_CAP{return Err("JS size limit");}
+        if src.len()>SOURCE_CAP{return Err("JS size limit");}self.begin_call();self.check_call()?;
         let p=self.input(src)?;let file=self.input(b"hi5web")?;
         let eval=self.instance.get_typed_func::<(i32,i32,i32,i32),i32>(&self.store,"qjs_eval").map_err(|_|"eval export")?;
-        let v=eval.call(&mut self.store,(p,src.len()as i32,file,0)).map_err(|_|"JavaScript budget or execution trap")?;
+        self.check_call()?;let v=eval.call(&mut self.store,(p,src.len()as i32,file,0)).map_err(|e|trap_message(&e))?;
         self.free(p);self.free(file);
         if v<=0{return Err("JavaScript result allocation");}
-        let exception=self.instance.get_typed_func::<i32,i32>(&self.store,"qjs_is_exception").map_err(|_|"exception export")?.call(&mut self.store,v).map_err(|_|"exception check trap")?;
+        self.check_call()?;let exception=self.instance.get_typed_func::<i32,i32>(&self.store,"qjs_is_exception").map_err(|_|"exception export")?.call(&mut self.store,v).map_err(|_|"exception check trap")?;
         if exception!=0{self.release(v)?;let e=self.instance.get_typed_func::<(),i32>(&self.store,"qjs_get_exception").map_err(|_|"exception retrieval export")?.call(&mut self.store,()).map_err(|_|"exception retrieval trap")?;if e<=0{return Err("Exception allocation failed");}self.release(e)?;return Err("JavaScript exception - unsupported API or syntax");}Ok(v)
     }
     fn release(&mut self,v:i32)->Result<(),&'static str>{self.instance.get_typed_func::<i32,()>(&self.store,"qjs_free_value").map_err(|_|"free value export")?.call(&mut self.store,v).map_err(|_|"free value trap")}
@@ -73,11 +83,13 @@ impl Session{
         if name.len()>200||source.len()>SOURCE_CAP||source.len()>MODULE_CAP-self.store.data().bytes||self.store.data().modules.len()>=32||core::str::from_utf8(&source).is_err(){return false;}
         if self.store.data().modules.iter().any(|(n,_)|n==name){return true;}let mut key=Vec::new();if key.try_reserve_exact(name.len()).is_err(){return false;}key.extend_from_slice(name);let h=self.store.data_mut();if h.modules.try_reserve(1).is_err(){return false;}h.bytes+=source.len();h.modules.push((key,source));true
     }
+    pub fn job_errors(&self)->usize{self.store.data().job_errors}
     pub fn drain_jobs(&mut self)->Result<(),&'static str>{
+        self.begin_call();
         let pending=self.instance.get_typed_func::<(),i32>(&self.store,"qjs_is_job_pending").map_err(|_|"promise pending export")?;
         let execute=self.instance.get_typed_func::<(),i32>(&self.store,"qjs_execute_pending_job").map_err(|_|"promise job export")?;
-        for _ in 0..64{if pending.call(&mut self.store,()).map_err(|_|"Promise budget trap")?==0{return Ok(());}if execute.call(&mut self.store,()).map_err(|_|"Promise budget trap")?<0{return Err("Promise job failed");}}
-        if pending.call(&mut self.store,()).map_err(|_|"Promise budget trap")?!=0{Err("Promise job budget exhausted")}else{Ok(())}
+        for _ in 0..64{self.check_call()?;if pending.call(&mut self.store,()).map_err(|e|trap_message(&e))?==0{return Ok(());}if execute.call(&mut self.store,()).map_err(|e|trap_message(&e))?<0{self.check_call()?;let e=self.instance.get_typed_func::<(),i32>(&self.store,"qjs_get_exception").map_err(|_|"exception retrieval export")?.call(&mut self.store,()).map_err(|e|trap_message(&e))?;if e<=0{return Err("Promise exception allocation failed");}self.release(e)?;self.store.data_mut().job_errors+=1;}}
+        self.check_call()?;if pending.call(&mut self.store,()).map_err(|e|trap_message(&e))?!=0{Err("Promise job budget exhausted")}else{Ok(())}
     }
     pub fn exec_module(&mut self,name:&[u8])->Result<(),&'static str>{
         if name.len()>200||!name.iter().all(|b|(33..127).contains(b)&&!matches!(*b,b'"'|b'\\'|b'\'')){return Err("Invalid module name");}
@@ -98,6 +110,11 @@ impl Session{
         self.instance.get_typed_func::<i32,()>(&self.store,"qjs_free_cstring").map_err(|_|"free string export")?.call(&mut self.store,s).map_err(|_|"free string trap")?;
         self.release(v)?;self.free(lp);Ok(n)
     }
+}
+fn trap_message(e:&wasmi::core::Trap)->&'static str{
+    use wasmi::core::TrapCode;
+    if crate::desktop::browser_poll(){return "JavaScript cancelled";}if crate::platform::ticks()>=CALL_DEADLINE.load(Ordering::Relaxed){return "JavaScript time slice exceeded";}
+    match e.trap_code(){Some(TrapCode::OutOfFuel)=>"JavaScript execution fuel exhausted",Some(TrapCode::MemoryOutOfBounds)=>"JavaScript WASM memory bounds trap",Some(TrapCode::StackOverflow)=>"JavaScript WASM stack overflow",_=>"JavaScript WebAssembly execution trap"}
 }
 fn guest_string(c:&Caller<'_,Host>,p:i32)->Option<Vec<u8>>{
     if p<=0{return None;}let m=c.get_export("memory")?.into_memory()?;let d=m.data(c);let tail=d.get(p as usize..)?;let len=tail.iter().take(201).position(|v|*v==0)?;if len==0{return None;}let mut s=Vec::new();s.try_reserve_exact(len).ok()?;s.extend_from_slice(&tail[..len]);Some(s)

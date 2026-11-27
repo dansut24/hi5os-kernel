@@ -26,10 +26,18 @@ fn attr<'a>(mut a:&'a[u8],want:&[u8])->Option<&'a[u8]>{
     while !a.is_empty(){a=trim(a);if a.is_empty(){break;}let n=a.iter().position(|b|b.is_ascii_whitespace()||*b==b'=').unwrap_or(a.len());if n==0{return None;}let k=&a[..n];a=trim(&a[n..]);if a.first()!=Some(&b'='){if k.eq_ignore_ascii_case(want){return Some(&[]);}continue;}a=trim(&a[1..]);let q=*a.first()?;let(v,rest)=if q==b'\''||q==b'"'{let e=a[1..].iter().position(|b|*b==q)?+1;(&a[1..e],&a[e+1..])}else{let e=a.iter().position(|b|b.is_ascii_whitespace()).unwrap_or(a.len());(&a[..e],&a[e..])};if k.eq_ignore_ascii_case(want){return Some(v);}a=rest;
     }None
 }
-fn rgb(s:&[u8])->Option<Color>{let s=trim(s);let named=[(b"red".as_slice(),[220,30,30]),(b"blue",[20,90,210]),(b"black",[0,0,0]),(b"white",[255,255,255]),(b"green",[0,128,0]),(b"navy",[0,0,128]),(b"gray",[128,128,128])];for(n,c)in named{if s.eq_ignore_ascii_case(n){return Some(c);}}if s.len()==4&&s[0]==b'#'{let mut c=[0;3];for i in 0..3{c[i]=((s[i+1]as char).to_digit(16)?*17)as u8;}return Some(c);}if s.len()!=7||s[0]!=b'#'{return None;}let mut c=[0;3];for i in 0..3{let h=(s[1+i*2]as char).to_digit(16)?;let l=(s[2+i*2]as char).to_digit(16)?;c[i]=(h*16+l)as u8;}Some(c)}
+fn rgb(s:&[u8])->Option<Color>{let s=trim(s);if let Some(c)=rgb_function(s){return Some(c);}let named=[(b"red".as_slice(),[220,30,30]),(b"blue",[20,90,210]),(b"black",[0,0,0]),(b"white",[255,255,255]),(b"green",[0,128,0]),(b"navy",[0,0,128]),(b"gray",[128,128,128])];for(n,c)in named{if s.eq_ignore_ascii_case(n){return Some(c);}}if s.len()==4&&s[0]==b'#'{let mut c=[0;3];for i in 0..3{c[i]=((s[i+1]as char).to_digit(16)?*17)as u8;}return Some(c);}if s.len()!=7||s[0]!=b'#'{return None;}let mut c=[0;3];for i in 0..3{let h=(s[1+i*2]as char).to_digit(16)?;let l=(s[2+i*2]as char).to_digit(16)?;c[i]=(h*16+l)as u8;}Some(c)}
+fn rgb_function(s:&[u8])->Option<Color>{
+    let inner=s.strip_prefix(b"rgb(").or_else(||s.strip_prefix(b"rgba("))?.strip_suffix(b")")?;
+    let mut parts=inner.split(|v|v.is_ascii_whitespace()||*v==b','||*v==b'/').filter(|v|!v.is_empty());let mut c=[0u8;3];
+    for v in &mut c{let p=parts.next()?;let percent=p.ends_with(b"%");let p=p.strip_suffix(b"%").unwrap_or(p);if p.is_empty()||p.len()>3||!p.iter().all(u8::is_ascii_digit){return None;}let mut n=0u16;for b in p{n=n*10+(b-48)as u16;}*v=if percent{(n.min(100)*255/100)as u8}else{n.min(255)as u8};}
+    // Only opaque colors are returned; alpha compositing is not implemented.
+    if let Some(a)=parts.next(){if !matches!(a,b"1"|b"1.0"|b"100%"){return None;}}if parts.next().is_some(){return None;}Some(c)
+}
+fn background(s:&[u8])->Option<Color>{if let Some(c)=rgb(s){return Some(c);}let s=trim(s);if s.starts_with(b"linear-gradient(")||s.starts_with(b"radial-gradient("){for token in s.split(|v|v.is_ascii_whitespace()||matches!(*v,b','|b'(' |b')')){if token.starts_with(b"#"){if let Some(c)=rgb(token){return Some(c);}}}}None}
 fn px(s:&[u8])->Option<u8>{let s=s.strip_suffix(b"px").unwrap_or(s);if s.is_empty()||s.len()>3||!s.iter().all(u8::is_ascii_digit){return None;}let mut n=0u16;for v in s{n=n*10+(v-48)as u16;}Some(n.min(40)as u8)}
 fn dim(s:&[u8])->Option<u16>{let s=s.strip_suffix(b"px").unwrap_or(s);if s.is_empty()||s.len()>4||!s.iter().all(u8::is_ascii_digit){return None;}let mut n=0u16;for v in s{n=n*10+(v-48)as u16;}Some(n.min(2048))}
-fn style(b:&mut Block,s:&[u8]){for decl in s.split(|v|*v==b';'){if let Some(i)=decl.iter().position(|v|*v==b':'){let k=trim(&decl[..i]);let v=trim(&decl[i+1..]);let v=trim(v.strip_suffix(b"!important").unwrap_or(v));if k.eq_ignore_ascii_case(b"color"){if let Some(c)=rgb(v){b.color=Some(c);}}else if k.eq_ignore_ascii_case(b"background-color")||k.eq_ignore_ascii_case(b"background"){if let Some(c)=rgb(v){b.bg=Some(c);}}else if k.eq_ignore_ascii_case(b"font-weight")&&matches!(v,b"bold"|b"700"){b.kind=1;}else if k.eq_ignore_ascii_case(b"font-size")&&matches!(v,b"24px"|b"28px"|b"32px"){b.kind=1;}else if k.eq_ignore_ascii_case(b"text-align"){b.align_set=true;b.align=if v.eq_ignore_ascii_case(b"center"){1}else if v.eq_ignore_ascii_case(b"right"){2}else{0};}else if k.eq_ignore_ascii_case(b"position"){b.abs_pos=matches!(v,b"absolute"|b"fixed");}else if k.eq_ignore_ascii_case(b"clip")||k.eq_ignore_ascii_case(b"clip-path"){if v.starts_with(b"rect(0")||v.starts_with(b"inset(50%"){b.clip_hidden=true;}}else if k.eq_ignore_ascii_case(b"width"){if let Some(n)=v.strip_suffix(b"%").and_then(dim){b.width_pct=n.min(100)as u8;b.width_px=0;}else if let Some(n)=dim(v){b.width_px=n;b.width_pct=0;}}else if k.eq_ignore_ascii_case(b"max-width"){if let Some(n)=dim(v){b.max_px=n;}}else if k.eq_ignore_ascii_case(b"height")||k.eq_ignore_ascii_case(b"min-height"){if let Some(n)=dim(v){b.min_h=n.min(600);}}else if k.eq_ignore_ascii_case(b"list-style")||k.eq_ignore_ascii_case(b"list-style-type"){if v==b"none"{b.list_none=true;}}else if k.eq_ignore_ascii_case(b"padding"){if let Some(n)=px(v){b.padding=n;}}else if k.eq_ignore_ascii_case(b"margin"){if let Some(n)=px(v){b.margin=n;}else if v==b"auto"||v.ends_with(b" auto"){b.auto_margin=true;}}else if k.eq_ignore_ascii_case(b"gap"){if let Some(n)=px(v){b.gap=n.min(24);}}else if k.eq_ignore_ascii_case(b"grid-template-columns"){let count=v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).count();if (2..=4).contains(&count)&&v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).all(|x|x==b"1fr"){b.columns=count as u8;}else if let Some(inner)=v.strip_prefix(b"repeat(").and_then(|x|x.strip_suffix(b")")){if let Some(i)=inner.iter().position(|x|*x==b','){if trim(&inner[i+1..])==b"1fr"{if let Some(n)=dim(trim(&inner[..i])){if (2..=4).contains(&n){b.columns=n as u8;}}}}}}else if k.eq_ignore_ascii_case(b"flex-direction")&&v.eq_ignore_ascii_case(b"column"){b.layout=3;}else if k.eq_ignore_ascii_case(b"display"){if v.eq_ignore_ascii_case(b"none"){b.display=Some(false);}else if [b"block".as_slice(),b"inline",b"inline-block",b"flex",b"grid",b"table",b"list-item",b"contents"].iter().any(|x|v.eq_ignore_ascii_case(x)){b.display=Some(true);if v.eq_ignore_ascii_case(b"flex"){if b.layout!=3{b.layout=1;}}else if v.eq_ignore_ascii_case(b"grid"){b.layout=2;}else{b.layout=0;}}}}}}
+fn style(b:&mut Block,s:&[u8]){for decl in s.split(|v|*v==b';'){if let Some(i)=decl.iter().position(|v|*v==b':'){let k=trim(&decl[..i]);let v=trim(&decl[i+1..]);let v=trim(v.strip_suffix(b"!important").unwrap_or(v));if k.eq_ignore_ascii_case(b"color"){if let Some(c)=rgb(v){b.color=Some(c);}}else if k.eq_ignore_ascii_case(b"background-color")||k.eq_ignore_ascii_case(b"background"){if let Some(c)=background(v){b.bg=Some(c);}}else if k.eq_ignore_ascii_case(b"font-weight")&&matches!(v,b"bold"|b"700"){b.kind=1;}else if k.eq_ignore_ascii_case(b"font-size")&&matches!(v,b"24px"|b"28px"|b"32px"){b.kind=1;}else if k.eq_ignore_ascii_case(b"text-align"){b.align_set=true;b.align=if v.eq_ignore_ascii_case(b"center"){1}else if v.eq_ignore_ascii_case(b"right"){2}else{0};}else if k.eq_ignore_ascii_case(b"position"){b.abs_pos=matches!(v,b"absolute"|b"fixed");}else if k.eq_ignore_ascii_case(b"clip")||k.eq_ignore_ascii_case(b"clip-path"){if v.starts_with(b"rect(0")||v.starts_with(b"inset(50%"){b.clip_hidden=true;}}else if k.eq_ignore_ascii_case(b"width"){if let Some(n)=v.strip_suffix(b"%").and_then(dim){b.width_pct=n.min(100)as u8;b.width_px=0;}else if let Some(n)=dim(v){b.width_px=n;b.width_pct=0;}}else if k.eq_ignore_ascii_case(b"max-width"){if let Some(n)=dim(v){b.max_px=n;}}else if k.eq_ignore_ascii_case(b"height")||k.eq_ignore_ascii_case(b"min-height"){if let Some(n)=dim(v){b.min_h=n.min(600);}}else if k.eq_ignore_ascii_case(b"list-style")||k.eq_ignore_ascii_case(b"list-style-type"){if v==b"none"{b.list_none=true;}}else if k.eq_ignore_ascii_case(b"padding"){if let Some(n)=px(v){b.padding=n;}}else if k.eq_ignore_ascii_case(b"margin"){if let Some(n)=px(v){b.margin=n;}else if v==b"auto"||v.ends_with(b" auto"){b.auto_margin=true;}}else if k.eq_ignore_ascii_case(b"gap"){if let Some(n)=px(v){b.gap=n.min(24);}}else if k.eq_ignore_ascii_case(b"grid-template-columns"){let count=v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).count();if (2..=4).contains(&count)&&v.split(|b|b.is_ascii_whitespace()).filter(|x|!x.is_empty()).all(|x|x==b"1fr"){b.columns=count as u8;}else if let Some(inner)=v.strip_prefix(b"repeat(").and_then(|x|x.strip_suffix(b")")){if let Some(i)=inner.iter().position(|x|*x==b','){if trim(&inner[i+1..])==b"1fr"{if let Some(n)=dim(trim(&inner[..i])){if (2..=4).contains(&n){b.columns=n as u8;}}}}}}else if k.eq_ignore_ascii_case(b"flex-direction")&&v.eq_ignore_ascii_case(b"column"){b.layout=3;}else if k.eq_ignore_ascii_case(b"display"){if v.eq_ignore_ascii_case(b"none"){b.display=Some(false);}else if [b"block".as_slice(),b"inline",b"inline-block",b"flex",b"grid",b"table",b"list-item",b"contents"].iter().any(|x|v.eq_ignore_ascii_case(x)){b.display=Some(true);if v.eq_ignore_ascii_case(b"flex"){if b.layout!=3{b.layout=1;}}else if v.eq_ignore_ascii_case(b"grid"){b.layout=2;}else{b.layout=0;}}}}}}
 #[derive(Clone,Copy)]struct Cell{index:usize,start:usize,end:usize,x:usize,w:usize,last:usize}
 struct LayoutRow{cells:[Cell;4],len:usize,h:usize}
 #[derive(Default)]pub struct JsReport{pub executed:usize,pub skipped:usize,pub errors:usize,pub external:usize,pub changes:usize,pub modules:usize,pub module_errors:usize}
@@ -42,9 +50,9 @@ impl Page{
     pub fn title(&self)->&str{core::str::from_utf8(&self.title[..self.title_len]).unwrap_or("")}
     fn push(&mut self,b:&mut Block){if b.len>0&&trim(&b.buf[..b.len]).len()>0&&!b.hidden&&self.count<MAX{if b.color.is_some()||b.bg.is_some(){self.styled+=1;}self.blocks[self.count]=*b;self.count+=1;}*b=EMPTY;}
     fn text(&mut self,b:&mut Block,t:&[u8]){
-        let mut i=0;while i<t.len()&&self.count<MAX{let mut ch=t[i];let mut step=1;if ch==b'&'{for(s,v)in[(b"&amp;".as_slice(),b'&'),(b"&lt;",b'<'),(b"&gt;",b'>'),(b"&quot;",b'"'),(b"&#39;",b'\''),(b"&nbsp;",b' '),(b"&copy;",b'c')]{if t[i..].starts_with(s){ch=v;step=s.len();break;}}}
+        let mut i=0;while i<t.len()&&self.count<MAX{let mut ch=t[i];let mut step=1;if ch==b'&'{if let Some((v,n))=numeric_entity(&t[i..]){ch=v;step=n;}else{for(s,v)in[(b"&amp;".as_slice(),b'&'),(b"&lt;",b'<'),(b"&gt;",b'>'),(b"&quot;",b'"'),(b"&#39;",b'\''),(b"&nbsp;",b' '),(b"&copy;",b'c')]{if t[i..].starts_with(s){ch=v;step=s.len();break;}}}}
             if ch.is_ascii_whitespace(){ch=b' ';if b.len==0||b.buf[b.len-1]==b' '{i+=step;continue;}}
-            if ch>=128{if ch&0xc0==0x80{i+=step;continue;}ch=b'?';}
+            if ch>=128{if let Some((v,n))=utf8_ascii(&t[i..]){ch=v;step=n;}else if ch&0xc0==0x80{i+=step;continue;}else{ch=b'?';}}
             if ch>=32&&ch<127{if b.len==TEXT{let mut next=*b;next.len=0;next.id_len=0;self.push(b);*b=next;}b.buf[b.len]=ch;b.len+=1;}i+=step;
         }
     }
@@ -53,7 +61,7 @@ impl Page{
     pub fn parse_at_width(&mut self,src:&[u8],base:&[u8],css:&[u8],viewport:usize){
         self.clear();self.requires_js=src.windows(b"/httpservice/retry/enablejs".len()).any(|v|v.eq_ignore_ascii_case(b"/httpservice/retry/enablejs"));let rules=unsafe{&mut *core::ptr::addr_of_mut!(RULES)};let mut nr=0;css_rules(css,rules,&mut nr,viewport,0);
         // Collect embedded stylesheet blocks and external stylesheet references.
-        let mut scan=0;while scan<src.len(){
+        let mut scan=0;while scan<src.len(){crate::desktop::browser_poll();
             let Some(e)=src[scan..].iter().position(|v|*v==b'<')else{break;};scan+=e;if src[scan..].starts_with(b"<!--"){if let Some(end)=src[scan+4..].windows(3).position(|v|v==b"-->"){scan+=end+7;continue;}break;}
             let Some(e)=tag_end(&src[scan..])else{break;};let raw=trim(&src[scan+1..scan+e]);scan+=e+1;
             let n=raw.iter().position(|v|v.is_ascii_whitespace()||*v==b'/').unwrap_or(raw.len());let t=&raw[..n];let a=&raw[n..];
@@ -71,7 +79,7 @@ impl Page{
         for i in 1..nr{let rule=rules[i];let mut j=i;while j>0&&rules[j-1].spec>rule.spec{rules[j]=rules[j-1];j-=1;}rules[j]=rule;}
         let mut p=0;let mut b=EMPTY;let mut skip=0u8;let mut active=EMPTY_LINK;
         let dom=unsafe{&mut *core::ptr::addr_of_mut!(coreweb::DOM)};dom.clear();let mut parents=[0usize;coreweb::DEPTH];let mut computed=[EMPTY;coreweb::DEPTH];let mut tags=[(0usize,0usize);coreweb::DEPTH];let mut depth=1usize;let mut overflow=0usize;let mut in_form=false;let mut submit=false;let mut placeholders=0usize;
-        while p<src.len()&&self.count<MAX{
+        while p<src.len()&&self.count<MAX{crate::desktop::browser_poll();
             if src[p]!=b'<'{let e=src[p..].iter().position(|v|*v==b'<').unwrap_or(src.len()-p);if skip==0&&overflow==0{if e>0&&src[p..p+e].iter().any(|v|!v.is_ascii_whitespace()){let _=dom.append(parents[depth-1],p,e,true);}b.link=active;if !b.hidden{self.text(&mut b,&src[p..p+e]);}}else if skip==4{let t=trim(&src[p..p+e]);let n=t.len().min(96);self.title[..n].copy_from_slice(&t[..n]);self.title_len=n;}p+=e;continue;}
             if src[p..].starts_with(b"<!--"){if let Some(e)=src[p+4..].windows(3).position(|v|v==b"-->"){p+=e+7;continue;}break;}
             let Some(e)=tag_end(&src[p..])else{break;};let start=p;let raw=trim(&src[p+1..p+e]);p+=e+1;
@@ -178,7 +186,7 @@ impl Page{
         session.exec(&bootstrap)?;
         let mut total=0usize;let mut external=0usize;let mut module_keys:Vec<Vec<u8>>=Vec::new();
         // Preload only the modules explicitly named by this document. No recursive network fetches or dynamic network import.
-        for (ordinal,&(start,len,link,module)) in snippets[..script_count].iter().enumerate(){
+        for (ordinal,&(start,len,link,module)) in snippets[..script_count].iter().enumerate(){if crate::desktop::browser_poll(){return Err("JavaScript cancelled");}
             if !module{continue;}
             let mut key=Vec::new();let source=if link.len>0{
                 if external>=16{report.skipped+=1;continue;}external+=1;
@@ -187,7 +195,7 @@ impl Page{
             if source.len()>crate::webjs::SOURCE_CAP||source.len()>3*1024*1024-total{report.skipped+=1;continue;}total+=source.len();
             if session.add_module(&key,source){module_keys.push(key);}else{report.skipped+=1;}
         }
-        for &(start,len,link,module) in &snippets[..script_count]{
+        for &(start,len,link,module) in &snippets[..script_count]{if crate::desktop::browser_poll(){return Err("JavaScript cancelled");}
             if module{continue;}let downloaded;
             let source=if link.len>0{
                 if external>=16{report.skipped+=1;continue;}external+=1;
@@ -200,11 +208,17 @@ impl Page{
         session.exec(b"document.readyState='interactive'")?;
         for key in &module_keys{match session.exec_module(key){Ok(())=>{report.executed+=1;report.modules+=1;},Err("JavaScript exception - unsupported API or syntax")=>{report.errors+=1;report.module_errors+=1;},Err(e)=>return Err(e)}}
         match session.exec(b"document.readyState='complete';for(const f of __h5events){try{f.call(window)}catch(e){}};"){Ok(())=>session.drain_jobs()?,Err("JavaScript exception - unsupported API or syntax")=>report.errors+=1,Err(e)=>return Err(e)}
-        let mut edits=Vec::with_capacity(target_count);let mut output=[0u8;768];let mut query=Vec::with_capacity(128);
-        for &i in &targets[..target_count]{let b=&self.blocks[i];query.clear();query.extend_from_slice(b"String(__h5nodes[");js_quote(&mut query,&b.id[..b.id_len]);query.extend_from_slice(b"].textContent).slice(0,192)");
-            let n=session.eval(&query,&mut output)?;let mut buf=[0u8;TEXT];let len=js_text(&output[..n],&mut buf);if &b.buf[..b.len]!=&buf[..len]{edits.push((i,buf,len));}
-        }
-        let mut added=Vec::new();for i in 0..8{query.clear();query.extend_from_slice(b"String(__h5added[");query.push(b'0'+i);query.extend_from_slice(b"]?.textContent??'').slice(0,192)");let n=session.eval(&query,&mut output)?;if n>0{let mut buf=[0u8;TEXT];let len=js_text(&output[..n],&mut buf);added.push((buf,len));}}
+        let mut edits=Vec::with_capacity(target_count);let mut query=Vec::with_capacity(8192);
+        query.extend_from_slice(b"[");
+        for (n,&i) in targets[..target_count].iter().enumerate(){if n>0{query.push(b',');}let b=&self.blocks[i];query.extend_from_slice(b"String(__h5nodes[");js_quote(&mut query,&b.id[..b.id_len]);query.extend_from_slice(b"]?.textContent??'').slice(0,192)");}
+        for i in 0..8{if i>0||target_count>0{query.push(b',');}query.extend_from_slice(b"String(__h5added[");query.push(b'0'+i);query.extend_from_slice(b"]?.textContent??'').slice(0,192)");}
+        query.extend_from_slice(b"].map(v=>v.replace(/\\u001f/g,' ')).join('\\u001f')");
+        let mut output=Vec::new();let cap=(target_count+8)*769;output.try_reserve_exact(cap).map_err(|_|"DOM result buffer allocation")?;output.resize(cap,0);
+        let n=session.eval(&query,&mut output)?;let mut values=output[..n].split(|b|*b==31);
+        for &i in &targets[..target_count]{let value=values.next().ok_or("Incomplete DOM result")?;let mut buf=[0u8;TEXT];let len=js_text(value,&mut buf);let b=&self.blocks[i];if &b.buf[..b.len]!=&buf[..len]{edits.push((i,buf,len));}}
+        let mut added=Vec::new();for _ in 0..8{let value=values.next().ok_or("Incomplete DOM result")?;if !value.is_empty(){let mut buf=[0u8;TEXT];let len=js_text(value,&mut buf);added.push((buf,len));}}
+        if values.next().is_some(){return Err("Invalid DOM result");}
+        report.errors+=session.job_errors();
         let mut changed=edits.len();for (i,buf,len) in edits{self.blocks[i].buf=buf;self.blocks[i].len=len;}
         for (buf,len) in added{if len==0||self.count>=MAX{continue;}let mut block=EMPTY;block.buf=buf;block.len=len;self.push(&mut block);changed+=1;}
         report.changes=changed;Ok(report)
@@ -248,7 +262,7 @@ impl Page{
                 let cw=Canvas::measure_text(&v.buf[..v.len],false)+8;if used+cw>width{break;}row.cells[count]=Cell{index:*index+count,start:0,end:v.len,x:used,w:cw,last:0};used+=cw;count+=1;
             }if count>1{row.len=count;row.h=22;*index+=count;return Some(row);}row.cells[0]=Cell{index:*index,start:*offset,end:b.len,x:0,w:width,last:0};
         }
-        let bw=Self::box_width(b,width);let bx=if b.auto_margin{width.saturating_sub(bw)/2}else{0};row.cells[0].x=bx;row.cells[0].w=bw;row.h=Self::cell_height(b,bw);
+        let bw=Self::box_width(b,width);let bx=if b.auto_margin||(b.align==1&&matches!(b.kind,2|3|4)){width.saturating_sub(bw)/2}else{0};row.cells[0].x=bx;row.cells[0].w=bw;row.h=Self::cell_height(b,bw);
         let end=Self::line_end(b,bw,*offset);if *offset==0&&end==b.len{row.h=row.h.max((b.min_h as usize).min(180));}
         row.cells[0].end=end;if end>=b.len{*index+=1;*offset=0;}else{*offset=end;}Some(row)
     }
@@ -269,7 +283,7 @@ impl Page{
         if let Some(p)=Self::photo(b){let(w,h)=Self::image_size(p,width);let ox=if b.align==1{x+(width-w)/2}else if b.align==2{x+width-w}else{x+3};for j in 0..h.min(floor-y){for k in 0..w{let at=((j*p.h/h)*p.w+k*p.w/w)*3;c.pixel(ox+k,y+j,[p.bytes[at],p.bytes[at+1],p.bytes[at+2]]);}}return;}
         if let Some(bg)=b.bg{c.rect(x,y,width,visible,bg);}else if b.kind==2{c.rect(x,y,width,visible,sub);}
         if y+height>floor{return;}
-        if let Ok(t)=core::str::from_utf8(trim(&b.buf[start..end])){let big=b.kind==1;let color=b.color.unwrap_or(if b.link.len>0{[31,97,185]}else{ink});let inset=b.padding as usize+b.margin as usize+3;let tw=Canvas::measure_text(t.as_bytes(),big);let tx=if b.align==1{x+width.saturating_sub(tw)/2}else if b.align==2{right.saturating_sub(tw+inset).max(x)}else{x+inset};
+        if let Ok(t)=core::str::from_utf8(trim(&b.buf[start..end])){let big=b.kind==1;let mut color=b.color.unwrap_or(if b.link.len>0{[31,97,185]}else{ink});let bg=b.bg.unwrap_or(if b.kind==2{sub}else{[255,255,255]});let lum=|c:Color| (299*c[0]as i32+587*c[1]as i32+114*c[2]as i32)/1000;if (lum(color)-lum(bg)).abs()<45{color=if lum(bg)>128{[30,34,40]}else{[240,243,247]};}let inset=b.padding as usize+b.margin as usize+3;let tw=Canvas::measure_text(t.as_bytes(),big);let tx=if b.align==1{x+width.saturating_sub(tw)/2}else if b.align==2{right.saturating_sub(tw+inset).max(x)}else{x+inset};
             if matches!(b.kind,3|4){let cw=if b.kind==3{width.min(420)}else{width.min(180)};let ox=if b.align==1{x+(width-cw)/2}else{x};if cw<14{return;}c.round(ox+2,y+2,cw-4,height-4,5,if b.kind==3&&self.form_focus{[207,224,247]}else{[227,231,237]});let val=if b.kind==3&&self.form.len>0{core::str::from_utf8(&self.form.value[..self.form.len]).unwrap_or("")}else{t};c.text_limit(ox+10,y+10,val,[30,34,40],false,ox+cw-5);}
             else{c.text_limit(tx,y+inset,t,color,big,right);if b.link.len>0&&tx<right{c.rect(tx,y+height-3,tw.min(right-tx),1,color);}}
         }
@@ -283,6 +297,12 @@ impl Page{
     }
 
 }
+fn ascii_codepoint(v:u32)->u8{match v{32..=126=>v as u8,160=>b' ',0x2018|0x2019|0x2032=>b'\'',0x201c|0x201d|0x2033=>b'"',0x2010..=0x2015|0x2212=>b'-',0x2022=>b'*',0x2026=>b'.',0xa9=>b'c',0xae=>b'r',_=>b'?'}}
+fn numeric_entity(s:&[u8])->Option<(u8,usize)>{
+    let tail=s.strip_prefix(b"&#")?;let (radix,skip)=if tail.first().is_some_and(|b|matches!(*b,b'x'|b'X')){(16,1)}else{(10,0)};
+    let n=tail[skip..].iter().take(9).position(|v|*v==b';')?;if n==0{return None;}let mut cp=0u32;for b in &tail[skip..skip+n]{cp=cp.checked_mul(radix)?.checked_add((*b as char).to_digit(radix)?)?;}if char::from_u32(cp).is_none(){return None;}Some((ascii_codepoint(cp),2+skip+n+1))
+}
+fn utf8_ascii(s:&[u8])->Option<(u8,usize)>{let first=*s.first()?;let n=match first{0xc2..=0xdf=>2,0xe0..=0xef=>3,0xf0..=0xf4=>4,_=>return None};let c=core::str::from_utf8(s.get(..n)?).ok()?.chars().next()?;Some((ascii_codepoint(c as u32),n))}
 fn js_quote(out:&mut alloc::vec::Vec<u8>,s:&[u8]){out.push(b'"');const H:&[u8;16]=b"0123456789abcdef";for &b in s{match b{b'"'|b'\\'=>{out.push(b'\\');out.push(b);},32..=126=>out.push(b),_=>{out.extend_from_slice(b"\\u00");out.push(H[(b>>4)as usize]);out.push(H[(b&15)as usize]);}}}out.push(b'"');}
 fn js_text(s:&[u8],out:&mut[u8;TEXT])->usize{let mut n=0;for &b in s{if n==TEXT{break;}if b&0xc0==0x80{continue;}out[n]=if b.is_ascii_whitespace(){b' '}else if (32..127).contains(&b){b}else{b'?'};n+=1;}n}
 fn url(base:&[u8],href:&[u8])->Option<Link>{let mut decoded=[0u8;128];let(mut i,mut n)=(0,0);while i<href.len(){if n==decoded.len(){return None;}let mut consumed=1;let mut b=href[i];for ent in [b"&amp;".as_slice(),b"&#38;",b"&#x26;"]{if href[i..].starts_with(ent){b=b'&';consumed=ent.len();break;}}decoded[n]=b;n+=1;i+=consumed;}let mut l=EMPTY_LINK;l.len=crate::http::resolve_url(base,&decoded[..n],&mut l.url)?;if base.starts_with(b"https://")&&!l.url[..l.len].starts_with(b"https://"){return None;}Some(l)}
@@ -322,7 +342,7 @@ fn media_applies(s:&[u8],width:usize)->bool{
     let Some(i)=q.iter().position(|b|*b==b':')else{return false;};let key=trim(&q[..i]);let Some(v)=trim(&q[i+1..]).strip_suffix(b"px")else{return false;};if v.is_empty()||v.len()>5||!v.iter().all(u8::is_ascii_digit){return false;}let mut n=0usize;for b in v{n=n*10+(b-b'0')as usize;}match key{b"min-width"=>width>=n,b"max-width"=>width<=n,_=>false}
 }
 fn css_rules(mut css:&[u8],out:&mut[Rule;RULE_CAP],count:&mut usize,viewport:usize,level:usize){
-    while !css.is_empty()&&*count<out.len(){
+    while !css.is_empty()&&*count<out.len(){crate::desktop::browser_poll();
         css=trim(css);if css.starts_with(b"/*"){let Some(e)=css[2..].windows(2).position(|v|v==b"*/")else{break;};css=&css[e+4..];continue;}
         let Some(i)=css.iter().position(|v|*v==b'{')else{break;};
         // Skip balanced nested rules (@media/@supports etc.) rather than treating inner selectors as global.
@@ -356,5 +376,7 @@ pub fn self_test()->bool{
     p.parse_at(b"<ul style='list-style:none'><li>News</li></ul><p style='width:50%;margin:auto'>Centered</p>",b"https://example.test/",&[]);let box_ok=p.count==2&&&p.blocks[0].buf[..p.blocks[0].len]==b"News"&&{let(mut i,mut off)=(1,0);p.next_row(400,&mut i,&mut off).is_some_and(|r|r.cells[0].x==100&&r.cells[0].w==200)};
     p.parse_at(b"<div class='nav'><a href='/yes'>Direct</a><span><a href='/no'>Nested</a></span></div><style>.nav>a{color:#123456}</style>",b"https://example.test/",&[]);let child_ok=p.count==2&&p.blocks[0].color==Some([18,52,86])&&p.blocks[1].color.is_none();
     p.parse_at(b"<div style='display:grid;grid-template-columns:repeat(2, 1fr)'><article><h3>First</h3><a href='/one'>One</a></article><article><h3>Second</h3><a href='/two'>Two</a></article></div>",b"https://example.test/",&[]);let grid_ok=p.count==4&&p.rows(600)==1&&p.hit_xy(600,0,200,0,10,31).is_some_and(|l|&l.url[..l.len]==b"https://example.test/one")&&p.hit_xy(600,0,200,0,350,31).is_some_and(|l|&l.url[..l.len]==b"https://example.test/two");
-    p.clear();ok&&css_ok&&form_ok&&result_ok&&interstitial_ok&&empty_ok&&layout_ok&&script_ok&&responsive_ok&&wide_ok&&box_ok&&child_ok&&grid_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
+    p.parse(b"<p>It&#x27;s &#39;fine&#39; &amp; &#x2014; OK</p>");let entity_ok=p.count==1&&&p.blocks[0].buf[..p.blocks[0].len]==b"It\'s \'fine\' & - OK";
+    let rgb_ok=rgb(b"rgb(18, 52, 86)")==Some([18,52,86])&&rgb(b"rgb(100% 0% 0%)")==Some([255,0,0])&&background(b"linear-gradient(120deg, #112233, #445566)")==Some([17,34,51])&&rgb(b"rgba(1,2,3,0.5)").is_none();
+    p.clear();ok&&css_ok&&form_ok&&result_ok&&interstitial_ok&&empty_ok&&layout_ok&&script_ok&&responsive_ok&&wide_ok&&box_ok&&child_ok&&grid_ok&&entity_ok&&rgb_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
 }
