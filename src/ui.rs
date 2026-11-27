@@ -2,6 +2,26 @@
 use crate::boot::Framebuffer;
 use core::ptr;
 pub type Color=[u8;3];
+pub const ACCENT:Color=[26,102,188];
+pub const TEAL:Color=[8,199,206];
+pub const MIDNIGHT:Color=[8,20,35];
+#[derive(Clone,Copy)]pub struct Palette{pub wall:Color,pub wall2:Color,pub bar:Color,pub panel:Color,pub sub:Color,pub ink:Color,pub muted:Color,pub edge:Color,pub green:Color}
+pub fn palette(dark:bool)->Palette{if dark{Palette{wall:MIDNIGHT,wall2:[16,40,61],bar:[12,29,46],panel:[19,39,57],sub:[32,59,80],ink:[243,247,251],muted:[177,200,216],edge:[54,80,100],green:[111,226,180]}}else{Palette{wall:[229,239,248],wall2:[188,217,233],bar:[243,247,251],panel:[252,253,255],sub:[228,238,245],ink:[16,40,61],muted:[61,85,106],edge:[188,207,221],green:[17,115,77]}}}
+fn blend(a:Color,b:Color,n:usize,d:usize)->Color{let n=n.min(d);core::array::from_fn(|i|((a[i]as usize*(d-n)+b[i]as usize*n)/d.max(1))as u8)}
+fn aurora_color(x:usize,y:usize,dark:bool)->Color{
+    let p=palette(dark);let base=blend(p.wall,p.wall2,y,1024);
+    // Curved, feathered ribbons; normalised coordinates, integer-only.
+    let curve=500+(y.abs_diff(630)*y.abs_diff(630))/800;
+    let a=350usize.saturating_sub(x.abs_diff(curve));
+    let b=200usize.saturating_sub(x.abs_diff(870usize.saturating_sub(y/4)));
+    let c=blend(base,if dark{[10,124,143]}else{[148,211,219]},a*a/(350*5),100);
+    blend(c,if dark{[35,80,157]}else{[158,192,241]},b*b/(200*5),100)
+}
+pub fn self_test()->bool{
+    let contrast=|a:Color,b:Color|{let l=|c:Color|(299*c[0]as i32+587*c[1]as i32+114*c[2]as i32)/1000;(l(a)-l(b)).abs()>105};
+    [false,true].iter().all(|&d|{let p=palette(d);contrast(p.ink,p.panel)&&contrast(p.muted,p.sub)&&aurora_color(30,550,d)!=aurora_color(510,550,d)})&&blend([0;3],[100;3],50,100)==[50;3]
+}
+
 const MAX:usize=2048*1536;
 #[repr(align(4096))]
 struct Buffer([u32;MAX]);
@@ -39,6 +59,31 @@ impl Canvas{
             self.rect(x+off,y+i,w-2*off,1,c);
             self.rect(x+off,y+h-1-i,w-2*off,1,c);
         }
+    }
+    /// One fill per 8-pixel span: no GPU dependency, extra framebuffer or image asset.
+    pub fn aurora(&self,height:usize,dark:bool){
+        let w=self.fb.width.max(1);let h=height.min(self.fb.height).max(1);
+        for y in 0..h{let yy=y*1024/h;for x in (0..w).step_by(8){let c=aurora_color(x*1024/w,yy,dark);self.rect(x,y,8.min(w-x),1,c);}}
+    }
+    pub fn panel(&self,x:usize,y:usize,w:usize,h:usize,r:usize,p:Palette){
+        self.round(x+3,y+5,w,h,r,blend(p.wall,p.bar,1,2));
+        self.round(x,y,w,h,r,p.edge);
+        if w>2&&h>2{self.round(x+1,y+1,w-2,h-2,r.saturating_sub(1),p.panel);}
+    }
+    pub fn control(&self,x:usize,y:usize,w:usize,h:usize,label:&str,fill:Color,ink:Color){
+        self.round(x,y,w,h,8,fill);
+        let tw=self.text_width(label);let px=x+w.saturating_sub(tw)/2;
+        self.text_limit(px.max(x+3),y+h.saturating_sub(22)/2,label,ink,false,x+w.saturating_sub(3));
+    }
+    pub fn brand(&self,x:usize,y:usize,ink:Color){
+        self.round(x,y,32,32,9,[16,40,61]);
+        self.round(x+10,y+13,15,13,5,ink);
+        for(i,h)in [8usize,12,15,10].into_iter().enumerate(){self.round(x+10+i*4,y+15-h,3,h+6,1,ink);}
+        self.round(x+5,y+13,7,5,2,ink);
+    }
+    pub fn window_control(&self,x:usize,y:usize,kind:u8,p:Palette){
+        self.round(x,y,30,30,8,p.sub);
+        match kind{0=>self.rect(x+9,y+19,12,2,p.ink),1=>{self.rect(x+9,y+9,12,12,p.ink);self.rect(x+11,y+11,8,8,p.sub);},_=>{for i in 0..11{self.rect(x+10+i,y+10+i,2,2,p.ink);self.rect(x+20-i,y+10+i,2,2,p.ink);}}}
     }
     pub fn text(&self,x:usize,y:usize,t:&str,c:Color){self.text_limit(x,y,t,c,false,self.fb.width);}
     pub fn title(&self,x:usize,y:usize,t:&str,c:Color){self.text_limit(x,y,t,c,true,self.fb.width);}

@@ -1,8 +1,8 @@
 //! Direct framebuffer diagnostics: original 5x7 glyphs, no font dependency.
 use crate::boot::Framebuffer;
 use core::ptr;
-const BG: [u8;3] = [9,21,36];
-const BLUE: [u8;3] = [80,174,241];
+const BG: [u8;3] = [8,20,35];
+const BLUE: [u8;3] = [8,199,206];
 const WHITE: [u8;3] = [216,232,245];
 const GREEN: [u8;3] = [107,219,156];
 const RED: [u8;3] = [255,118,118];
@@ -57,7 +57,7 @@ impl Screen {
         let mut s = Self { fb, scale, x: 8*scale, y: 8*scale };
         s.rect(0,0,fb.width,fb.height,BG);
         s.line(concat!("HI5OS - HI5KERNEL V",env!("CARGO_PKG_VERSION")),BLUE);
-        s.line("MEMORY DEVELOPMENT PREVIEW",WHITE);
+        s.line("STARTING YOUR WORKSPACE",WHITE);
         s.y += 4*scale;
         s
     }
