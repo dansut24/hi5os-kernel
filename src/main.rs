@@ -27,6 +27,7 @@ mod pegraph;
 mod net;
 mod http;
 mod webpage;
+mod hi5webcore;
 mod heap;
 mod security;
 mod account;

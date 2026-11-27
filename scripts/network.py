@@ -18,6 +18,10 @@ assert len(PAYLOAD)<=4*1024*1024
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
+        if MODE=="browse" and self.path in ("/form.html","/search?q=hi5+test"):
+            body=(b"<html><body><center><form action='/search'><input name='q' type='text'><input type='submit' value='Search'></form></center></body></html>" if self.path=="/form.html" else b"<html><body><h1>Search received</h1></body></html>")
+            if self.path.startswith("/search?"):self.server.form_received=True
+            self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/index.html":
             body=b"<html><head><title>Hi5 test</title><link rel='stylesheet' href='/style.css'></head><body><h1 style='color:#112233'>Hi5Browser qualification</h1><p id='demo' class='copy'>Before</p><img src='/photo.png' alt='PNG'><img src='/photo.jpg' alt='JPEG'><script>document.getElementById('demo').textContent = 'After';</script><a href='/get.exe'>Download EXE</a></body></html>"
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
@@ -163,6 +167,20 @@ def main():
                     key("ret");wait(b"BROWSER_BITMAP_RENDERED",30)
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-image-512m.ppm")})
                     key("ctrl-b");wait(b"BROWSER_HISTORY_NAVIGATED",30)
+                    key("ctrl-t");wait(b"BROWSER_TAB_COUNT=0x0000000000000002",5)
+                    key("ctrl-l")
+                    for ch in f"http://10.0.2.2:{server.server_port}/form.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    key("ret");wait(b"WEB_CORE_FORM_READY",30);key("ctrl-g")
+                    for ch in "hi5 test":key("spc" if ch==" " else ch)
+                    call("screendump",{"filename":str(ROOT/"dist"/"browser-form-512m.ppm")})
+                    prior=log.read_bytes().count(b"BROWSER_PAGE_RENDERED");key("ret");wait(b"WEB_CORE_FORM_SUBMITTED",5)
+                    deadline=time.monotonic()+30
+                    while not getattr(server,"form_received",False) and time.monotonic()<deadline:time.sleep(.1)
+                    assert getattr(server,"form_received",False),"GET form submission did not reach server"
+                    deadline=time.monotonic()+30
+                    while log.read_bytes().count(b"BROWSER_PAGE_RENDERED")<=prior and time.monotonic()<deadline:time.sleep(.1)
+                    assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Search response not rendered"
+                    key("ctrl-tab");wait(b"BROWSER_TAB_ACTIVE=0x0000000000000000",30);key("ctrl-w");wait(b"BROWSER_TAB_COUNT=0x0000000000000001",30)
                 call("quit")
             proc.wait(timeout=10)
             with data.open("rb") as fh:

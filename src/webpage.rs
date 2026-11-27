@@ -1,6 +1,7 @@
 //! Bounded native document/layout model. No arbitrary script evaluation or network side effects.
 use crate::ui::{Canvas,Color};
 use crate::http::{Link,EMPTY_LINK};
+use crate::hi5webcore::{self as coreweb,Form};
 const MAX:usize=2048;
 const IMAGE_LIMIT:usize=4;
 const CSS_LIMIT:usize=2;
@@ -13,24 +14,25 @@ static mut PHOTOS:[Photo;IMAGE_LIMIT]=[NO_PHOTO;IMAGE_LIMIT];
 const EMPTY_RULE:Rule=Rule{selector:[0;96],len:0,style:EMPTY,spec:0};
 static mut RULES:[Rule;256]=[EMPTY_RULE;256];
 const TEXT:usize=192;
-#[derive(Clone,Copy)]struct Block{buf:[u8;TEXT],len:usize,kind:u8,color:Option<Color>,bg:Option<Color>,id:[u8;32],id_len:usize,link:Link,image:u8}
-const EMPTY:Block=Block{buf:[0;TEXT],len:0,kind:0,color:None,bg:None,id:[0;32],id_len:0,link:EMPTY_LINK,image:0};
-#[derive(Clone,Copy)]pub struct Page{blocks:[Block;MAX],pub count:usize,pub styled:usize,pub images:usize,pub scripts:usize,pub stylesheets:[Link;CSS_LIMIT],pub stylesheet_count:usize,pub image_urls:[Link;IMAGE_LIMIT],pub image_count:usize,pub loaded_images:usize,title:[u8;96],title_len:usize}
+#[derive(Clone,Copy)]struct Block{buf:[u8;TEXT],len:usize,kind:u8,color:Option<Color>,bg:Option<Color>,id:[u8;32],id_len:usize,link:Link,image:u8,align:u8,padding:u8,margin:u8,hidden:bool,node:u16}
+const EMPTY:Block=Block{buf:[0;TEXT],len:0,kind:0,color:None,bg:None,id:[0;32],id_len:0,link:EMPTY_LINK,image:0,align:0,padding:0,margin:0,hidden:false,node:0};
+#[derive(Clone,Copy)]pub struct Page{blocks:[Block;MAX],pub count:usize,pub styled:usize,pub images:usize,pub scripts:usize,pub stylesheets:[Link;CSS_LIMIT],pub stylesheet_count:usize,pub image_urls:[Link;IMAGE_LIMIT],pub image_count:usize,pub loaded_images:usize,pub dom_nodes:usize,pub form:Form,pub form_focus:bool,title:[u8;96],title_len:usize}
 pub static mut PAGE:Page=Page::new();
 fn trim(b:&[u8])->&[u8]{let mut a=0;let mut z=b.len();while a<z&&b[a].is_ascii_whitespace(){a+=1;}while z>a&&b[z-1].is_ascii_whitespace(){z-=1;}&b[a..z]}
 fn attr<'a>(mut a:&'a[u8],want:&[u8])->Option<&'a[u8]>{
-    while !a.is_empty(){a=trim(a);if a.is_empty(){break;}let n=a.iter().position(|b|b.is_ascii_whitespace()||*b==b'=').unwrap_or(a.len());if n==0{return None;}let k=&a[..n];a=trim(&a[n..]);if a.first()!=Some(&b'='){continue;}a=trim(&a[1..]);let q=*a.first()?;let(v,rest)=if q==b'\''||q==b'"'{let e=a[1..].iter().position(|b|*b==q)?+1;(&a[1..e],&a[e+1..])}else{let e=a.iter().position(|b|b.is_ascii_whitespace()).unwrap_or(a.len());(&a[..e],&a[e..])};if k.eq_ignore_ascii_case(want){return Some(v);}a=rest;
+    while !a.is_empty(){a=trim(a);if a.is_empty(){break;}let n=a.iter().position(|b|b.is_ascii_whitespace()||*b==b'=').unwrap_or(a.len());if n==0{return None;}let k=&a[..n];a=trim(&a[n..]);if a.first()!=Some(&b'='){if k.eq_ignore_ascii_case(want){return Some(&[]);}continue;}a=trim(&a[1..]);let q=*a.first()?;let(v,rest)=if q==b'\''||q==b'"'{let e=a[1..].iter().position(|b|*b==q)?+1;(&a[1..e],&a[e+1..])}else{let e=a.iter().position(|b|b.is_ascii_whitespace()).unwrap_or(a.len());(&a[..e],&a[e..])};if k.eq_ignore_ascii_case(want){return Some(v);}a=rest;
     }None
 }
 fn rgb(s:&[u8])->Option<Color>{let s=trim(s);let named=[(b"red".as_slice(),[220,30,30]),(b"blue",[20,90,210]),(b"black",[0,0,0]),(b"white",[255,255,255]),(b"green",[0,128,0]),(b"navy",[0,0,128]),(b"gray",[128,128,128])];for(n,c)in named{if s.eq_ignore_ascii_case(n){return Some(c);}}if s.len()!=7||s[0]!=b'#'{return None;}let mut c=[0;3];for i in 0..3{let h=(s[1+i*2]as char).to_digit(16)?;let l=(s[2+i*2]as char).to_digit(16)?;c[i]=(h*16+l)as u8;}Some(c)}
-fn style(b:&mut Block,s:&[u8]){for decl in s.split(|v|*v==b';'){if let Some(i)=decl.iter().position(|v|*v==b':'){let k=trim(&decl[..i]);let v=trim(&decl[i+1..]);if k.eq_ignore_ascii_case(b"color"){if let Some(c)=rgb(v){b.color=Some(c);}}else if k.eq_ignore_ascii_case(b"background-color"){if let Some(c)=rgb(v){b.bg=Some(c);}}else if k.eq_ignore_ascii_case(b"font-weight")&&matches!(v,b"bold"|b"700"){b.kind=1;}else if k.eq_ignore_ascii_case(b"font-size")&&matches!(v,b"24px"|b"28px"|b"32px"){b.kind=1;}}}}
+fn px(s:&[u8])->Option<u8>{let s=s.strip_suffix(b"px").unwrap_or(s);if s.is_empty()||s.len()>3||!s.iter().all(u8::is_ascii_digit){return None;}let mut n=0u16;for v in s{n=n*10+(v-48)as u16;}Some(n.min(40)as u8)}
+fn style(b:&mut Block,s:&[u8]){for decl in s.split(|v|*v==b';'){if let Some(i)=decl.iter().position(|v|*v==b':'){let k=trim(&decl[..i]);let v=trim(&decl[i+1..]);if k.eq_ignore_ascii_case(b"color"){if let Some(c)=rgb(v){b.color=Some(c);}}else if k.eq_ignore_ascii_case(b"background-color"){if let Some(c)=rgb(v){b.bg=Some(c);}}else if k.eq_ignore_ascii_case(b"font-weight")&&matches!(v,b"bold"|b"700"){b.kind=1;}else if k.eq_ignore_ascii_case(b"font-size")&&matches!(v,b"24px"|b"28px"|b"32px"){b.kind=1;}else if k.eq_ignore_ascii_case(b"text-align"){b.align=if v.eq_ignore_ascii_case(b"center"){1}else if v.eq_ignore_ascii_case(b"right"){2}else{0};}else if k.eq_ignore_ascii_case(b"padding"){if let Some(n)=px(v){b.padding=n;}}else if k.eq_ignore_ascii_case(b"margin"){if let Some(n)=px(v){b.margin=n;}}else if k.eq_ignore_ascii_case(b"display")&&v.eq_ignore_ascii_case(b"none"){b.hidden=true;}}}}
 impl Page{
-    pub const fn new()->Self{Self{blocks:[EMPTY;MAX],count:0,styled:0,images:0,scripts:0,stylesheets:[EMPTY_LINK;CSS_LIMIT],stylesheet_count:0,image_urls:[EMPTY_LINK;IMAGE_LIMIT],image_count:0,loaded_images:0,title:[0;96],title_len:0}}
-    pub fn clear(&mut self){self.count=0;self.styled=0;self.images=0;self.scripts=0;self.title_len=0;self.stylesheet_count=0;self.image_count=0;self.loaded_images=0;unsafe{for p in (&mut *core::ptr::addr_of_mut!(PHOTOS)).iter_mut(){p.w=0;p.h=0;}}}
+    pub const fn new()->Self{Self{blocks:[EMPTY;MAX],count:0,styled:0,images:0,scripts:0,stylesheets:[EMPTY_LINK;CSS_LIMIT],stylesheet_count:0,image_urls:[EMPTY_LINK;IMAGE_LIMIT],image_count:0,loaded_images:0,dom_nodes:0,form:Form::new(),form_focus:false,title:[0;96],title_len:0}}
+    pub fn clear(&mut self){self.count=0;self.styled=0;self.images=0;self.scripts=0;self.title_len=0;self.stylesheet_count=0;self.image_count=0;self.loaded_images=0;self.dom_nodes=0;self.form=Form::new();self.form_focus=false;unsafe{for p in (&mut *core::ptr::addr_of_mut!(PHOTOS)).iter_mut(){p.w=0;p.h=0;}}}
     pub fn title(&self)->&str{core::str::from_utf8(&self.title[..self.title_len]).unwrap_or("")}
-    fn push(&mut self,b:&mut Block){if b.len>0&&self.count<MAX{if b.color.is_some()||b.bg.is_some(){self.styled+=1;}self.blocks[self.count]=*b;self.count+=1;}*b=EMPTY;}
+    fn push(&mut self,b:&mut Block){if b.len>0&&!b.hidden&&self.count<MAX{if b.color.is_some()||b.bg.is_some(){self.styled+=1;}self.blocks[self.count]=*b;self.count+=1;}*b=EMPTY;}
     fn text(&mut self,b:&mut Block,t:&[u8]){
-        let mut i=0;while i<t.len()&&self.count<MAX{let mut ch=t[i];let mut step=1;if ch==b'&'{for(s,v)in[(b"&amp;".as_slice(),b'&'),(b"&lt;",b'<'),(b"&gt;",b'>'),(b"&quot;",b'"'),(b"&#39;",b'\''),(b"&nbsp;",b' ')]{if t[i..].starts_with(s){ch=v;step=s.len();break;}}}
+        let mut i=0;while i<t.len()&&self.count<MAX{let mut ch=t[i];let mut step=1;if ch==b'&'{for(s,v)in[(b"&amp;".as_slice(),b'&'),(b"&lt;",b'<'),(b"&gt;",b'>'),(b"&quot;",b'"'),(b"&#39;",b'\''),(b"&nbsp;",b' '),(b"&copy;",b'c')]{if t[i..].starts_with(s){ch=v;step=s.len();break;}}}
             if ch.is_ascii_whitespace(){ch=b' ';if b.len==0||b.buf[b.len-1]==b' '{i+=step;continue;}}
             if ch>=128{if ch&0xc0==0x80{i+=step;continue;}ch=b'?';}
             if ch>=32&&ch<127{if b.len==TEXT{let mut next=*b;next.len=0;next.id_len=0;self.push(b);*b=next;}b.buf[b.len]=ch;b.len+=1;}i+=step;
@@ -55,22 +57,59 @@ impl Page{
             }
         }
         let mut p=0;let mut b=EMPTY;let mut skip=0u8;let mut active=EMPTY_LINK;
+        let dom=unsafe{&mut *core::ptr::addr_of_mut!(coreweb::DOM)};dom.clear();let mut parents=[0usize;coreweb::DEPTH];let mut computed=[EMPTY;coreweb::DEPTH];let mut tags=[(0usize,0usize);coreweb::DEPTH];let mut depth=1usize;let mut overflow=0usize;let mut in_form=false;let mut submit=false;
         while p<src.len()&&self.count<MAX{
-            if src[p]!=b'<'{let e=src[p..].iter().position(|v|*v==b'<').unwrap_or(src.len()-p);if skip==0{b.link=active;self.text(&mut b,&src[p..p+e]);}else if skip==4{let t=trim(&src[p..p+e]);let n=t.len().min(96);self.title[..n].copy_from_slice(&t[..n]);self.title_len=n;}p+=e;continue;}
+            if src[p]!=b'<'{let e=src[p..].iter().position(|v|*v==b'<').unwrap_or(src.len()-p);if skip==0&&overflow==0{if e>0&&src[p..p+e].iter().any(|v|!v.is_ascii_whitespace()){let _=dom.append(parents[depth-1],p,e,true);}b.link=active;if !b.hidden{self.text(&mut b,&src[p..p+e]);}}else if skip==4{let t=trim(&src[p..p+e]);let n=t.len().min(96);self.title[..n].copy_from_slice(&t[..n]);self.title_len=n;}p+=e;continue;}
             if src[p..].starts_with(b"<!--"){if let Some(e)=src[p+4..].windows(3).position(|v|v==b"-->"){p+=e+7;continue;}break;}
-            let Some(e)=tag_end(&src[p..])else{break;};let raw=trim(&src[p+1..p+e]);p+=e+1;
+            let Some(e)=tag_end(&src[p..])else{break;};let start=p;let raw=trim(&src[p+1..p+e]);p+=e+1;
             let closing=raw.first()==Some(&b'/');let t=if closing{trim(&raw[1..])}else{raw};let n=t.iter().position(|v|v.is_ascii_whitespace()||*v==b'/').unwrap_or(t.len());let tag=&t[..n];let a=&t[n..];
             let group=if tag.eq_ignore_ascii_case(b"script"){1}else if tag.eq_ignore_ascii_case(b"style"){2}else if tag.eq_ignore_ascii_case(b"head"){3}else if tag.eq_ignore_ascii_case(b"title"){4}else{0};
             if matches!(group,1|2)&&!closing{if group==1&&skip==0{self.scripts+=1;}let stop=if group==1{b"</script".as_slice()}else{b"</style".as_slice()};if let Some(e)=src[p..].windows(stop.len()).position(|v|v.eq_ignore_ascii_case(stop)){let pos=p+e;if let Some(end)=tag_end(&src[pos..]){p=pos+end+1;continue;}}break;}
             if skip==3&&group==4&&!closing{skip=4;continue;}if skip==4&&group==4&&closing{skip=3;continue;}if skip!=0{if group==skip&&closing{skip=0;}continue;}if group!=0&&!closing{if group==1{self.scripts+=1;}skip=group;continue;}
-            if tag.eq_ignore_ascii_case(b"a"){self.push(&mut b);active=if closing{EMPTY_LINK}else{attr(a,b"href").and_then(|v|url(base,v)).unwrap_or(EMPTY_LINK)};b.link=active;}
+            if tag.is_empty()||tag[0]==b'!'{continue;}
+            let void=coreweb::void_tag(tag)||raw.ends_with(b"/");
+            if overflow>0{if closing{overflow-=1;}else if !void{overflow=overflow.saturating_add(1);}continue;}
             let heading=[b"h1".as_slice(),b"h2",b"h3",b"h4"].iter().any(|v|tag.eq_ignore_ascii_case(v));
-            let block=heading||[b"p".as_slice(),b"div",b"section",b"article",b"header",b"footer",b"nav",b"main",b"li",b"br",b"tr",b"pre",b"button"].iter().any(|v|tag.eq_ignore_ascii_case(v));
-            if block{self.push(&mut b);b.link=active;if !closing{if heading{b.kind=1;}if tag.eq_ignore_ascii_case(b"li"){self.text(&mut b,b"- ");}}}
-            if !closing&&tag.eq_ignore_ascii_case(b"img"){self.push(&mut b);self.images+=1;b.kind=2;b.link=active;if self.image_count<IMAGE_LIMIT{if let Some(l)=attr(a,b"src").or_else(||attr(a,b"data-src")).and_then(|v|url(base,v)){self.image_urls[self.image_count]=l;self.image_count+=1;b.image=self.image_count as u8;}}self.text(&mut b,b"[Image] ");if let Some(v)=attr(a,b"alt"){self.text(&mut b,v);}self.push(&mut b);}
-            if !closing&&(block||tag.eq_ignore_ascii_case(b"span")||tag.eq_ignore_ascii_case(b"strong")||tag.eq_ignore_ascii_case(b"a")){for spec in 0..3{for r in &rules[..nr]{if r.spec==spec&&selector_match(&r.selector[..r.len],tag,a){if r.style.color.is_some(){b.color=r.style.color;}if r.style.bg.is_some(){b.bg=r.style.bg;}if r.style.kind==1{b.kind=1;}}}}if let Some(v)=attr(a,b"style"){style(&mut b,v);}if let Some(v)=attr(a,b"id"){let n=v.len().min(32);b.id[..n].copy_from_slice(&v[..n]);b.id_len=n;}}
+            // Each element contributes a bounded box to the current flow renderer.
+            if closing{
+                if tag.eq_ignore_ascii_case(b"form")&&in_form{self.push(&mut b);if self.form.ready&&!submit{let mut btn=EMPTY;btn.kind=4;btn.align=computed[depth-1].align;self.text(&mut btn,b"Search / Submit");self.push(&mut btn);}in_form=false;}
+                let found=(1..depth).rev().find(|&i|{let(s,n)=tags[i];src[s..s+n].eq_ignore_ascii_case(tag)});
+                if let Some(i)=found{self.push(&mut b);depth=i;b=computed[depth-1];active=b.link;}continue;
+            }
+            if depth>=coreweb::DEPTH&&!void{self.push(&mut b);overflow=1;continue;}
+            // Keep each source element with explicit parent/child/sibling relationships.
+            let node=dom.append(parents[depth-1],start,p-start,false).unwrap_or(parents[depth-1]);
+            let mut next=computed[depth-1];next.len=0;next.id_len=0;next.image=0;next.node=node as u16;next.padding=0;next.margin=0;
+            self.push(&mut b);
+            if heading||tag.eq_ignore_ascii_case(b"strong"){next.kind=1;}
+            if tag.eq_ignore_ascii_case(b"center")||attr(a,b"align").is_some_and(|v|v.eq_ignore_ascii_case(b"center")){next.align=1;}
+            if tag.eq_ignore_ascii_case(b"a"){next.link=attr(a,b"href").and_then(|v|url(base,v)).unwrap_or(EMPTY_LINK);}
+            // Cascade in ascending specificity, then inline declarations. Inherit text style.
+            for spec in 0..3{for rule in &rules[..nr]{if rule.spec==spec&&selector_match(&rule.selector[..rule.len],tag,a){if rule.style.color.is_some(){next.color=rule.style.color;}if rule.style.bg.is_some(){next.bg=rule.style.bg;}if rule.style.kind==1{next.kind=1;}if rule.style.align!=0{next.align=rule.style.align;}if rule.style.padding>0{next.padding=rule.style.padding;}if rule.style.margin>0{next.margin=rule.style.margin;}next.hidden|=rule.style.hidden;}}}
+            if let Some(v)=attr(a,b"style"){style(&mut next,v);}if let Some(v)=attr(a,b"id"){let n=v.len().min(32);next.id[..n].copy_from_slice(&v[..n]);next.id_len=n;}
+            if attr(a,b"hidden").is_some()||attr(a,b"aria-hidden")==Some(b"true".as_slice()){next.hidden=true;}
+            if tag.eq_ignore_ascii_case(b"form")&&!self.form.ready&&!in_form&&!next.hidden{
+                let method=attr(a,b"method").unwrap_or(b"get");let action=match attr(a,b"action"){None|Some(b"")=>url(base,base),Some(v)=>url(base,v)};
+                if method.eq_ignore_ascii_case(b"get"){if let Some(l)=action{if coreweb::same_origin(base,&l.url[..l.len]){self.form=Form::new();self.form.action=l;in_form=true;submit=false;}}}
+            }
+            if (tag.eq_ignore_ascii_case(b"input")||tag.eq_ignore_ascii_case(b"textarea"))&&in_form&&!next.hidden&&attr(a,b"disabled").is_none()&&attr(a,b"readonly").is_none(){
+                let typ=if tag.eq_ignore_ascii_case(b"textarea"){b"text".as_slice()}else{attr(a,b"type").unwrap_or(b"text")};
+                if !self.form.ready&&(typ.eq_ignore_ascii_case(b"text")||typ.eq_ignore_ascii_case(b"search")){
+                    if let Some(n)=attr(a,b"name"){if !n.is_empty()&&n.len()<=48&&n.iter().all(|v|v.is_ascii_alphanumeric()||matches!(*v,b'_'|b'-')){self.form.name[..n.len()].copy_from_slice(n);self.form.name_len=n.len();self.form.ready=true;let mut field=next;field.kind=3;self.text(&mut field,attr(a,b"placeholder").filter(|v|!v.is_empty()).unwrap_or(b"Enter search text"));self.push(&mut field);}}
+                }else if typ.eq_ignore_ascii_case(b"submit")&&self.form.ready&&!submit{let mut btn=next;btn.kind=4;self.text(&mut btn,attr(a,b"value").filter(|v|!v.is_empty()).unwrap_or(b"Submit"));self.push(&mut btn);submit=true;}
+            }
+            if tag.eq_ignore_ascii_case(b"textarea"){if let Some(e)=src[p..].windows(10).position(|v|v.eq_ignore_ascii_case(b"</textarea")){let at=p+e;if let Some(end)=tag_end(&src[at..]){p=at+end+1;}}b=computed[depth-1];active=b.link;continue;}
+            if tag.eq_ignore_ascii_case(b"button")&&in_form&&self.form.ready&&!submit&&!next.hidden&&attr(a,b"type").map_or(true,|v|v.eq_ignore_ascii_case(b"submit")){next.kind=4;submit=true;}
+            if tag.eq_ignore_ascii_case(b"img"){
+                let mut pic=next;pic.kind=2;if !pic.hidden{self.images+=1;if self.image_count<IMAGE_LIMIT{if let Some(l)=attr(a,b"src").or_else(||attr(a,b"data-src")).and_then(|v|url(base,v)){self.image_urls[self.image_count]=l;self.image_count+=1;pic.image=self.image_count as u8;}}self.text(&mut pic,b"[Image] ");if let Some(v)=attr(a,b"alt"){self.text(&mut pic,v);}self.push(&mut pic);}
+            }
+            if !void{
+                tags[depth]=(tag.as_ptr() as usize-src.as_ptr() as usize,tag.len());parents[depth]=node;computed[depth]=next;depth+=1;b=next;active=b.link;
+                if tag.eq_ignore_ascii_case(b"li"){self.text(&mut b,b"- ");}
+            }else{b=computed[depth-1];active=b.link;}
+
         }
-        self.push(&mut b);
+        self.push(&mut b);self.dom_nodes=dom.len.saturating_sub(1);
     }
     // Deliberately tiny, opt-in textContent assignment subset. No eval, loops,
     // functions, networking, native calls, HTML injection or external scripts.
@@ -91,26 +130,28 @@ impl Page{
         if unsafe{hi5_image_decode(bytes.as_ptr(),bytes.len(),photo.bytes.as_mut_ptr(),PIX_CAP,&mut w,&mut h)}!=1||w==0||h==0||w as usize>PIX_W||h as usize>PIX_H{return false;}
         if photo.w==0{self.loaded_images+=1;}photo.w=w as usize;photo.h=h as usize;true
     }
-    fn cols(b:&Block,width:usize)->usize{(width/if b.kind==1{14}else{9}).clamp(8,TEXT)}
+    fn cols(b:&Block,width:usize)->usize{if matches!(b.kind,3|4){return TEXT;}(width.saturating_sub((b.padding as usize+b.margin as usize)*2)/if b.kind==1{14}else{9}).clamp(8,TEXT)}
+    fn height(b:&Block)->usize{(if b.kind==1{30}else if matches!(b.kind,3|4){38}else{22})+2*(b.padding as usize+b.margin as usize)}
+    pub fn control_hit(&self,width:usize,mut y:usize,floor:usize,scroll:usize,click:usize)->u8{let mut row=0;for b in &self.blocks[..self.count]{let n=if Self::photo(b).is_some(){1}else{b.len.div_ceil(Self::cols(b,width))};for _ in 0..n{if row>=scroll{let h=Self::photo(b).map_or(Self::height(b),|p|Self::image_size(p,width).1+8);if click>=y&&click<y+h&&click<floor{return if matches!(b.kind,3|4){b.kind}else{0};}y+=h;if y>=floor{return 0;}}row+=1;}}0}
     fn photo(b:&Block)->Option<&'static Photo>{if b.image==0{return None;}let p=unsafe{&(*core::ptr::addr_of!(PHOTOS))[b.image as usize-1]};(p.w>0&&p.h>0).then_some(p)}
     fn image_size(p:&Photo,width:usize)->(usize,usize){let w=p.w.min(width.saturating_sub(8));(w,(w*p.h/p.w).max(1))}
     pub fn rows(&self,width:usize)->usize{self.blocks[..self.count].iter().map(|b|if Self::photo(b).is_some(){1}else{b.len.div_ceil(Self::cols(b,width))}).sum()}
     pub fn draw(&self,c:&Canvas,x:usize,mut y:usize,right:usize,floor:usize,scroll:usize,ink:Color,sub:Color){
         let width=right.saturating_sub(x);if width<40{return;}let mut row=0;
         for b in &self.blocks[..self.count]{
-            if let Some(p)=Self::photo(b){if row>=scroll{let(w,h)=Self::image_size(p,width);let h=h.min(floor.saturating_sub(y));for j in 0..h{for i in 0..w{let at=((j*p.h/(w*p.h/p.w).max(1))*p.w+i*p.w/w)*3;c.pixel(x+3+i,y+j,[p.bytes[at],p.bytes[at+1],p.bytes[at+2]]);}}y+=h+8;if y>=floor{return;}}row+=1;continue;}
-            let big=b.kind==1;let height=if big{30}else{22};
+            if let Some(p)=Self::photo(b){if row>=scroll{let(w,h)=Self::image_size(p,width);let h=h.min(floor.saturating_sub(y));let ox=if b.align==1{x+(width-w)/2}else if b.align==2{x+width-w}else{x+3};for j in 0..h{for i in 0..w{let at=((j*p.h/(w*p.h/p.w).max(1))*p.w+i*p.w/w)*3;c.pixel(ox+i,y+j,[p.bytes[at],p.bytes[at+1],p.bytes[at+2]]);}}y+=h+8;if y>=floor{return;}}row+=1;continue;}
+            let big=b.kind==1;let height=Self::height(b);
             for part in b.buf[..b.len].chunks(Self::cols(b,width)){if row>=scroll{if y+height>floor{return;}if let Some(bg)=b.bg{c.rect(x,y,width,height,bg);}else if b.kind==2{c.rect(x,y,width,height,sub);}
-                if let Ok(t)=core::str::from_utf8(part){let color=b.color.unwrap_or(if b.link.len>0{[31,97,185]}else{ink});c.text_limit(x+3,y+2,t,color,big,right);if b.link.len>0{c.rect(x+3,y+height-3,c.text_width(t).min(width.saturating_sub(6)),1,color);}}y+=height;}row+=1;}
+                if let Ok(t)=core::str::from_utf8(part){let color=b.color.unwrap_or(if b.link.len>0{[31,97,185]}else{ink});let inset=b.padding as usize+b.margin as usize+3;let tw=c.text_width(t)*(if big{2}else{1});let tx=if b.align==1{x+width.saturating_sub(tw)/2}else if b.align==2{right.saturating_sub(tw+inset).max(x)}else{x+inset};if matches!(b.kind,3|4){let cw=if b.kind==3{width.min(420)}else{width.min(180)};let ox=if b.align==1{x+(width-cw)/2}else{x};c.round(ox+2,y+2,cw.saturating_sub(4),height-4,5,if b.kind==3&&self.form_focus{[207,224,247]}else{[227,231,237]});let val=if b.kind==3&&self.form.len>0{core::str::from_utf8(&self.form.value[..self.form.len]).unwrap_or("")}else{t};c.text_limit(ox+10,y+10,val,[30,34,40],false,ox+cw.saturating_sub(5));}else{c.text_limit(tx,y+inset,t,color,big,right);if b.link.len>0{c.rect(tx,y+height-3,c.text_width(t).min(right.saturating_sub(tx)),1,color);}}}y+=height;}row+=1;}
         }
     }
-    pub fn hit(&self,width:usize,mut y:usize,floor:usize,scroll:usize,click:usize)->Option<Link>{let mut row=0;for b in &self.blocks[..self.count]{if let Some(p)=Self::photo(b){if row>=scroll{let(_,h)=Self::image_size(p,width);let next=y+h.min(floor.saturating_sub(y))+8;if click>=y&&click<next.min(floor){return (b.link.len>0).then_some(b.link);}y=next;}row+=1;continue;}let h=if b.kind==1{30}else{22};for _ in b.buf[..b.len].chunks(Self::cols(b,width)){if row>=scroll{if y+h>floor{return None;}if click>=y&&click<y+h{return (b.link.len>0).then_some(b.link);}y+=h;}row+=1;}}None}
+    pub fn hit(&self,width:usize,mut y:usize,floor:usize,scroll:usize,click:usize)->Option<Link>{let mut row=0;for b in &self.blocks[..self.count]{if let Some(p)=Self::photo(b){if row>=scroll{let(_,h)=Self::image_size(p,width);let next=y+h.min(floor.saturating_sub(y))+8;if click>=y&&click<next.min(floor){return (b.link.len>0).then_some(b.link);}y=next;}row+=1;continue;}let h=Self::height(b);for _ in b.buf[..b.len].chunks(Self::cols(b,width)){if row>=scroll{if y+h>floor{return None;}if click>=y&&click<y+h{return (b.link.len>0).then_some(b.link);}y+=h;}row+=1;}}None}
 
 }
 fn url(base:&[u8],href:&[u8])->Option<Link>{let mut l=EMPTY_LINK;l.len=crate::http::resolve_url(base,href,&mut l.url)?;if base.starts_with(b"https://")&&!l.url[..l.len].starts_with(b"https://"){return None;}Some(l)}
 fn tag_end(s:&[u8])->Option<usize>{let mut q=0;for(i,b)in s.iter().enumerate().skip(1){if q!=0{if *b==q{q=0;}}else if *b==b'\''||*b==b'"'{q=*b;}else if *b==b'>'{return Some(i);}}None}
 fn selector_match(s:&[u8],tag:&[u8],attrs:&[u8])->bool{if s.first()==Some(&b'.'){attr(attrs,b"class").is_some_and(|v|v.split(|b|b.is_ascii_whitespace()).any(|v|v==&s[1..]))}else if s.first()==Some(&b'#'){attr(attrs,b"id")==Some(&s[1..])}else{s.eq_ignore_ascii_case(tag)}}
-fn css_rules(mut css:&[u8],out:&mut[Rule;256],count:&mut usize){while !css.is_empty()&&*count<out.len(){let Some(i)=css.iter().position(|v|*v==b'{')else{break;};let Some(j)=css[i+1..].iter().position(|v|*v==b'}')else{break;};let sel=&css[..i];let body=&css[i+1..i+1+j];css=&css[i+j+2..];let mut b=EMPTY;style(&mut b,body);if b.color.is_none()&&b.bg.is_none()&&b.kind==0{continue;}for s in sel.split(|v|*v==b','){let s=trim(s);if s.is_empty()||s.len()>96||*count>=out.len(){continue;}let spec=if s[0]==b'#'{2}else if s[0]==b'.'{1}else{0};let name=if spec>0{&s[1..]}else{s};if name.is_empty()||!name.iter().all(|v|v.is_ascii_alphanumeric()||*v==b'-'||*v==b'_'){continue;}let mut r=EMPTY_RULE;r.selector[..s.len()].copy_from_slice(s);r.len=s.len();r.spec=spec;r.style=b;out[*count]=r;*count+=1;}}}
+fn css_rules(mut css:&[u8],out:&mut[Rule;256],count:&mut usize){while !css.is_empty()&&*count<out.len(){let Some(i)=css.iter().position(|v|*v==b'{')else{break;};let Some(j)=css[i+1..].iter().position(|v|*v==b'}')else{break;};let sel=&css[..i];let body=&css[i+1..i+1+j];css=&css[i+j+2..];let mut b=EMPTY;style(&mut b,body);if b.color.is_none()&&b.bg.is_none()&&b.kind==0&&b.align==0&&b.padding==0&&b.margin==0&&!b.hidden{continue;}for s in sel.split(|v|*v==b','){let s=trim(s);if s.is_empty()||s.len()>96||*count>=out.len(){continue;}let spec=if s[0]==b'#'{2}else if s[0]==b'.'{1}else{0};let name=if spec>0{&s[1..]}else{s};if name.is_empty()||!name.iter().all(|v|v.is_ascii_alphanumeric()||*v==b'-'||*v==b'_'){continue;}let mut r=EMPTY_RULE;r.selector[..s.len()].copy_from_slice(s);r.len=s.len();r.spec=spec;r.style=b;out[*count]=r;*count+=1;}}}
 fn literal(s:&[u8])->Option<(&[u8],&[u8])>{let q=*s.first()?;if q!=b'\''&&q!=b'"'{return None;}let e=s[1..].iter().position(|v|*v==q)?+1;let a=&s[1..e];if a.iter().any(|v|*v<32||*v>=127||*v==b'\\'){return None;}Some((a,&s[e+1..]))}
 // Uncompressed 24-bit BMP only; bounded dimensions and checked offsets.
 pub struct Bitmap<'a>{bytes:&'a[u8],offset:usize,stride:usize,pub w:usize,pub h:usize,bottom:bool}
@@ -122,5 +163,5 @@ pub fn self_test()->bool{
     let p=unsafe{&mut *core::ptr::addr_of_mut!(PAGE)};
     let s=b"<html><head><title>Hi5 test</title></head><body><h1 style='color:#112233'>Headline</h1><p id='demo'>Before</p><img alt='photo'><script>document.getElementById('demo').textContent = 'After';</script></body></html>";
     p.parse(s);let ok=p.count==3&&p.title()=="Hi5 test"&&p.styled==1&&p.images==1&&p.scripts==1&&p.blocks[0].kind==1&&p.literal_update(s)==1&&&p.blocks[1].buf[..p.blocks[1].len]==b"After"&&p.literal_update(b"<script>document.getElementById('demo').textContent = 'no';alert(1)</script>")==0;
-    p.parse_at(b"<h1 class='headline'>A</h1><p><a href='/news'>News</a></p>",b"https://example.test/",b".headline { color: #123456; }");let css_ok=p.styled==1&&p.blocks[0].color==Some([18,52,86])&&p.blocks[1].link.len>0&&p.hit(400,0,200,0,31).is_some_and(|l|&l.url[..l.len]==b"https://example.test/news");p.clear();ok&&css_ok&&Bitmap::parse(b"BM").is_none()
+    p.parse_at(b"<h1 class='headline'>A</h1><p><a href='/news'>News</a></p>",b"https://example.test/",b".headline { color: #123456; }");let css_ok=p.styled==1&&p.blocks[0].color==Some([18,52,86])&&p.blocks[1].link.len>0&&p.hit(400,0,200,0,31).is_some_and(|l|&l.url[..l.len]==b"https://example.test/news");p.parse_at(b"<center><div style='color:#123456'><span>Nested</span></div><form action='/search'><input name='q'><input type='submit' value='Go'></form></center>",b"https://example.test/",&[]);let form_ok=p.dom_nodes>=7&&p.blocks[0].align==1&&p.blocks[0].color==Some([18,52,86])&&p.form.ready&&p.blocks[..p.count].iter().any(|v|v.kind==3)&&p.blocks[..p.count].iter().any(|v|v.kind==4);p.clear();ok&&css_ok&&form_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
 }

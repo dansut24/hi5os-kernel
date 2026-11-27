@@ -66,6 +66,10 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         run: python3 scripts/public_web.py
+      - name: Public Google form diagnostic (non-blocking external network)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: python3 scripts/public_web.py --google
       - name: Retain image and evidence
         if: always()
         uses: actions/upload-artifact@v4
