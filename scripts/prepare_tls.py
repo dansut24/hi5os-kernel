@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build pinned BearSSL as freestanding Win64 COFF and compile distribution CA trust anchors."""
-import pathlib,subprocess,hashlib,tarfile,os,sys
+import pathlib,subprocess,hashlib,tarfile,os,sys,shutil
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import rsa,ec
 from cryptography.hazmat.primitives.serialization import Encoding,PublicFormat
@@ -9,6 +9,8 @@ OUT=ROOT/"target/hi5-tls"
 TEST=len(sys.argv)==2
 ROOT_FILES=[pathlib.Path(sys.argv[1])] if TEST else sorted(pathlib.Path("/usr/share/ca-certificates/mozilla").glob("*.crt"))
 OUT.mkdir(parents=True,exist_ok=True)
+for tool in ("clang","lld-link","curl"):
+    if shutil.which(tool) is None:raise SystemExit(f"Required TLS build tool not found: {tool}")
 ARCHIVE=OUT/"bearssl-0.6.tar.gz"
 if not ARCHIVE.exists():subprocess.run(["curl","--fail","--location","--retry","2","https://bearssl.org/bearssl-0.6.tar.gz","-o",str(ARCHIVE)],check=True)
 assert hashlib.sha256(ARCHIVE.read_bytes()).hexdigest()=="6705bba1714961b41a728dfc5debbe348d2966c117649392f8c8139efc83ff14","BearSSL digest mismatch"
@@ -57,5 +59,11 @@ for i,src in enumerate(sources):
     obj=(DEST if i==len(sources)-1 else OUT)/f"{i}.obj"
     if not TEST or i==len(sources)-1 or not obj.exists():subprocess.run(flags+["-c",str(src),"-o",str(obj)],check=True)
     objects.append(str(obj))
-lib=DEST/"hi5tls.lib";lib.unlink(missing_ok=True);subprocess.run(["llvm-ar","rcs",str(lib),*objects],check=True)
+# Use the existing COFF librarian bundled with lld, already required for
+# the Windows compatibility fixtures. No separate llvm-ar dependency.
+lib=DEST/"hi5tls.lib";lib.unlink(missing_ok=True)
+subprocess.run(["lld-link","/lib","/machine:x64","/out:"+str(lib),*objects],check=True)
+with lib.open("rb") as archive:
+    assert archive.read(8)==b"!<arch>\n","Invalid COFF archive"
+assert lib.stat().st_size>1024,"TLS library unexpectedly empty"
 print(f"Native TLS: {len(entries)} CA trust anchors, {len(objects)} objects")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-for tool in cargo mkfs.vfat mmd mcopy clang lld-link; do command -v "$tool" >/dev/null || { echo "Missing $tool" >&2; exit 1; }; done
+for tool in cargo mkfs.vfat mmd mcopy clang lld-link curl; do command -v "$tool" >/dev/null || { echo "Missing $tool" >&2; exit 1; }; done
 /usr/bin/python3 scripts/fontgen.py
 mkdir -p target/hi5-fixture
 /usr/bin/python3 scripts/prepare7zip.py
