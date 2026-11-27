@@ -182,6 +182,11 @@ def main():
                     assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Search response not rendered"
                     tail=log.read_bytes().rsplit(b"WEB_CORE_FORM_SUBMITTED",1)[-1]
                     assert b"BROWSER_LAYOUT_BLOCKS=0x0000000000000002" in tail,"Search result layout must contain two real blocks"
+                    key("ctrl-s");wait(b"BROWSER_SETTINGS_OPEN",5)
+                    call("screendump",{"filename":str(ROOT/"dist"/"browser-settings-512m.ppm")})
+                    key("3");wait(b"BROWSER_DIAGNOSTICS=0x0000000000000001",5)
+                    key("3");wait(b"BROWSER_DIAGNOSTICS=0x0000000000000000",5)
+                    key("ctrl-s");wait(b"BROWSER_SETTINGS_CLOSED",5)
                     key("ctrl-tab");wait(b"BROWSER_TAB_ACTIVE=0x0000000000000000",30);key("ctrl-w");wait(b"BROWSER_TAB_COUNT=0x0000000000000001",30)
                 call("quit")
             proc.wait(timeout=10)
