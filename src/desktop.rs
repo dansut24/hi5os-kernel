@@ -16,6 +16,8 @@ impl Terminal{fn new()->Self{Self{buf:[0;112],len:0,last:[0;112],last_len:0,resu
 const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
 // The large response buffer is image-owned static memory, not the 64 KiB kernel stack.
 static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
+static mut WEB_ASSET:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
+static mut WEB_CSS:[u8;128*1024]=[0;128*1024];
 static mut WORK_BUFFER:[u8;crate::trialfs::SNAP_CAP]=[0;crate::trialfs::SNAP_CAP];
 static mut APP_BUFFER:[u8;crate::trial::PACKAGE_SIZE]=[0;crate::trial::PACKAGE_SIZE];
 #[derive(Clone,Copy)]struct WindowSlot{app:App,win:Rect,restore:Rect,maximized:bool,minimized:bool}
@@ -154,7 +156,7 @@ impl Ui{
                 self.button(Rect{x,y:y+229,w:190,h:34},"Connect / DHCP (C)",BLUE,WHITE);
             }
             App::Browser=>{
-                c.title(x,y,"Hi5Browser",q.ink);self.button(Rect{x:x+155,y,w:50,h:30},"<",q.sub,q.ink);self.button(Rect{x:x+210,y,w:50,h:30},">",q.sub,q.ink);self.button(Rect{x:x+265,y,w:65,h:30},"Reload",q.sub,q.ink);
+                c.title(x,y,"Hi5Browser",q.ink);self.button(Rect{x:x+155,y,w:50,h:30},"<",q.sub,q.ink);self.button(Rect{x:x+210,y,w:50,h:30},">",q.sub,q.ink);self.button(Rect{x:x+265,y,w:65,h:30},"Reload",q.sub,q.ink);self.button(Rect{x:x+335,y,w:105,h:30},"Graphics",q.sub,q.ink);
                 c.round(x,y+42,r.w-132,34,5,q.sub);
                 if let Ok(t)=core::str::from_utf8(&self.url[..self.url_len]){c.text_limit(x+6,y+48,t,q.ink,false,right-90);}
                 self.button(Rect{x:r.x+r.w-95,y:y+42,w:72,h:34},"Go",BLUE,WHITE);
@@ -162,19 +164,19 @@ impl Ui{
                 if self.web_ok{
                     c.text(x+185,y+108,"Bytes:",q.ink);c.num(x+250,y+108,self.web_len as u64,q.ink);
                     let kind=match crate::compat::classify(&self.web[..self.web_len]){crate::compat::Kind::Pe64=>"PE64 executable candidate",crate::compat::Kind::Pe32=>"PE32 executable candidate",crate::compat::Kind::Compound=>"OLE compound-file candidate",_=>"Text or unknown binary"};
-                    c.text_limit(x,y+137,kind,q.ink,false,right);
                     if self.web_text{
-                        let floor=if self.web_link_count>0{r.y+r.h-115}else{r.y+r.h-25};
-                        self.page.draw(c,x,y+163,right,floor,self.web_scroll,q.ink,q.sub);
-                        if self.web_link_count>0{let top=r.y+r.h-107;c.text_limit(x,top,"Links (Ctrl+1 to 8; click to open)",q.muted,false,right);for i in 0..self.web_link_count.min(8){let l=self.web_links[i];let xx=x+(i%2)*(r.w-44)/2;let yy=top+21+(i/2)*17;if let Ok(s)=core::str::from_utf8(&l.url[..l.len]){c.num(xx,yy,(i+1)as u64,BLUE);c.text_limit(xx+22,yy,s,BLUE,false,xx+(r.w-44)/2-4);}}}
+                        let top=y+137;let floor=r.y+r.h-25;let w=right.saturating_sub(x+13);
+                        c.rect(x,top,w,floor.saturating_sub(top),[255,255,255]);
+                        self.page.draw(c,x,top+3,x+w,floor,self.web_scroll,[30,34,40],[235,238,242]);
+                        let rows=self.page.rows(w).max(1);let h=floor.saturating_sub(top);if h>20{c.rect(right-10,top,9,h,q.sub);let thumb=(h*6/rows).clamp(14,h);let offset=(h-thumb)*self.web_scroll.min(rows-1)/rows.saturating_sub(1).max(1);c.round(right-10,top+offset,9,thumb,3,BLUE);}
                     }else if let Some(bitmap)=crate::webpage::Bitmap::parse(&self.web[..self.web_len]){bitmap.draw(c,x,y+165,r.w-44,(r.y+r.h).saturating_sub(y+190));}else{
-                        c.text(x,y+165,"Binary preview - execution disabled",q.muted);
+                        c.text_limit(x,y+137,kind,q.ink,false,right);c.text(x,y+165,"Binary preview - execution disabled",q.muted);
                         let src=&self.source[..self.source_len];let path=src.split(|b|*b==b'?').next().unwrap_or(&[]);
                         let name=path.rsplit(|b|*b==b'/').next().unwrap_or(&[]);
                         if let Ok(t)=core::str::from_utf8(name){if !t.is_empty(){c.text_limit(x,y+188,t,q.ink,false,right);}}
                     }
                     if !self.web_text&&self.web_status==200&&crate::webpage::Bitmap::parse(&self.web[..self.web_len]).is_none(){self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);}
-                }else{c.text_limit(x,y+120,"HTTP / HTTPS websites and downloads (TLS 1.2 preview).",q.ink,false,right);c.text(x,y+149,"Ctrl+L URL; Ctrl+B/F history; F10 last; Ctrl+D previous; Ctrl+J text update.",q.muted);}
+                }else{c.text_limit(x,y+120,"HTTP / HTTPS websites and downloads (TLS 1.2 preview).",q.ink,false,right);c.text(x,y+149,"Ctrl+L URL; Ctrl+B/F history; Ctrl+I graphics; F10 last download.",q.muted);}
             }
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
@@ -302,11 +304,19 @@ impl Ui{
             self.classify_web();serial::line("H5K: GUI_DOWNLOAD_REOPENED");
         }else{self.web_ok=false;self.web_len=0;self.web_msg="No valid saved download";}self.draw();
     }
-    fn classify_web(&mut self){self.page.clear();self.web_scroll=0;self.web_link_count=0;self.web_text=self.web_ok&&self.web[..self.web_len].iter().all(|b|*b==9||*b==10||*b==13||*b>=32)&&core::str::from_utf8(&self.web[..self.web_len]).is_ok();if self.web_text{self.page.parse(&self.web[..self.web_len]);serial::metric("H5K: BROWSER_LAYOUT_BLOCKS=",self.page.count as u64);serial::metric("H5K: BROWSER_STYLE_BLOCKS=",self.page.styled as u64);self.web_link_count=crate::http::links(&self.web[..self.web_len],&self.source[..self.source_len],&mut self.web_links);serial::line("H5K: BROWSER_PAGE_RENDERED");serial::metric("H5K: BROWSER_LINKS=",self.web_link_count as u64);}else if self.web_ok&&crate::webpage::Bitmap::parse(&self.web[..self.web_len]).is_some(){serial::line("H5K: BROWSER_BITMAP_RENDERED");}}
+    fn classify_web(&mut self){self.page.clear();self.web_scroll=0;self.web_link_count=0;self.web_text=self.web_ok&&self.web[..self.web_len].iter().all(|b|*b==9||*b==10||*b==13||*b>=32)&&core::str::from_utf8(&self.web[..self.web_len]).is_ok();if self.web_text{self.page.parse_at(&self.web[..self.web_len],&self.source[..self.source_len],&[]);serial::metric("H5K: BROWSER_LAYOUT_BLOCKS=",self.page.count as u64);serial::metric("H5K: BROWSER_STYLE_BLOCKS=",self.page.styled as u64);self.web_link_count=crate::http::links(&self.web[..self.web_len],&self.source[..self.source_len],&mut self.web_links);serial::line("H5K: BROWSER_PAGE_RENDERED");serial::metric("H5K: BROWSER_LINKS=",self.web_link_count as u64);}else if self.web_ok&&crate::webpage::Bitmap::parse(&self.web[..self.web_len]).is_some(){serial::line("H5K: BROWSER_BITMAP_RENDERED");}}
     fn follow_link(&mut self,i:usize){if i>=self.web_link_count{return;}let l=self.web_links[i];self.url=l.url;self.url_len=l.len;serial::line("H5K: BROWSER_LINK_OPENED");self.fetch_web();}
     fn remember_page(&mut self){if self.history_replay||!self.web_ok{return;}let l=crate::http::Link{url:self.source,len:self.source_len};if self.history_len>0&&self.history[self.history_pos].url[..self.history[self.history_pos].len]==l.url[..l.len]{return;}if self.history_len>0{self.history_len=self.history_pos+1;}if self.history_len==16{self.history.copy_within(1..16,0);self.history_len=15;}self.history[self.history_len]=l;self.history_pos=self.history_len;self.history_len+=1;}
     fn history_go(&mut self,forward:bool){if self.history_len==0{return;}let next=if forward{(self.history_pos+1).min(self.history_len-1)}else{self.history_pos.saturating_sub(1)};if next==self.history_pos{return;}self.history_pos=next;let l=self.history[next];self.url=l.url;self.url_len=l.len;self.history_replay=true;self.fetch_web();self.history_replay=false;serial::line("H5K: BROWSER_HISTORY_NAVIGATED");}
     fn dynamic_preview(&mut self){if !self.web_text{return;}let n=self.page.literal_update(&self.web[..self.web_len]);self.web_msg=if n>0{"Limited textContent update applied"}else{"No supported script update (general JS disabled)"};serial::metric("H5K: BROWSER_LITERAL_UPDATES=",n as u64);self.draw();}
+    fn load_graphics(&mut self){
+        if !self.web_ok||!self.web_text||self.web_status!=200{return;}self.web_msg="Loading bounded stylesheet and image resources";self.draw();let Some(nic)=self.nic.as_mut()else{return;};
+        let buffer=unsafe{&mut *ptr::addr_of_mut!(WEB_ASSET)};let css=unsafe{&mut *ptr::addr_of_mut!(WEB_CSS)};let mut used=0;let mut sheets=0;
+        self.web_msg="Loading bounded stylesheet and image resources";
+        let list=self.page.stylesheets;for l in &list[..self.page.stylesheet_count]{if let Ok((n,final_url,len,status))=nic.get_follow(&l.url[..l.len],buffer){if status==200&&(!self.source[..self.source_len].starts_with(b"https://")||final_url[..len].starts_with(b"https://"))&&n<css.len().saturating_sub(used+1)&&core::str::from_utf8(&buffer[..n]).is_ok(){css[used..used+n].copy_from_slice(&buffer[..n]);used+=n;css[used]=b'\n';used+=1;sheets+=1;}}}
+        self.page.parse_at(&self.web[..self.web_len],&self.source[..self.source_len],&css[..used]);let list=self.page.image_urls;for (i,l) in list[..self.page.image_count].iter().enumerate(){if let Ok((n,final_url,len,status))=nic.get_follow(&l.url[..l.len],buffer){if status==200&&(!self.source[..self.source_len].starts_with(b"https://")||final_url[..len].starts_with(b"https://")){self.page.load_image(i,&buffer[..n]);}}}
+        self.web_msg="Graphics pass complete - limited CSS and images";self.web_scroll=0;serial::metric("H5K: BROWSER_STYLESHEETS_LOADED=",sheets as u64);serial::metric("H5K: BROWSER_STYLE_BLOCKS=",self.page.styled as u64);serial::metric("H5K: BROWSER_IMAGES_LOADED=",self.page.loaded_images as u64);self.draw();
+    }
     fn fetch_web(&mut self){
         self.web_ok=false;self.web_len=0;self.web_status=0;self.web_text=false;self.web_link_count=0;self.web_msg="Connecting via DHCP / HTTP...";self.draw();
         if !self.url[..self.url_len].starts_with(b"http://")&&!self.url[..self.url_len].starts_with(b"https://")&&self.url_len+8<=self.url.len(){self.url.copy_within(..self.url_len,8);self.url[..8].copy_from_slice(b"https://");self.url_len+=8;}
@@ -318,7 +328,7 @@ impl Ui{
     fn save_web(&mut self){if self.web_ok&&self.web_status==200{if self.web_len>crate::disk::DL_CAP{self.web_msg="Save limit 1 MiB - preview only";self.draw();return;}self.web_msg=if self.store.save_download(&self.web[..self.web_len],&self.source[..self.source_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
     fn browser_key(&mut self,key:u8){
         if key==0x1c{self.fetch_web();return;}if key==0x43{self.save_web();return;}if key==0x44{self.reopen_web();return;}
-        if self.ctrl{if key==0x26{self.url_len=0;self.draw();}else if key==0x24{self.dynamic_preview();}else if key==0x30{self.history_go(false);}else if key==0x21{self.history_go(true);}else if key==0x13{self.fetch_web();}else if key==0x20{self.previous_download();}else if (0x02..=0x09).contains(&key){self.follow_link((key-2)as usize);}return;}
+        if self.ctrl{if key==0x26{self.url_len=0;self.draw();}else if key==0x24{self.dynamic_preview();}else if key==0x17{self.load_graphics();}else if key==0x30{self.history_go(false);}else if key==0x21{self.history_go(true);}else if key==0x13{self.fetch_web();}else if key==0x20{self.previous_download();}else if (0x02..=0x09).contains(&key){self.follow_link((key-2)as usize);}return;}
         if key==0x0e{self.url_len=self.url_len.saturating_sub(1);self.draw();return;}
         if let Some(b)=ascii(key,self.term.shift){if self.url_len<self.url.len(){self.url[self.url_len]=b;self.url_len+=1;self.draw();}}
     }
@@ -373,9 +383,9 @@ impl Ui{
             if a==App::Store&&x>=bx&&x<bx+230{if y>=yy+98&&y<yy+132{self.package_action(x<bx+120);return;}if y>=yy+144&&y<yy+178{self.select(App::Terminal);return;}}
             if a==App::Sheet&&x>=bx+30&&y>=yy+87&&y<yy+207{let cw=(r.w-76)/4;let col=(x-bx-30)/cw;let row=(y-yy-87)/30;if col<4{self.sheet_cell=row*4+col;self.sheet_len=0;self.draw();}return;}
             if a==App::Network&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+190{self.connect_net();return;}
-            if a==App::Browser&&y>=yy&&y<yy+30{if x>=bx+155&&x<bx+205{self.history_go(false);return;}if x>=bx+210&&x<bx+260{self.history_go(true);return;}if x>=bx+265&&x<bx+330{self.fetch_web();return;}}
+            if a==App::Browser&&y>=yy&&y<yy+30{if x>=bx+155&&x<bx+205{self.history_go(false);return;}if x>=bx+210&&x<bx+260{self.history_go(true);return;}if x>=bx+265&&x<bx+330{self.fetch_web();return;}if x>=bx+335&&x<bx+440{self.load_graphics();return;}}
             if a==App::Browser&&y>=yy+42&&y<yy+76&&x>=r.x+r.w-95{self.fetch_web();return;}
-            if a==App::Browser&&self.web_text&&self.web_link_count>0&&y>=r.y+r.h-86&&y<r.y+r.h-18&&x>=bx{let row=(y-(r.y+r.h-86))/17;let col=((x-bx)/((r.w-44)/2)).min(1);self.follow_link(row*2+col);return;}
+            if a==App::Browser&&self.web_text&&y>=yy+137&&y<r.y+r.h-25&&x>=bx{let right=r.x+r.w-22;let w=right.saturating_sub(bx+13);if x>=right-10{let rows=self.page.rows(w).max(1);self.web_scroll=((y-(yy+137))*rows/(r.y+r.h-25-(yy+137)).max(1)).min(rows-1);self.draw();return;}if let Some(l)=self.page.hit(w,yy+140,r.y+r.h-25,self.web_scroll,y){self.url=l.url;self.url_len=l.len;serial::line("H5K: BROWSER_INLINE_LINK");self.fetch_web();return;}}
             if a==App::Browser&&!self.web_text&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+180{self.save_web();return;}
             if a==App::Notepad&&y>=yy+1&&y<yy+34{if x>=bx&&x<bx+82{self.save_note();}else if x>=bx+92&&x<bx+174{self.clear_note();}return;}
             if a==App::Files&&y>=yy+88&&y<yy+88+FILE_COUNT*31{let i=(y-yy-88)/31;if i==self.file{self.select(App::Notepad);}else{self.switch_file(i);}return;}
@@ -431,7 +441,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     loop{match ui.tasks.dispatch(){
         0=>{for _ in 0..32{let st=p::input(0x64);if st&1==0{break;}let b=p::input(0x60);if st&0x20!=0{
             if pos==0&&b&8==0{continue;}packet[pos]=b;pos+=1;if pos==3{pos=0;let flags=packet[0];if flags&0xc0!=0{continue;}let dx=packet[1]as isize-if flags&0x10!=0{256}else{0};let dy=packet[2]as isize-if flags&0x20!=0{256}else{0};let pressed=flags&1!=0;ui.move_pointer(dx,dy,pressed,down);down=pressed;}
-        }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.auth.stage!=0{ }else if ui.app==Some(App::WinLive)&&b&0x80==0{let vk=match b{0x48=>38,0x50=>40,0x4b=>37,0x4d=>39,0x47=>36,0x4f=>35,0x49=>33,0x51=>34,0x53=>46,_=>0};if vk!=0{crate::trial::live_key(vk,None);if !crate::trial::live_active(){ui.close();}else{ui.draw();}}}else if ui.app==Some(App::Browser)&&ui.web_text&&b&0x80==0{if b==0x49||b==0x48{ui.web_scroll=ui.web_scroll.saturating_sub(if b==0x49{5}else{1});ui.draw();}else if b==0x51||b==0x50{ui.web_scroll=(ui.web_scroll+if b==0x51{5}else{1}).min(180);ui.draw();}}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
+        }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.auth.stage!=0{ }else if ui.app==Some(App::WinLive)&&b&0x80==0{let vk=match b{0x48=>38,0x50=>40,0x4b=>37,0x4d=>39,0x47=>36,0x4f=>35,0x49=>33,0x51=>34,0x53=>46,_=>0};if vk!=0{crate::trial::live_key(vk,None);if !crate::trial::live_active(){ui.close();}else{ui.draw();}}}else if ui.app==Some(App::Browser)&&ui.web_text&&b&0x80==0{if b==0x49||b==0x48{ui.web_scroll=ui.web_scroll.saturating_sub(if b==0x49{5}else{1});ui.draw();}else if b==0x51||b==0x50{ui.web_scroll=(ui.web_scroll+if b==0x51{5}else{1}).min(ui.page.rows(ui.win.w.saturating_sub(57)).saturating_sub(1));ui.draw();}}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
         1=>{if ui.auth.stage==0&&ui.app==Some(App::WinLive){crate::trial::live_tick();if !crate::trial::live_active(){ui.close();}}else{core::hint::spin_loop();}},_=>p::wait_tick(),
     }}
 }

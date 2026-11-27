@@ -131,7 +131,7 @@ def main():
         ext.write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:tls.test\n")
         run("openssl","x509","-req","-in",str(csr),"-CA",str(ca),"-CAkey",str(key),"-CAcreateserial","-out",str(cert),"-days","2","-extfile",str(ext))
         subprocess.run(["/usr/bin/python3",str(ROOT/"scripts/prepare_tls.py"),str(ca)],check=True)
-        env=os.environ.copy();env["RUSTFLAGS"]="-Lnative="+str(ROOT/"target/hi5-tls/test");env["CARGO_TARGET_DIR"]=str(t/"cargo")
+        env=os.environ.copy();env["RUSTFLAGS"]="-Lnative="+str(ROOT/"target/hi5-tls/test")+" -Lnative="+str(ROOT/"target/hi5-image");env["CARGO_TARGET_DIR"]=str(t/"cargo")
         subprocess.run(["cargo","build","--release","--locked","--target","x86_64-unknown-uefi"],cwd=ROOT,env=env,check=True)
         image=t/"test.img";shutil.copyfile(ROOT/"dist/hi5os-v0.3.4.img",image)
         subprocess.run(["mcopy","-o","-i",str(image),str(t/"cargo/x86_64-unknown-uefi/release/hi5kernel.efi"),"::/EFI/BOOT/BOOTX64.EFI"],check=True)

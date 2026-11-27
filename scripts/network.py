@@ -19,8 +19,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         if MODE=="browse" and self.path=="/index.html":
-            body=b"<html><head><title>Hi5 test</title></head><body><h1 style='color:#112233'>Hi5Browser qualification</h1><p id='demo'>Before</p><script>document.getElementById('demo').textContent = 'After';</script><a href='/get.exe'>Download EXE</a></body></html>"
+            body=b"<html><head><title>Hi5 test</title><link rel='stylesheet' href='/style.css'></head><body><h1 style='color:#112233'>Hi5Browser qualification</h1><p id='demo' class='copy'>Before</p><img src='/photo.png' alt='PNG'><img src='/photo.jpg' alt='JPEG'><script>document.getElementById('demo').textContent = 'After';</script><a href='/get.exe'>Download EXE</a></body></html>"
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
+        if MODE=="browse" and self.path in ("/style.css","/photo.png","/photo.jpg"):
+            if self.path=="/style.css":body=b".copy { color: #245678; }";ctype="text/css"
+            else:
+                import io
+                from PIL import Image
+                f=io.BytesIO();Image.new("RGB",(80,48),(230,50,70)).save(f,format="PNG" if self.path.endswith("png") else "JPEG");body=f.getvalue();ctype="image/png" if self.path.endswith("png") else "image/jpeg"
+            self.send_response(200);self.send_header("Content-Type",ctype);self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/image.bmp":
             body=b"BM"+struct.pack("<IHHI",58,0,0,54)+struct.pack("<IiiHHIIiiII",40,1,1,1,24,0,4,0,0,0,0)+bytes([0,0,255,0])
             self.send_response(200);self.send_header("Content-Type","image/bmp");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
@@ -86,6 +93,7 @@ def main():
                     for ch in f"http://10.0.2.2:{server.server_port}/index.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
                     key("ret");wait(b"BROWSER_PAGE_RENDERED",30);wait(b"BROWSER_LINKS=0x0000000000000001",5)
                     wait(b"BROWSER_STYLE_BLOCKS=0x0000000000000001",5)
+                    key("ctrl-i");wait(b"BROWSER_STYLESHEETS_LOADED=0x0000000000000001",45);wait(b"BROWSER_IMAGES_LOADED=0x0000000000000002",45);wait(b"BROWSER_STYLE_BLOCKS=0x0000000000000002",5)
                     key("ctrl-j");wait(b"BROWSER_LITERAL_UPDATES=0x0000000000000001",5)
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-page-512m.ppm")})
                     key("ctrl-1");wait(b"BROWSER_LINK_OPENED",5);wait(b"HTTP_REDIRECT_FOLLOWED",30)
