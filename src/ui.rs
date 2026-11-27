@@ -38,6 +38,7 @@ pub fn self_test()->bool{
     [false,true].iter().all(|&d|{let p=palette(d);contrast(p.ink,p.panel)&&contrast(p.muted,p.sub)&&aurora_color(30,550,d)!=aurora_color(510,550,d)})&&blend([0;3],[100;3],50,100)==[50;3]
 }
 
+const ART:&[u8;960*540*2]=include_bytes!("generated/aurora565.bin");
 const MAX:usize=2048*1536;
 #[repr(align(4096))]
 struct Buffer([u32;MAX]);
@@ -79,13 +80,26 @@ impl Canvas{
     /// Cached scenic wallpaper; bounded 512x288 RGB pixels, expanded to the desktop.
     pub fn aurora(&self,height:usize,dark:bool){
         let w=self.fb.width.max(1);let h=height.min(self.fb.height).max(1);
-        const WW:usize=512;const HH:usize=288;
-        static mut WALL:[u32;WW*HH]=[0;WW*HH];
-        static mut KEY:u8=0;
-        let key=1+dark as u8+2*(self.fb.format as u8);
-        unsafe{let cache=ptr::addr_of_mut!(WALL).cast::<u32>();if KEY!=key{for y in 0..HH{for x in 0..WW{ptr::write(cache.add(y*WW+x),self.pack(aurora_color(x*1024/WW,y*1024/HH,dark)));}}KEY=key;}
-        for y in 0..h{let row=cache.add(y*HH/h*WW);for x in 0..w{self.set(x,y,ptr::read(row.add(x*WW/w)));}}}
+        for y in 0..h{let sy=y*540/h;for x in 0..w{
+            let q=(sy*960+x*960/w)*2;let v=u16::from_le_bytes([ART[q],ART[q+1]]);
+            let rgb=[(((v>>11)&31)*255/31)as u8,(((v>>5)&63)*255/63)as u8,((v&31)*255/31)as u8];
+            self.set(x,y,self.pack(if dark{rgb}else{blend(rgb,[180,218,242],18,100)}));
+        }}
     }
+    // True alpha compositing into the existing software back buffer.
+    pub fn glass(&self,x:usize,y:usize,w:usize,h:usize,r:usize,fill:Color,edge:Color){
+        let r=r.min(w/2).min(h/2);
+        for yy in 0..h.min(self.fb.height.saturating_sub(y)){for xx in 0..w.min(self.fb.width.saturating_sub(x)){
+            let dx=r.saturating_sub(xx.min(w-1-xx));let dy=r.saturating_sub(yy.min(h-1-yy));
+            if dx*dx+dy*dy>r*r{continue;}
+            let border=xx==0||yy==0||xx+1==w||yy+1==h||dx*dx+dy*dy>r.saturating_sub(2).pow(2)&&dx>0&&dy>0;
+            let old=self.unpack(unsafe{ptr::read_volatile(self.target(x+xx,y+yy))});
+            let color=if border{blend(old,edge,75,100)}else{blend(old,fill,86,100)};
+            self.pixel(x+xx,y+yy,color);
+        }}
+    }
+    pub fn grid_mark(&self,x:usize,y:usize,col:Color){for i in 0..3{for j in 0..3{self.round(x+i*7,y+j*7,4,4,2,col);}}}
+    pub fn search_mark(&self,x:usize,y:usize,col:Color){self.round(x,y,16,16,8,col);self.round(x+2,y+2,12,12,6,[18,47,69]);for i in 0..6{self.pixel(x+13+i,y+13+i,col);self.pixel(x+14+i,y+13+i,col);}}
     pub fn panel(&self,x:usize,y:usize,w:usize,h:usize,r:usize,p:Palette){
         for i in (1..=5).rev(){self.round(x+i,y+i*2,w,h,r+i,blend(p.wall,p.bar,i,6));}
         self.round(x,y,w,h,r,p.edge);

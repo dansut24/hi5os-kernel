@@ -101,13 +101,14 @@ unsafe fn framebuffer(gop:*mut Gop)->Option<Framebuffer>{
 pub fn vmware()->bool{let b=unsafe{core::arch::x86_64::__cpuid(1)};if b.ecx&(1<<31)==0{return false;}let h=unsafe{core::arch::x86_64::__cpuid(0x40000000)};h.ebx.to_le_bytes()==*b"VMwa"&&h.ecx.to_le_bytes()==*b"reVM"&&h.edx.to_le_bytes()==*b"ware"}
 fn prefer_large_gop()->bool{let b=unsafe{core::arch::x86_64::__cpuid(0)};vmware()||(b.ebx.to_le_bytes()==*b"Hi5G"&&b.edx.to_le_bytes()==*b"opTe"&&b.ecx.to_le_bytes()==*b"stVM")}
 fn mode_rank(w:u32,h:u32,format:u32,stride:u32)->u64{if w<640||h<480||w>1920||h>1080||stride<w||format>1{return 0;}if w==1920&&h==1080{return u64::MAX;}w as u64*h as u64}
-pub fn display_model_test()->bool{mode_rank(1920,1080,1,1920)>mode_rank(1600,900,1,1600)&&mode_rank(2560,1440,1,2560)==0&&mode_rank(1024,768,2,1024)==0&&mode_rank(1024,768,1,1000)==0}
+fn viewport_rank(w:u32,h:u32,format:u32,stride:u32)->u64{let r=mode_rank(w,h,format,stride);if r==0{return 0;}if w==1280&&h==720{return u64::MAX;}if w==1024&&h==768{return u64::MAX-1;}if w<=1280&&h<=800{return 10000000+r;}1}
+pub fn display_model_test()->bool{viewport_rank(1280,720,1,1280)>viewport_rank(1920,1080,1,1920)&&viewport_rank(1024,768,1,1024)>viewport_rank(1600,900,1,1600)&&mode_rank(1920,1080,1,1920)>mode_rank(1600,900,1,1600)&&mode_rank(2560,1440,1,2560)==0&&mode_rank(1024,768,2,1024)==0&&mode_rank(1024,768,1,1000)==0}
 unsafe fn select_gop(bs:*const BootServices,g:*mut Gop){
     let m=(*g).mode;if m.is_null(){return;}
     let old=(*m).mode;let max=(*m).max_mode.min(256);
     let mut best=None;let mut rank=0;
     for i in 0..max{let mut size=0;let mut info=ptr::null_mut();if ((*g).query_mode)(g,i,&mut size,&mut info)!=0||info.is_null(){continue;}
-        if size>=core::mem::size_of::<GopInfo>(){let v=&*info;let r=mode_rank(v.width,v.height,v.pixel_format,v.stride);if r>rank{rank=r;best=Some(i);}}
+        if size>=core::mem::size_of::<GopInfo>(){let v=&*info;let r=if vmware(){viewport_rank(v.width,v.height,v.pixel_format,v.stride)}else{mode_rank(v.width,v.height,v.pixel_format,v.stride)};if r>rank{rank=r;best=Some(i);}}
         ((*bs).free_pool)(info.cast());
     }
     if let Some(i)=best{if i!=old&&((*g).set_mode)(g,i)!=0{serial::line("H5K: GOP_PREFERRED_MODE_REJECTED");let _=((*g).set_mode)(g,old);}

@@ -35,9 +35,11 @@ def main():
                     if absolute:
                         wait(b"ABS_POINTER_READY",10)
                         assert any(v["absolute"] and v["current"] for v in call("query-mice")), "Absolute pointer not active"
-                    def tap(x,y):
+                    def dims():
                         shot=tmp/"pointer.ppm";call("screendump",{"filename":str(shot)})
-                        fields=shot.read_bytes().split(None,4);width,height=map(int,fields[1:3]);ox=(width-520)//2;oy=(height-400)//2
+                        return tuple(map(int,shot.read_bytes().split(None,4)[1:3]))
+                    def tap(x,y,setup=True):
+                        width,height=dims();ox=(width-520)//2 if setup else 0;oy=(height-400)//2 if setup else 0
                         px=ox+x;py=oy+y
                         events=[{"type":"abs","data":{"axis":"x","value":round(px*32767/(width-1))}},{"type":"abs","data":{"axis":"y","value":round(py*32767/(height-1))}},{"type":"btn","data":{"down":True,"button":"left"}}]
                         call("input-send-event",{"events":events});time.sleep(.4)
@@ -61,7 +63,17 @@ def main():
                         submit();wait(b"ACCOUNT_CREATED",180)
                     key("f4");assert b"GUI_TERMINAL_OPEN" not in log.read_bytes()
                     typed("incorrectpass");wait(b"ACCOUNT_LOGIN_REJECTED",180);time.sleep(4)
-                    typed(password);wait(b"ACCOUNT_LOGIN_OK",180);key("f4");wait(b"GUI_TERMINAL_OPEN")
+                    typed(password);wait(b"ACCOUNT_LOGIN_OK",180)
+                    if absolute and boot==1:
+                        width,height=dims();by=height-(54 if height>=700 else 0)-60
+                        prior=len(log.read_bytes());tap(35,by+30,False);wait(b"GUI_MENU_TOGGLED",10,prior)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-start.ppm")})
+                        tap(100,by+30,False)
+                        for c in "word":key(c)
+                        prior=len(log.read_bytes());key("ret");wait(b"GUI_WORD_OPEN",10,prior)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-search-word.ppm")})
+                        key("esc")
+                    key("f4");wait(b"GUI_TERMINAL_OPEN")
                     key("ctrl-shift-l");wait(b"ACCOUNT_LOCKED");call("screendump",{"filename":str(ROOT/"dist"/f"{prefix}account-lock-{boot}.ppm")})
                     prior=len(log.read_bytes());key("f1");assert b"GUI_SYSTEM_OPEN" not in log.read_bytes()[prior:]
                     typed(password);wait(b"ACCOUNT_LOGIN_OK",180,prior)
