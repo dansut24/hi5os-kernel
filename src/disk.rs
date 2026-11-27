@@ -179,6 +179,7 @@ impl Store{
         let (_,len)=Self::download_bank(p,base,old)?;let sum=crc(&old[..len]);
         serial::metric("H5K: DOWNLOAD_LOADED_CRC=",sum as u64);serial::line("H5K: DOWNLOAD_LEGACY_NO_URL");Some(Download{len,url:[0;128],url_len:0,gen:0,sum})
     }
+    pub fn load_previous_download(&mut self,out:&mut[u8])->Option<Download>{let p=self.port?;let a=Self::v2_header(p,BANK_A)?;let b=Self::v2_header(p,BANK_B)?;if a.gen==b.gen{return None;}let(base,d)=if a.gen<b.gen{(BANK_A,a)}else{(BANK_B,b)};if !Self::v2_read(p,base,d,None,None)||!Self::v2_read(p,base,d,Some(out),None){return None;}Some(d)}
     pub fn save_download(&mut self,data:&[u8],url:&[u8])->bool{
         let Some(p)=self.port else{return false;};
         if data.len()>DL_CAP||url.len()>128||!url.iter().all(|b|(33..127).contains(b)){return false;}

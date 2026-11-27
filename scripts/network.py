@@ -19,8 +19,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         if MODE=="browse" and self.path=="/index.html":
-            body=b"<html><body><h1>Hi5Browser qualification</h1><a href='/get.exe'>Download EXE</a></body></html>"
+            body=b"<html><head><title>Hi5 test</title></head><body><h1 style='color:#112233'>Hi5Browser qualification</h1><p id='demo'>Before</p><script>document.getElementById('demo').textContent = 'After';</script><a href='/get.exe'>Download EXE</a></body></html>"
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
+        if MODE=="browse" and self.path=="/image.bmp":
+            body=b"BM"+struct.pack("<IHHI",58,0,0,54)+struct.pack("<IiiHHIIiiII",40,1,1,1,24,0,4,0,0,0,0)+bytes([0,0,255,0])
+            self.send_response(200);self.send_header("Content-Type","image/bmp");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/get.exe":
             self.send_response(302);self.send_header("Location","/hello.exe");self.send_header("Content-Length","0");self.send_header("Connection","close");self.end_headers();self.close_connection=True;return
         if self.path!="/hello.exe":self.send_error(404);return
@@ -82,6 +85,8 @@ def main():
                     key("ctrl-l")
                     for ch in f"http://10.0.2.2:{server.server_port}/index.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
                     key("ret");wait(b"BROWSER_PAGE_RENDERED",30);wait(b"BROWSER_LINKS=0x0000000000000001",5)
+                    wait(b"BROWSER_STYLE_BLOCKS=0x0000000000000001",5)
+                    key("ctrl-j");wait(b"BROWSER_LITERAL_UPDATES=0x0000000000000001",5)
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-page-512m.ppm")})
                     key("ctrl-1");wait(b"BROWSER_LINK_OPENED",5);wait(b"HTTP_REDIRECT_FOLLOWED",30)
                 else:key("ret")
@@ -143,7 +148,14 @@ def main():
                 key("f9");wait(b"DOWNLOAD_SAVED",90 if MODE=="large" else 10)
                 wait(f"DOWNLOAD_SAVED_CRC=0x{zlib.crc32(PAYLOAD):016x}".encode(),2)
                 key("f10");wait(b"GUI_DOWNLOAD_REOPENED",90 if MODE=="large" else 5)
-                call("screendump",{"filename":str(ROOT/"dist"/f"browser-{MODE}-512m.ppm")});call("quit")
+                call("screendump",{"filename":str(ROOT/"dist"/f"browser-{MODE}-512m.ppm")})
+                if MODE=="browse":
+                    key("ctrl-l")
+                    for ch in f"http://10.0.2.2:{server.server_port}/image.bmp":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    key("ret");wait(b"BROWSER_BITMAP_RENDERED",30)
+                    call("screendump",{"filename":str(ROOT/"dist"/"browser-image-512m.ppm")})
+                    key("ctrl-b");wait(b"BROWSER_HISTORY_NAVIGATED",30)
+                call("quit")
             proc.wait(timeout=10)
             with data.open("rb") as fh:
                 fh.seek(64*512);h=fh.read(512);body=fh.read(len(PAYLOAD))

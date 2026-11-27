@@ -26,6 +26,7 @@ mod procman;
 mod pegraph;
 mod net;
 mod http;
+mod webpage;
 mod heap;
 mod security;
 mod account;

@@ -15,6 +15,16 @@ assert hashlib.sha256(ARCHIVE.read_bytes()).hexdigest()=="6705bba1714961b41a728d
 SRC=OUT/"bearssl-0.6"
 if not SRC.exists():
     with tarfile.open(ARCHIVE) as f:f.extractall(OUT,filter="data")
+# BearSSL 0.6 enters the intrinsic-header block before its per-algorithm
+# availability guards. Disable that block for this freestanding target.
+inner=SRC/"src/inner.h"
+source=inner.read_text()
+import re
+guard=r"(?m)^#if BR_ENABLE_INTRINSICS && .*"
+if "HI5_PORTABLE_INTRINSICS_DISABLED" not in source:
+    source,n=re.subn(guard,"#if 0 /* HI5_PORTABLE_INTRINSICS_DISABLED */",source,count=1)
+    assert n==1,"BearSSL intrinsic guard changed"
+    inner.write_text(source)
 def barray(name,data):
     return f"static const unsigned char {name}[]={{"+",".join(str(b) for b in data)+"};\n"
 def number(n):return n.to_bytes((n.bit_length()+7)//8,"big")
@@ -40,7 +50,7 @@ assert len(entries)==1 if TEST else len(entries)>50,"No CA roots"
 DEST=OUT/"test" if TEST else OUT
 DEST.mkdir(exist_ok=True)
 (DEST/"roots.h").write_text("".join(lines)+"\nstatic const br_x509_trust_anchor ROOTS[]={\n"+",\n".join(entries)+"\n};\n#define ROOT_COUNT (sizeof ROOTS/sizeof ROOTS[0])\n")
-flags=["clang","--target=x86_64-pc-windows-msvc","-ffreestanding","-fno-builtin","-fno-stack-protector","-mno-stack-arg-probe","-O2","-DBR_USE_UNIX_TIME=0","-DBR_USE_WIN32_TIME=0","-DBR_USE_WIN32_RAND=0","-DBR_USE_URANDOM=0","-DBR_USE_GETENTROPY=0","-DBR_RDRAND=0","-DBR_AES_X86NI=0","-DBR_SSE2=0","-DBR_INT128=0","-DBR_UMUL128=0","-I"+str(ROOT/"native/tls/include"),"-I"+str(SRC/"inc"),"-I"+str(SRC/"src"),"-I"+str(DEST)]
+flags=["clang","--target=x86_64-pc-windows-msvc","-ffreestanding","-fno-builtin","-fno-stack-protector","-mno-stack-arg-probe","-O2","-DBR_USE_UNIX_TIME=0","-DBR_USE_WIN32_TIME=0","-DBR_USE_WIN32_RAND=0","-DBR_USE_URANDOM=0","-DBR_USE_GETENTROPY=0","-DBR_RDRAND=0","-DBR_AES_X86NI=0","-DBR_SSE2=0","-DBR_POWER8=0","-DBR_INT128=0","-DBR_UMUL128=0","-I"+str(ROOT/"native/tls/include"),"-I"+str(SRC/"inc"),"-I"+str(SRC/"src"),"-I"+str(DEST)]
 sources=sorted((SRC/"src").rglob("*.c"))+[ROOT/"native/tls/hi5_tls.c"]
 objects=[]
 for i,src in enumerate(sources):

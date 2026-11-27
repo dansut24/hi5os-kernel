@@ -21,7 +21,7 @@ static mut APP_BUFFER:[u8;crate::trial::PACKAGE_SIZE]=[0;crate::trial::PACKAGE_S
 #[derive(Clone,Copy)]struct WindowSlot{app:App,win:Rect,restore:Rect,maximized:bool,minimized:bool}
 struct Auth{stage:u8,account:Option<crate::account::Account>,region:u8,dark:bool,name:[u8;32],host:[u8;32],len:usize,host_len:usize,password:[u8;64],pass_len:usize,confirm:[u8;64],confirm_len:usize,delay:u64,msg:&'static str}
 impl Auth{fn new(store:&Store)->Self{let (stage,account,msg)=match store.account(){Ok(Some(a))=>(7,Some(a),"Enter your password"),Ok(None)if store.setup_requested()=>(1,None,"Choose regional preferences"),Ok(None)=>(0,None,""),Err(())=>(8,None,"Account data unreadable. Recovery required.")};Self{stage,account,region:account.map_or(0,|a|a.region),dark:account.is_some_and(|a|a.dark),name:[0;32],host:[0;32],len:0,host_len:0,password:[0;64],pass_len:0,confirm:[0;64],confirm_len:0,delay:0,msg}}fn clear_password(&mut self){crate::account::wipe(&mut self.password);crate::account::wipe(&mut self.confirm);self.pass_len=0;self.confirm_len=0;}}
-struct Ui{auth:Auth,web_status:u16,web_links:[crate::http::Link;8],web_link_count:usize,web_scroll:usize,web_text:bool,background:[Option<WindowSlot>;9],display_msg:&'static str,package_installed:bool,store_msg:&'static str,c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,rebase:crate::relocate::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
+struct Ui{auth:Auth,page:&'static mut crate::webpage::Page,history:[crate::http::Link;16],history_len:usize,history_pos:usize,history_replay:bool,web_status:u16,web_links:[crate::http::Link;8],web_link_count:usize,web_scroll:usize,web_text:bool,background:[Option<WindowSlot>;9],display_msg:&'static str,package_installed:bool,store_msg:&'static str,c:Canvas,app:Option<App>,minimized:bool,menu:bool,dark:bool,ram:u64,nics:u32,files:Files,tasks:Tasks,mx:usize,my:usize,mouse:bool,saved:[u32;256],saved_valid:bool,win:Rect,restore:Rect,maximized:bool,drag:Option<(usize,usize)>,term:Terminal,sheet:crate::sheet::Sheet,sheet_result:i64,sheet_cell:usize,sheet_edit:[u8;48],sheet_len:usize,sheet_msg:&'static str,pe_report:crate::imports::Report,rebase:crate::relocate::Report,store:Store,note:[u8;CAP],note_len:usize,dirty:bool,save_status:u8,ctrl:bool,file:usize,cache:[FileSlot;FILE_COUNT],nic:Option<Nic>,url:[u8;128],url_len:usize,web:&'static mut [u8;MAX_RESPONSE],source:[u8;128],source_len:usize,web_len:usize,web_ok:bool,web_msg:&'static str}
 impl Ui{
     fn cursor_hide(&mut self){if !self.saved_valid{return;}for y in 0..16{for x in 0..16{self.c.restore_pixel(self.mx+x,self.my+y);}}self.saved_valid=false;}
     fn cursor_show(&mut self){if !self.mouse{return;}for y in 0..14{for x in 0..=y/2{self.c.front_pixel(self.mx+x,self.my+y,if x==0||x==y/2||y==13{[22,32,43]}else{WHITE});}}self.saved_valid=true;}
@@ -154,7 +154,7 @@ impl Ui{
                 self.button(Rect{x,y:y+229,w:190,h:34},"Connect / DHCP (C)",BLUE,WHITE);
             }
             App::Browser=>{
-                c.title(x,y,"Hi5Browser",q.ink);
+                c.title(x,y,"Hi5Browser",q.ink);self.button(Rect{x:x+155,y,w:50,h:30},"<",q.sub,q.ink);self.button(Rect{x:x+210,y,w:50,h:30},">",q.sub,q.ink);self.button(Rect{x:x+265,y,w:65,h:30},"Reload",q.sub,q.ink);
                 c.round(x,y+42,r.w-132,34,5,q.sub);
                 if let Ok(t)=core::str::from_utf8(&self.url[..self.url_len]){c.text_limit(x+6,y+48,t,q.ink,false,right-90);}
                 self.button(Rect{x:r.x+r.w-95,y:y+42,w:72,h:34},"Go",BLUE,WHITE);
@@ -164,18 +164,17 @@ impl Ui{
                     let kind=match crate::compat::classify(&self.web[..self.web_len]){crate::compat::Kind::Pe64=>"PE64 executable candidate",crate::compat::Kind::Pe32=>"PE32 executable candidate",crate::compat::Kind::Compound=>"OLE compound-file candidate",_=>"Text or unknown binary"};
                     c.text_limit(x,y+137,kind,q.ink,false,right);
                     if self.web_text{
-                        let mut preview=[0u8;8192];let len=crate::http::preview(&self.web[..self.web_len],&mut preview);
-                        let cols=((r.w-48)/10).clamp(20,160);let mut yy=y+163;let floor=if self.web_link_count>0{r.y+r.h-115}else{r.y+r.h-52};let mut line_no=0;
-                        for line in preview[..len].split(|b|*b==10){for part in line.chunks(cols){if line_no>=self.web_scroll&&yy+20<=floor{if let Ok(t)=core::str::from_utf8(part){c.text_limit(x,yy,t,q.ink,false,right);}yy+=20;}line_no+=1;}if yy+20>floor{break;}}
+                        let floor=if self.web_link_count>0{r.y+r.h-115}else{r.y+r.h-25};
+                        self.page.draw(c,x,y+163,right,floor,self.web_scroll,q.ink,q.sub);
                         if self.web_link_count>0{let top=r.y+r.h-107;c.text_limit(x,top,"Links (Ctrl+1 to 8; click to open)",q.muted,false,right);for i in 0..self.web_link_count.min(8){let l=self.web_links[i];let xx=x+(i%2)*(r.w-44)/2;let yy=top+21+(i/2)*17;if let Ok(s)=core::str::from_utf8(&l.url[..l.len]){c.num(xx,yy,(i+1)as u64,BLUE);c.text_limit(xx+22,yy,s,BLUE,false,xx+(r.w-44)/2-4);}}}
-                    }else{
+                    }else if let Some(bitmap)=crate::webpage::Bitmap::parse(&self.web[..self.web_len]){bitmap.draw(c,x,y+165,r.w-44,(r.y+r.h).saturating_sub(y+190));}else{
                         c.text(x,y+165,"Binary preview - execution disabled",q.muted);
                         let src=&self.source[..self.source_len];let path=src.split(|b|*b==b'?').next().unwrap_or(&[]);
                         let name=path.rsplit(|b|*b==b'/').next().unwrap_or(&[]);
                         if let Ok(t)=core::str::from_utf8(name){if !t.is_empty(){c.text_limit(x,y+188,t,q.ink,false,right);}}
                     }
-                    if !self.web_text&&self.web_status==200{self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);}
-                }else{c.text_limit(x,y+120,"HTTP / HTTPS websites and downloads (TLS 1.2 preview).",q.ink,false,right);c.text(x,y+149,"Ctrl+L clears URL; F10 opens last download.",q.muted);}
+                    if !self.web_text&&self.web_status==200&&crate::webpage::Bitmap::parse(&self.web[..self.web_len]).is_none(){self.button(Rect{x,y:y+229,w:180,h:34},"Save download (F9)",q.sub,q.ink);}
+                }else{c.text_limit(x,y+120,"HTTP / HTTPS websites and downloads (TLS 1.2 preview).",q.ink,false,right);c.text(x,y+149,"Ctrl+L URL; Ctrl+B/F history; F10 last; Ctrl+D previous; Ctrl+J text update.",q.muted);}
             }
             App::Notepad=>{
                 self.button(Rect{x,y:y+1,w:82,h:33},"Save",BLUE,WHITE);
@@ -303,19 +302,23 @@ impl Ui{
             self.classify_web();serial::line("H5K: GUI_DOWNLOAD_REOPENED");
         }else{self.web_ok=false;self.web_len=0;self.web_msg="No valid saved download";}self.draw();
     }
-    fn classify_web(&mut self){self.web_scroll=0;self.web_link_count=0;self.web_text=self.web_ok&&self.web[..self.web_len].iter().all(|b|*b==9||*b==10||*b==13||*b>=32)&&core::str::from_utf8(&self.web[..self.web_len]).is_ok();if self.web_text{self.web_link_count=crate::http::links(&self.web[..self.web_len],&self.source[..self.source_len],&mut self.web_links);serial::line("H5K: BROWSER_PAGE_RENDERED");serial::metric("H5K: BROWSER_LINKS=",self.web_link_count as u64);}}
+    fn classify_web(&mut self){self.page.clear();self.web_scroll=0;self.web_link_count=0;self.web_text=self.web_ok&&self.web[..self.web_len].iter().all(|b|*b==9||*b==10||*b==13||*b>=32)&&core::str::from_utf8(&self.web[..self.web_len]).is_ok();if self.web_text{self.page.parse(&self.web[..self.web_len]);serial::metric("H5K: BROWSER_LAYOUT_BLOCKS=",self.page.count as u64);serial::metric("H5K: BROWSER_STYLE_BLOCKS=",self.page.styled as u64);self.web_link_count=crate::http::links(&self.web[..self.web_len],&self.source[..self.source_len],&mut self.web_links);serial::line("H5K: BROWSER_PAGE_RENDERED");serial::metric("H5K: BROWSER_LINKS=",self.web_link_count as u64);}else if self.web_ok&&crate::webpage::Bitmap::parse(&self.web[..self.web_len]).is_some(){serial::line("H5K: BROWSER_BITMAP_RENDERED");}}
     fn follow_link(&mut self,i:usize){if i>=self.web_link_count{return;}let l=self.web_links[i];self.url=l.url;self.url_len=l.len;serial::line("H5K: BROWSER_LINK_OPENED");self.fetch_web();}
+    fn remember_page(&mut self){if self.history_replay||!self.web_ok{return;}let l=crate::http::Link{url:self.source,len:self.source_len};if self.history_len>0&&self.history[self.history_pos].url[..self.history[self.history_pos].len]==l.url[..l.len]{return;}if self.history_len>0{self.history_len=self.history_pos+1;}if self.history_len==16{self.history.copy_within(1..16,0);self.history_len=15;}self.history[self.history_len]=l;self.history_pos=self.history_len;self.history_len+=1;}
+    fn history_go(&mut self,forward:bool){if self.history_len==0{return;}let next=if forward{(self.history_pos+1).min(self.history_len-1)}else{self.history_pos.saturating_sub(1)};if next==self.history_pos{return;}self.history_pos=next;let l=self.history[next];self.url=l.url;self.url_len=l.len;self.history_replay=true;self.fetch_web();self.history_replay=false;serial::line("H5K: BROWSER_HISTORY_NAVIGATED");}
+    fn dynamic_preview(&mut self){if !self.web_text{return;}let n=self.page.literal_update(&self.web[..self.web_len]);self.web_msg=if n>0{"Limited textContent update applied"}else{"No supported script update (general JS disabled)"};serial::metric("H5K: BROWSER_LITERAL_UPDATES=",n as u64);self.draw();}
     fn fetch_web(&mut self){
         self.web_ok=false;self.web_len=0;self.web_status=0;self.web_text=false;self.web_link_count=0;self.web_msg="Connecting via DHCP / HTTP...";self.draw();
         if !self.url[..self.url_len].starts_with(b"http://")&&!self.url[..self.url_len].starts_with(b"https://")&&self.url_len+8<=self.url.len(){self.url.copy_within(..self.url_len,8);self.url[..8].copy_from_slice(b"https://");self.url_len+=8;}
         if self.nic.is_none(){self.nic=Nic::open();}
         if let Some(nic)=&mut self.nic{match nic.get_follow(&self.url[..self.url_len],self.web){Ok((n,url,len,status))=>{self.web_len=n;self.web_ok=true;self.web_status=status;self.source=url;self.source_len=len;self.url=url;self.url_len=len;self.web_msg=if status!=200{"Server returned an HTTP error page"}else if url[..len].starts_with(b"https://"){"HTTPS - certificate validated"}else{"HTTP response complete - not authenticated"};},Err(e)=>{self.web_msg=e;serial::line("H5K: HTTP_DOWNLOAD_FAILED");serial::line(e);}}}else{self.web_msg="No supported E1000 network adapter";}
-        self.classify_web();self.draw();
+        self.classify_web();self.remember_page();self.draw();
     }
+    fn previous_download(&mut self){if let Some(d)=self.store.load_previous_download(self.web){self.web_len=d.len;self.web_ok=true;self.web_status=200;self.source=d.url;self.source_len=d.url_len;self.url=d.url;self.url_len=d.url_len;self.web_msg="Previous saved download - not authenticated";self.classify_web();serial::line("H5K: BROWSER_PREVIOUS_DOWNLOAD");}else{self.web_msg="No previous valid download";}self.draw();}
     fn save_web(&mut self){if self.web_ok&&self.web_status==200{if self.web_len>crate::disk::DL_CAP{self.web_msg="Save limit 1 MiB - preview only";self.draw();return;}self.web_msg=if self.store.save_download(&self.web[..self.web_len],&self.source[..self.source_len]){"Saved binary download to data disk"}else{"Save failed - data disk required"};self.draw();}}
     fn browser_key(&mut self,key:u8){
         if key==0x1c{self.fetch_web();return;}if key==0x43{self.save_web();return;}if key==0x44{self.reopen_web();return;}
-        if self.ctrl{if key==0x26{self.url_len=0;self.draw();}else if (0x02..=0x09).contains(&key){self.follow_link((key-2)as usize);}return;}
+        if self.ctrl{if key==0x26{self.url_len=0;self.draw();}else if key==0x24{self.dynamic_preview();}else if key==0x30{self.history_go(false);}else if key==0x21{self.history_go(true);}else if key==0x13{self.fetch_web();}else if key==0x20{self.previous_download();}else if (0x02..=0x09).contains(&key){self.follow_link((key-2)as usize);}return;}
         if key==0x0e{self.url_len=self.url_len.saturating_sub(1);self.draw();return;}
         if let Some(b)=ascii(key,self.term.shift){if self.url_len<self.url.len(){self.url[self.url_len]=b;self.url_len+=1;self.draw();}}
     }
@@ -370,6 +373,7 @@ impl Ui{
             if a==App::Store&&x>=bx&&x<bx+230{if y>=yy+98&&y<yy+132{self.package_action(x<bx+120);return;}if y>=yy+144&&y<yy+178{self.select(App::Terminal);return;}}
             if a==App::Sheet&&x>=bx+30&&y>=yy+87&&y<yy+207{let cw=(r.w-76)/4;let col=(x-bx-30)/cw;let row=(y-yy-87)/30;if col<4{self.sheet_cell=row*4+col;self.sheet_len=0;self.draw();}return;}
             if a==App::Network&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+190{self.connect_net();return;}
+            if a==App::Browser&&y>=yy&&y<yy+30{if x>=bx+155&&x<bx+205{self.history_go(false);return;}if x>=bx+210&&x<bx+260{self.history_go(true);return;}if x>=bx+265&&x<bx+330{self.fetch_web();return;}}
             if a==App::Browser&&y>=yy+42&&y<yy+76&&x>=r.x+r.w-95{self.fetch_web();return;}
             if a==App::Browser&&self.web_text&&self.web_link_count>0&&y>=r.y+r.h-86&&y<r.y+r.h-18&&x>=bx{let row=(y-(r.y+r.h-86))/17;let col=((x-bx)/((r.w-44)/2)).min(1);self.follow_link(row*2+col);return;}
             if a==App::Browser&&!self.web_text&&y>=yy+229&&y<yy+263&&x>=bx&&x<bx+180{self.save_web();return;}
@@ -417,12 +421,12 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
     let _=store.load(0);
     let mut url=[0;128];let default=b"http://10.0.2.200:8080/hello.exe";url[..default.len()].copy_from_slice(default);
-    let auth=Auth::new(&store);let mut ui=Ui{auth,web_status:0,web_links:[crate::http::EMPTY_LINK;8],web_link_count:0,web_scroll:0,web_text:false,background:[None;9],display_msg:"Select a supported display mode",package_installed:false,store_msg:"F12 opens Hi5Store",c:canvas,app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",pe_report:crate::imports::Report::default(),rebase:crate::relocate::Report::default(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
+    let auth=Auth::new(&store);let mut ui=Ui{auth,page:unsafe{&mut *ptr::addr_of_mut!(crate::webpage::PAGE)},history:[crate::http::EMPTY_LINK;16],history_len:0,history_pos:0,history_replay:false,web_status:0,web_links:[crate::http::EMPTY_LINK;8],web_link_count:0,web_scroll:0,web_text:false,background:[None;9],display_msg:"Select a supported display mode",package_installed:false,store_msg:"F12 opens Hi5Store",c:canvas,app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",pe_report:crate::imports::Report::default(),rebase:crate::relocate::Report::default(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();if ui.auth.stage==1{serial::line("H5K: ACCOUNT_SETUP_READY");}else if ui.auth.stage==7{serial::line("H5K: ACCOUNT_LOGIN_READY");}serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");
     p::timer_init();let start=p::ticks();while p::ticks().wrapping_sub(start)<3{p::wait_tick();}
-    serial::line("H5K: TIMER_IRQ_OK");if !crate::net::self_test()||!crate::http::navigation_test()||!crate::account::self_test(){serial::line("H5K: FAIL NETWORK_FORMAT_TEST");crate::kernel::halt();}serial::line("H5K: NET_FORMAT_TEST_OK");serial::line("H5K: KERNEL_READY");
+    serial::line("H5K: TIMER_IRQ_OK");if !crate::net::self_test()||!crate::http::navigation_test()||!crate::account::self_test()||!crate::webpage::self_test(){serial::line("H5K: FAIL NETWORK_FORMAT_TEST");crate::kernel::halt();}serial::line("H5K: NET_FORMAT_TEST_OK");serial::line("H5K: BROWSER_LAYOUT_SELFTEST_OK");serial::line("H5K: KERNEL_READY");
     let mut packet=[0u8;3];let mut pos=0;let mut down=false;let mut ext=false;
     loop{match ui.tasks.dispatch(){
         0=>{for _ in 0..32{let st=p::input(0x64);if st&1==0{break;}let b=p::input(0x60);if st&0x20!=0{
