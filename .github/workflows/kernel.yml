@@ -97,3 +97,22 @@ jobs:
           compression-level: 6
           if-no-files-found: error
           retention-days: 14
+
+      - name: Package VMware system-only upgrade (required)
+        if: success()
+        run: |
+          python3 scripts/vmware_package.py dist/hi5os-v0.3.4.img target/vmware-upgrade
+          cp scripts/Upgrade-Hi5OS.ps1 target/vmware-upgrade/
+          cp dist/BEARSSL-LICENSE.txt dist/STB-LICENSE.txt target/vmware-upgrade/
+          cp -r dist/hi5-js-notices target/vmware-upgrade/
+          cp -r dist/7zip-notices target/vmware-upgrade/
+          mdir -i target/vmware-upgrade/Hi5OS-system-flat.vmdk@@1048576 ::/EFI/BOOT/BOOTX64.EFI
+      - name: Retain VMware system-only upgrade
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hi5OS-Build${{ github.run_number }}-VMware-Upgrade
+          path: target/vmware-upgrade/
+          compression-level: 6
+          if-no-files-found: error
+          retention-days: 14

@@ -64,6 +64,7 @@ def main():
                     key("f4");assert b"GUI_TERMINAL_OPEN" not in log.read_bytes()
                     typed("incorrectpass");wait(b"ACCOUNT_LOGIN_REJECTED",180);time.sleep(4)
                     typed(password);wait(b"ACCOUNT_LOGIN_OK",180)
+                    if absolute and boot==2:wait(b"APPEARANCE_RESTORED",5)
                     if absolute and boot==1:
                         width,height=dims();by=height-(54 if height>=700 else 0)-60
                         prior=len(log.read_bytes());tap(35,by+30,False);wait(b"GUI_MENU_TOGGLED",10,prior)
@@ -73,6 +74,13 @@ def main():
                         prior=len(log.read_bytes());key("ret");wait(b"GUI_WORD_OPEN",10,prior)
                         call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-search-word.ppm")})
                         key("esc")
+                        key("f1");key("ctrl-1");wait(b"GRAPHICS_MODE_OK",10);key("esc")
+                        width,height=dims();assert (width,height)==(640,480)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-compact.ppm")})
+                        prior=len(log.read_bytes());tap(width-100,85,False);wait(b"SHELL_NOTICE_OPEN",10,prior);key("esc")
+                        key("f1");key("ctrl-3");key("esc")
+                        key("t");wait(b"APPEARANCE_SAVED",10)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-responsive.ppm")})
                     key("f4");wait(b"GUI_TERMINAL_OPEN")
                     key("ctrl-shift-l");wait(b"ACCOUNT_LOCKED");call("screendump",{"filename":str(ROOT/"dist"/f"{prefix}account-lock-{boot}.ppm")})
                     prior=len(log.read_bytes());key("f1");assert b"GUI_SYSTEM_OPEN" not in log.read_bytes()[prior:]
@@ -84,6 +92,9 @@ def main():
                 assert zlib.crc32(b[:508])==int.from_bytes(b[508:],"little")
                 assert b[96:128]==hashlib.pbkdf2_hmac("sha256",password.encode(),b[80:96],600000)
                 assert password.encode() not in b
+                if absolute:
+                    with data.open("rb") as f:f.seek(17*512);pref=f.read(512)
+                    assert pref[:8]==b"H5UI0001" and pref[12]==1 and zlib.crc32(pref[:508])==int.from_bytes(pref[508:],"little")
             finally:
                 if proc.poll() is None:proc.terminate();proc.wait(timeout=10)
                 if log.exists():print(log.read_text(errors="replace"))

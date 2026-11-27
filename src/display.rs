@@ -124,3 +124,12 @@ pub fn set_mode(fb:Framebuffer,i:usize)->Option<Framebuffer>{
     }
     Some(Framebuffer{base:fb.base,size,width:w,height:h,stride,format:1})
 }
+
+#[derive(Clone,Copy)]pub struct SvgaInfo{pub io:u16,pub fb:usize,pub fifo:usize}
+pub fn svga_info()->Option<SvgaInfo>{
+    for slot in 0..32{if pci(slot,0)!=0x040515ad{continue;}if pci(slot,8)>>24!=3{continue;}let io=pci(slot,0x10);let fb=pci(slot,0x14);let fifo=pci(slot,0x18);
+        if io&1==0||io&!3==0||io&!3>0xfff8||fb&7!=0||fifo&7!=0||fb&!15==0||fifo&!15==0{continue;}
+        return Some(SvgaInfo{io:(io&!3)as u16,fb:(fb&!15)as usize,fifo:(fifo&!15)as usize});
+    }None
+}
+pub fn log_adapter(){if let Some(v)=svga_info(){crate::serial::line("H5K: SVGA2_PCI_DETECTED");crate::serial::metric("H5K: SVGA2_IO=",v.io as u64);crate::serial::metric("H5K: SVGA2_FB=",v.fb as u64);crate::serial::metric("H5K: SVGA2_FIFO=",v.fifo as u64);}else{crate::serial::line("H5K: SVGA2_PCI_NOT_DETECTED");}}

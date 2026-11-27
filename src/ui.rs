@@ -86,6 +86,23 @@ impl Canvas{
             self.set(x,y,self.pack(if dark{rgb}else{blend(rgb,[180,218,242],18,100)}));
         }}
     }
+    pub fn wallpaper(&self,height:usize,alternate:bool){if alternate{let h=height.min(self.fb.height);for y in 0..h{let col=blend([4,13,28],[12,53,79],y,h.max(1));self.rect(0,y,self.fb.width,1,col);}}else{self.aurora(height,true);}}
+    // Sample the existing backdrop before modifying it; 8x8 blocks and a
+    // separable neighbourhood approximation keep memory bounded.
+    pub fn frost(&self,x:usize,y:usize,w:usize,h:usize,r:usize,fill:Color,edge:Color){
+        let w=w.min(self.fb.width.saturating_sub(x));let h=h.min(self.fb.height.saturating_sub(y));
+        if w==0||h==0{return;}const STEP:usize=8;let cols=(w+7)/8;let rows=(h+7)/8;
+        let mut samples=alloc::vec::Vec::<Color>::new();if samples.try_reserve_exact(cols*rows).is_err(){self.glass(x,y,w,h,r,fill,edge);return;}
+        for j in 0..rows{for i in 0..cols{let px=x+(i*STEP+4).min(w-1);let py=y+(j*STEP+4).min(h-1);let mut sum=[0usize;3];
+            for oy in [-10isize,0,10]{for ox in [-10isize,0,10]{let sx=(px as isize+ox).clamp(0,self.fb.width as isize-1)as usize;let sy=(py as isize+oy).clamp(0,self.fb.height as isize-1)as usize;let c=self.unpack(unsafe{ptr::read_volatile(self.target(sx,sy))});for k in 0..3{sum[k]+=c[k]as usize;}}}
+            samples.push(core::array::from_fn(|k|(sum[k]/9)as u8));
+        }}
+        let r=r.min(w/2).min(h/2);
+        for yy in 0..h{for xx in 0..w{let dx=r.saturating_sub(xx.min(w-1-xx));let dy=r.saturating_sub(yy.min(h-1-yy));if dx*dx+dy*dy>r*r{continue;}let border=xx==0||yy==0||xx+1==w||yy+1==h||(dx>0&&dy>0&&dx*dx+dy*dy>r.saturating_sub(2).pow(2));let a=samples[(yy/STEP)*cols+xx/STEP];self.pixel(x+xx,y+yy,if border{blend(a,edge,80,100)}else{blend(a,fill,80,100)});}}
+    }
+    pub fn tile_gradient(&self,x:usize,y:usize,w:usize,h:usize,top:Color,bottom:Color){
+        self.round(x,y,w,h,9,bottom);if w<6||h<6{return;}for yy in 2..h-2{let inset=if yy<7{7-yy}else if yy>h-8{yy-(h-8)}else{2};let inset=inset.max(2);if w>2*inset{self.rect(x+inset,y+yy,w-2*inset,1,blend(top,bottom,yy,h));}}
+    }
     // True alpha compositing into the existing software back buffer.
     pub fn glass(&self,x:usize,y:usize,w:usize,h:usize,r:usize,fill:Color,edge:Color){
         let r=r.min(w/2).min(h/2);
@@ -154,5 +171,9 @@ impl Canvas{
         let src=ptr::addr_of!(BACK.0).cast::<u32>();let dst=self.fb.base as *mut u32;
         if self.scale==100{for y in 0..self.fb.height{for x in 0..self.fb.width{ptr::write_volatile(dst.add(y*self.fb.stride+x),ptr::read(src.add(y*self.fb.width+x)));}}}else{for y in 0..self.fb.height{for x in 0..self.fb.width{self.front_value(x,y,ptr::read(src.add(y*self.fb.width+x)));}}}
     }}
+    pub fn present_rect(&self,x:usize,y:usize,w:usize,h:usize){
+        if !self.buffered{return;}let right=x.saturating_add(w).min(self.fb.width);let bottom=y.saturating_add(h).min(self.fb.height);
+        for yy in y..bottom{for xx in x..right{let v=unsafe{ptr::read(self.target(xx,yy))};if self.scale==100{unsafe{ptr::write_volatile((self.physical.base as *mut u32).add(yy*self.physical.stride+xx),v);}}else{self.front_value(xx,yy,v);}}}
+    }
     pub fn front_pixel(&self,x:usize,y:usize,c:Color){if x<self.fb.width&&y<self.fb.height{self.front_value(x,y,self.pack(c));}}
 }
