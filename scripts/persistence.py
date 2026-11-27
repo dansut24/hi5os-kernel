@@ -55,7 +55,7 @@ def main():
                         for k in "hello":key(k)
                         key("spc");key("ctrl-b")
                         for k in "office":key(k)
-                        key("ctrl-b");key("ctrl-s");wait(b"OFFICE_WORD_SAVED",10)
+                        key("ctrl-b");key("ctrl-a");key("ctrl-c");key("ctrl-x");key("ctrl-v");key("ctrl-z");key("ctrl-z");key("ctrl-y");key("ctrl-y");key("ctrl-right");key("ctrl-s");wait(b"OFFICE_WORD_SAVED",10)
                         key("ctrl-e");wait(b"OFFICE_DOCX_SAVED",20)
                         call("screendump",{"filename":str(ROOT/"dist"/"hi5word-512m.ppm")})
                         call("quit")
