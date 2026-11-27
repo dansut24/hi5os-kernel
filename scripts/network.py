@@ -19,7 +19,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         if MODE=="browse" and self.path in ("/form.html","/search?q=hi5+test"):
-            body=(b"<html><body><center><form action='/search'><input name='q' type='text'><input type='submit' value='Search'></form></center></body></html>" if self.path=="/form.html" else b"<html><body><h1>Search received</h1></body></html>")
+            body=(b"<html><body><center><form action='/search'><input name='q' type='text'><input type='submit' value='Search'></form></center></body></html>" if self.path=="/form.html" else b"<html><head><style>div{display:none}.result{display:block}.result a.link{color:#123456}</style></head><body><div class='result'><h1>Search received</h1><a class='link' href='/index.html'>Open real result</a></div></body></html>")
             if self.path.startswith("/search?"):self.server.form_received=True
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/index.html":
@@ -180,6 +180,8 @@ def main():
                     deadline=time.monotonic()+30
                     while log.read_bytes().count(b"BROWSER_PAGE_RENDERED")<=prior and time.monotonic()<deadline:time.sleep(.1)
                     assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Search response not rendered"
+                    tail=log.read_bytes().rsplit(b"WEB_CORE_FORM_SUBMITTED",1)[-1]
+                    assert b"BROWSER_LAYOUT_BLOCKS=0x0000000000000002" in tail,"Search result layout must contain two real blocks"
                     key("ctrl-tab");wait(b"BROWSER_TAB_ACTIVE=0x0000000000000000",30);key("ctrl-w");wait(b"BROWSER_TAB_COUNT=0x0000000000000001",30)
                 call("quit")
             proc.wait(timeout=10)

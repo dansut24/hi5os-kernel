@@ -40,6 +40,21 @@ def main():
                 if google:
                     assert b"WEB_CORE_FORM_READY" in b,"Public Google did not expose a supported GET search form"
                     print("PASS: Google HTTPS and GET search field recognised")
+                    key("ctrl-g")
+                    for ch in "bbc news":key("spc" if ch==" " else ch)
+                    prior=b.count(b"BROWSER_PAGE_RENDERED")
+                    key("ret")
+                    end=time.monotonic()+85
+                    while time.monotonic()<end:
+                        b=log.read_bytes()
+                        if b.count(b"BROWSER_PAGE_RENDERED")>prior or b"HTTP_DOWNLOAD_FAILED" in b or p.poll() is not None:break
+                        time.sleep(.2)
+                    call("screendump",{"filename":str(ROOT/"dist"/"google-search-public.ppm")})
+                    tail=b.rsplit(b"WEB_CORE_FORM_SUBMITTED",1)[-1]
+                    assert b.count(b"BROWSER_PAGE_RENDERED")>prior,"Google search response not processed"
+                    assert b"WEB_CORE_JS_REQUIRED" not in tail,"Google returned a JavaScript interstitial, not search results"
+                    assert b"WEB_CORE_EMPTY_DOCUMENT" not in tail,"Google search response had no visible content"
+                    print("Google search document produced visible content; actual results require visual verification")
                 else:print("PASS: BBC HTTPS HTTP 200 and HTML rendered by Hi5Browser")
                 call("quit")
         finally:
