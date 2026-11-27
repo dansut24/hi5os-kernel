@@ -11,6 +11,7 @@ mod display;
 mod cpu;
 mod platform;
 mod desktop;
+mod pointer;
 mod ui;
 mod services;
 mod disk;

@@ -36,6 +36,8 @@ jobs:
         run: python3 scripts/persistence.py
       - name: First-run setup, cold login and lock (required)
         run: python3 scripts/account_setup.py
+      - name: Absolute pointer direct taps and account setup (required)
+        run: python3 scripts/account_setup.py --absolute
       - name: Native HTTPS certificate and hostname qualification (required)
         run: /usr/bin/python3 scripts/tls_qualify.py
       - name: Restricted native HTTP binary download test

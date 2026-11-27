@@ -3,12 +3,15 @@
 import shutil, subprocess, tempfile, time, socket, json, pathlib, hashlib, zlib
 from smoke import ROOT, firmware, validate
 def main():
+    import sys
+    absolute='--absolute' in sys.argv
+    prefix='absolute-' if absolute else ''
     code,var=firmware()
     with tempfile.TemporaryDirectory(prefix="hi5os-account-") as td:
         tmp=pathlib.Path(td); data=tmp/"data.img"; shutil.copyfile(ROOT/"dist/hi5os-setup-data.img",data)
         for boot in (1,2):
-            vars=tmp/f"vars{boot}.fd";shutil.copyfile(var,vars);qmp=tmp/f"qmp{boot}.sock";log=ROOT/"dist"/f"account-{boot}.log";log.unlink(missing_ok=True)
-            cmd=["qemu-system-x86_64","-machine","q35,accel=tcg","-cpu","max,+rdrand","-m","512","-smp","1","-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}","-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.3.4.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1","-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2","-vga","std","-nic","none","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
+            vars=tmp/f"vars{boot}.fd";shutil.copyfile(var,vars);qmp=tmp/f"qmp{boot}.sock";log=ROOT/"dist"/f"{prefix}account-{boot}.log";log.unlink(missing_ok=True)
+            cmd=["qemu-system-x86_64","-machine","q35,accel=tcg,vmport=on" if absolute else "q35,accel=tcg","-cpu","max,+rdrand,vendor=Hi5AbsTestVM" if absolute else "max,+rdrand","-m","512","-smp","1","-drive",f"if=pflash,format=raw,readonly=on,file={code}","-drive",f"if=pflash,format=raw,file={vars}","-drive",f"if=none,id=os,format=raw,readonly=on,file={ROOT/'dist/hi5os-v0.3.4.img'}","-device","qemu-xhci","-device","usb-storage,drive=os,bootindex=1","-drive",f"if=none,id=data,format=raw,file={data}","-device","ide-hd,bus=ide.1,drive=data,bootindex=2","-vga","std","-nic","none","-monitor","none","-no-reboot","-serial",f"file:{log}","-display","none","-qmp",f"unix:{qmp},server=on,wait=off"]
             proc=subprocess.Popen(cmd)
             def wait(mark,timeout=120,prior=0):
                 end=time.monotonic()+timeout
@@ -29,19 +32,37 @@ def main():
                             if "error" in r:raise RuntimeError(r["error"])
                             if "return" in r:return r["return"]
                     call("qmp_capabilities")
+                    if absolute:
+                        wait(b"ABS_POINTER_READY",10)
+                        assert any(v["absolute"] and v["current"] for v in call("query-mice")), "Absolute pointer not active"
+                    def tap(x,y):
+                        shot=tmp/"pointer.ppm";call("screendump",{"filename":str(shot)})
+                        fields=shot.read_bytes().split(None,4);width,height=map(int,fields[1:3]);ox=(width-520)//2;oy=(height-400)//2
+                        px=ox+x;py=oy+y
+                        events=[{"type":"abs","data":{"axis":"x","value":round(px*32767/(width-1))}},{"type":"abs","data":{"axis":"y","value":round(py*32767/(height-1))}},{"type":"btn","data":{"down":True,"button":"left"}}]
+                        call("input-send-event",{"events":events});time.sleep(.4)
+                        call("input-send-event",{"events":[{"type":"btn","data":{"down":False,"button":"left"}}]});time.sleep(.4)
+                    def submit():
+                        if absolute:tap(260,332)
+                        else:key("ret")
                     def key(k):call("human-monitor-command",{"command-line":"sendkey "+k});time.sleep(.23)
                     def typed(s):
                         for k in s:key(k)
-                        key("ret")
+                        submit()
                     # Public, synthetic CI-only credential; never a user password.
                     password="testpassword123"
                     if boot==1:
-                        call("screendump",{"filename":str(ROOT/"dist"/"account-setup.ppm")})
-                        key("ret");typed("testuser");typed("hi5test");typed(password);typed(password);key("ret");wait(b"ACCOUNT_CREATED",180)
+                        call("screendump",{"filename":str(ROOT/"dist"/f"{prefix}account-setup.ppm")})
+                        if absolute:
+                            tap(380,178);wait(b"SETUP_REGION_SELECTED=0x0000000000000001",5)
+                        submit();typed("testuser");typed("hi5test");typed(password);typed(password)
+                        if absolute:
+                            tap(140,178);wait(b"SETUP_THEME_SELECTED=0x0000000000000000",5)
+                        submit();wait(b"ACCOUNT_CREATED",180)
                     key("f4");assert b"GUI_TERMINAL_OPEN" not in log.read_bytes()
                     typed("incorrectpass");wait(b"ACCOUNT_LOGIN_REJECTED",180);time.sleep(4)
                     typed(password);wait(b"ACCOUNT_LOGIN_OK",180);key("f4");wait(b"GUI_TERMINAL_OPEN")
-                    key("ctrl-shift-l");wait(b"ACCOUNT_LOCKED");call("screendump",{"filename":str(ROOT/"dist"/f"account-lock-{boot}.ppm")})
+                    key("ctrl-shift-l");wait(b"ACCOUNT_LOCKED");call("screendump",{"filename":str(ROOT/"dist"/f"{prefix}account-lock-{boot}.ppm")})
                     prior=len(log.read_bytes());key("f1");assert b"GUI_SYSTEM_OPEN" not in log.read_bytes()[prior:]
                     typed(password);wait(b"ACCOUNT_LOGIN_OK",180,prior)
                     call("quit")

@@ -36,12 +36,14 @@ struct Ui{word_clip:alloc::vec::Vec<(u8,u8)>,word:crate::office::Word,word_slot:
 struct PointerPacket{bytes:[u8;3],pos:usize,down:bool}
 static mut POINTER_PACKET:PointerPacket=PointerPacket{bytes:[0;3],pos:0,down:false};
 fn mouse_byte(b:u8)->Option<(isize,isize,bool,bool)>{
+    if crate::pointer::active(){return None;}
     let p=unsafe{&mut *ptr::addr_of_mut!(POINTER_PACKET)};
     if p.pos==0&&b&8==0{return None;}p.bytes[p.pos]=b;p.pos+=1;if p.pos!=3{return None;}p.pos=0;
     let flags=p.bytes[0];if flags&0xc0!=0{return None;}
     let dx=p.bytes[1]as isize-if flags&0x10!=0{256}else{0};let dy=p.bytes[2]as isize-if flags&0x20!=0{256}else{0};
     let pressed=flags&1!=0;let was=p.down;p.down=pressed;Some((dx,dy,pressed,was))
 }
+fn busy_pointer(b:&mut BusyCursor,e:crate::pointer::Event){let (x,y)=e.position(b.x,b.y,b.canvas.fb.width,b.canvas.fb.height);if x==b.x&&y==b.y{return;}busy_hide(b);b.visible=true;b.x=x;b.y=y;busy_show(b);if !b.moved{b.moved=true;serial::line("H5K: BROWSER_BUSY_POINTER_MOVED");}}
 struct BusyCursor{canvas:Canvas,x:usize,y:usize,visible:bool,cancelled:bool,moved:bool,last:u64,ext:bool}
 static mut BUSY_CURSOR:Option<BusyCursor>=None;
 fn busy_hide(b:&BusyCursor){if b.visible&&b.canvas.buffered{for y in 0..16{for x in 0..16{b.canvas.restore_pixel(b.x+x,b.y+y);}}}}
@@ -54,7 +56,9 @@ pub fn browser_poll()->bool{
     for _ in 0..64{let st=p::input(0x64);if st&1==0{break;}let v=p::input(0x60);
         if st&0x20!=0{if let Some((dx,dy,_,_))=mouse_byte(v){if dx!=0||dy!=0{busy_hide(b);b.visible=true;b.x=(b.x as isize+dx).clamp(0,b.canvas.fb.width as isize-1)as usize;b.y=(b.y as isize-dy).clamp(0,b.canvas.fb.height as isize-1)as usize;busy_show(b);if !b.moved{b.moved=true;serial::line("H5K: BROWSER_BUSY_POINTER_MOVED");}}}}
         else if v==0xe0{b.ext=true;}else{if !b.ext&&v==0x01&&!b.cancelled{b.cancelled=true;serial::line("H5K: BROWSER_CANCEL_REQUESTED");}b.ext=false;}
-    }b.cancelled
+    }
+    for _ in 0..32{let Some(e)=crate::pointer::next()else{break;};busy_pointer(b,e);}
+    b.cancelled
 }
 impl Ui{
     fn browser_busy_begin(&mut self){
@@ -127,7 +131,7 @@ impl Ui{
     fn draw_auth(&mut self){self.saved_valid=false;let c=&self.c;let q=palette(self.auth.dark);let w=c.fb.width;let h=c.fb.height;let x=(w-520)/2;let y=(h-400)/2;c.aurora(h,self.auth.dark);c.panel(x,y,520,400,20,q);c.brand(x+24,y+16,TEAL);c.title(x+68,y+16,if self.auth.stage==7{"Welcome to Hi5OS"}else{"Set up Hi5OS"},q.ink);c.rect(x+24,y+54,472,1,q.edge);
         let a=&self.auth;let (heading,hint,value)=match a.stage{1=>("1 / 6  Language and region","1: English (UK)   2: English (US)",if a.region==0{"English (UK)"}else{"English (US)"}),2=>("2 / 6  Local username","Letters, digits, hyphen or underscore",core::str::from_utf8(&a.name[..a.len]).unwrap_or("")),3=>("3 / 6  Computer name","Letters, digits, hyphen or underscore",core::str::from_utf8(&a.host[..a.host_len]).unwrap_or("")),4=>("4 / 6  Create password","Use at least 12 characters (max 64)",""),5=>("5 / 6  Confirm password","Enter the same password again",""),6=>("6 / 6  Appearance","1: Light   2: Dark",if a.dark{"Dark"}else{"Light"}),7=>("Local account",a.account.as_ref().map_or("",|v|v.username()),""),_=>("Recovery required","Account data cannot be verified","")};
         c.title(x+24,y+68,heading,q.ink);c.text_limit(x+24,y+112,hint,q.muted,false,x+496);c.round(x+24,y+152,472,52,9,q.edge);c.round(x+25,y+153,470,50,8,q.sub);if a.stage==7{c.round(x+456,y+72,38,38,19,BLUE);c.round(x+469,y+79,12,12,6,WHITE);c.round(x+464,y+94,22,10,5,WHITE);}
-        if matches!(a.stage,4|5|7){let n=if a.stage==5{a.confirm_len}else{a.pass_len};let stars=[b'*';64];c.text_limit(x+36,y+165,core::str::from_utf8(&stars[..n]).unwrap_or(""),q.ink,false,x+488);}else{c.text_limit(x+36,y+165,value,q.ink,false,x+488);}
+        if matches!(a.stage,1|6){let options=if a.stage==1{["English (UK)","English (US)"]}else{["Light","Dark"]};let selected=if a.stage==1{a.region as usize}else{a.dark as usize};for(i,label)in options.iter().enumerate(){self.button(Rect{x:x+29+i*234,y:y+157,w:228,h:42},label,if i==selected{BLUE}else{q.panel},if i==selected{WHITE}else{q.ink});}}else if matches!(a.stage,4|5|7){let n=if a.stage==5{a.confirm_len}else{a.pass_len};let stars=[b'*';64];c.text_limit(x+36,y+165,core::str::from_utf8(&stars[..n]).unwrap_or(""),q.ink,false,x+488);}else{c.text_limit(x+36,y+165,value,q.ink,false,x+488);}
         c.text_limit(x+24,y+226,a.msg,q.muted,false,x+496);c.text_limit(x+24,y+256,"Local account - disk is not encrypted",q.muted,false,x+496);if (1..=6).contains(&a.stage){for i in 0..6{c.round(x+24+i*79,y+291,72,4,2,if i<a.stage as usize{TEAL}else{q.edge});}}else if a.stage==7{c.text_limit(x+24,y+281,"Hi5Central enrolment not available yet",q.muted,false,x+496);}
         if a.stage!=8{self.button(Rect{x:x+24,y:y+308,w:472,h:48},if a.stage==7{"Sign in (Enter)"}else if a.stage==6{"Create account (Enter)"}else{"Next (Enter)"},BLUE,WHITE);}
         c.present();self.cursor_show();
@@ -514,7 +518,7 @@ impl Ui{
     fn launch_registered(&mut self){let buf=unsafe{&mut *ptr::addr_of_mut!(APP_BUFFER)};if self.store.load_7zip(buf).is_none(){self.store_msg="Install the verified package first";self.draw();return;}if crate::trial::original_gui_live(self.c.fb.width.saturating_sub(48),self.bar_y().saturating_sub(78)){self.select(App::WinLive);serial::line("H5K: STORE_GUI_LAUNCHED");}else{self.store_msg="Original GUI startup blocked";self.draw();}}
     fn package_action(&mut self,install:bool){let ok=if install{self.store.install_7zip(crate::trial::BUNDLED)}else{self.store.uninstall_7zip()};if ok{self.package_installed=install;}self.store_msg=if ok{if install{"Portable package installed"}else{"Package disabled; user files retained"}}else{"Package transaction failed"};serial::line(if ok{if install{"H5K: STORE_INSTALL_OK"}else{"H5K: STORE_UNINSTALL_OK"}}else{"H5K: STORE_ACTION_FAILED"});self.draw();}
     fn click(&mut self){
-        let x=self.mx;let y=self.my;if self.auth.stage!=0{let ox=(self.c.fb.width-520)/2;let oy=(self.c.fb.height-400)/2;if x>=ox+24&&x<ox+496&&y>=oy+308&&y<oy+356{self.auth_enter();}return;}let by=self.bar_y();let dock=self.dock_x();
+        let x=self.mx;let y=self.my;if self.auth.stage!=0{let ox=(self.c.fb.width-520)/2;let oy=(self.c.fb.height-400)/2;if x>=ox+29&&x<ox+491&&y>=oy+157&&y<oy+199&&matches!(self.auth.stage,1|6){let second=x>=ox+263;if self.auth.stage==1{self.auth.region=second as u8;serial::metric("H5K: SETUP_REGION_SELECTED=",second as u64);}else{self.auth.dark=second;serial::metric("H5K: SETUP_THEME_SELECTED=",second as u64);}self.draw();}else if x>=ox+24&&x<ox+496&&y>=oy+308&&y<oy+356{self.auth_enter();}return;}let by=self.bar_y();let dock=self.dock_x();
         if y>=by{if x<92{self.menu=!self.menu;serial::line("H5K: GUI_MENU_TOGGLED");self.draw();return;}if x>=dock&&x<dock+350{let a=APPS[(x-dock)/50];if self.app==Some(a)&&!self.minimized{self.minimized=true;self.draw();}else{self.select(a);}return;}}
         if self.menu{let m=self.menu_rect();if m.hit(x,y){if y>=m.y+49&&y<m.y+329{self.select(APPS[(y-m.y-49)/40]);}else if y>=m.y+338{self.menu=false;self.theme();}return;}self.menu=false;self.draw();}
         if let Some(a)=self.app{let r=self.win;if !self.minimized&&r.hit(x,y){
@@ -550,8 +554,9 @@ impl Ui{
         if x>=100&&x<180&&y>=374&&y<435&&by>438{self.select(App::Sheet);return;}
         if x<100&&y>=8&&y<435{let i=(y-8)/61;if i<7{self.select(APPS[i]);}}
     }
-    fn move_pointer(&mut self,dx:isize,dy:isize,pressed:bool,was:bool){
-        self.cursor_hide();self.mouse=true;self.mx=(self.mx as isize+dx).clamp(0,self.c.fb.width as isize-1)as usize;self.my=(self.my as isize-dy).clamp(0,self.c.fb.height as isize-1)as usize;
+    fn move_pointer(&mut self,dx:isize,dy:isize,pressed:bool,was:bool){self.pointer_event(crate::pointer::Event{x:dx as i64,y:dy as i64,absolute:false,pressed,was});}
+    fn pointer_event(&mut self,e:crate::pointer::Event){
+        self.cursor_hide();self.mouse=true;let (x,y)=e.position(self.mx,self.my,self.c.fb.width,self.c.fb.height);self.mx=x;self.my=y;let (pressed,was)=(e.pressed,e.was);
         if pressed&&!was{self.click();}
         if !pressed&&was{if let Some((ox,oy))=self.drag.take(){self.win.x=self.mx.saturating_sub(ox).min(self.c.fb.width.saturating_sub(self.win.w));self.win.y=self.my.saturating_sub(oy).min(self.bar_y().saturating_sub(self.win.h));serial::line("H5K: GUI_WINDOW_MOVED");self.draw();return;}}
         if !self.saved_valid{self.cursor_show();}
@@ -584,6 +589,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
     let mut url=[0;128];let default=b"http://10.0.2.200:8080/hello.exe";url[..default.len()].copy_from_slice(default);
     let auth=Auth::new(&store);let prefs=store.browser_settings();let mut ui=Ui{word_clip:alloc::vec::Vec::new(),word:crate::office::Word::new(),word_slot:0,word_loaded:false,word_msg:"New document",word_scroll:0,auth,auto_graphics:prefs&1!=0,auto_script:false,browser_settings:false,browser_diagnostics:prefs&2!=0,tabs:[crate::http::EMPTY_LINK;4],tab_count:1,tab_index:0,page:unsafe{&mut *ptr::addr_of_mut!(crate::webpage::PAGE)},history:[crate::http::EMPTY_LINK;16],history_len:0,history_pos:0,history_replay:false,web_status:0,web_links:[crate::http::EMPTY_LINK;8],web_link_count:0,web_scroll:0,web_text:false,background:[None;10],display_msg:"Select a supported display mode",package_installed:false,store_msg:"F12 opens Hi5Store",c:canvas,app:None,minimized:false,menu:false,dark:false,ram,nics,files,tasks,mx:fb.width/2,my:fb.height/2,mouse:false,saved:[0;256],saved_valid:false,win,restore:win,maximized:false,drag:None,term:Terminal::new(),sheet:crate::sheet::Sheet::new(),sheet_result:0,sheet_cell:0,sheet_edit:[0;48],sheet_len:0,sheet_msg:"Select cell and type value or formula",pe_report:crate::imports::Report::default(),rebase:crate::relocate::Report::default(),store,note:[0;CAP],note_len:0,dirty:false,save_status:0,ctrl:false,file:0,cache,nic:None,url,url_len:default.len(),web:unsafe{&mut *ptr::addr_of_mut!(WEB_BUFFER)},source:[0;128],source_len:0,web_len:0,web_ok:false,web_msg:"Offline until Go is pressed"};
     ui.mouse=init_input();serial::line(if ui.mouse{"H5K: PS2_MOUSE_ACK"}else{"H5K: PS2_MOUSE_UNAVAILABLE"});
+    if crate::pointer::init(){ui.mouse=true;serial::line("H5K: ABS_POINTER_READY");}else{serial::line("H5K: REL_POINTER_READY");}
     serial::line(if ui.c.buffered{"H5K: DOUBLE_BUFFER_OK"}else{"H5K: DIRECT_RENDER_FALLBACK"});
     ui.draw();if ui.auth.stage==1{serial::line("H5K: ACCOUNT_SETUP_READY");}else if ui.auth.stage==7{serial::line("H5K: ACCOUNT_LOGIN_READY");}serial::line("H5K: FRAMEBUFFER_OK");serial::line("H5K: DESKTOP_READY");
     p::timer_init();let start=p::ticks();while p::ticks().wrapping_sub(start)<3{p::wait_tick();}
@@ -593,6 +599,7 @@ pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Sto
         0=>{for _ in 0..32{let st=p::input(0x64);if st&1==0{break;}let b=p::input(0x60);if st&0x20!=0{
             if let Some((dx,dy,pressed,was))=mouse_byte(b){ui.move_pointer(dx,dy,pressed,was);}
         }else if b==0xe0{ext=true;}else{if !ext{ui.key(b);}else if ui.auth.stage!=0{ }else if ui.app==Some(App::WinLive)&&b&0x80==0{let vk=match b{0x48=>38,0x50=>40,0x4b=>37,0x4d=>39,0x47=>36,0x4f=>35,0x49=>33,0x51=>34,0x53=>46,_=>0};if vk!=0{crate::trial::live_key(vk,None);if !crate::trial::live_active(){ui.close();}else{ui.draw();}}}else if ui.app==Some(App::Word)&&b&0x80==0{ui.word_extended(b);}else if ui.app==Some(App::Browser)&&ui.web_text&&b&0x80==0{if b==0x49||b==0x48{ui.web_scroll=ui.web_scroll.saturating_sub(if b==0x49{5}else{1});ui.draw();}else if b==0x51||b==0x50{ui.web_scroll=(ui.web_scroll+if b==0x51{5}else{1}).min(ui.page.rows(ui.win.w.saturating_sub(57)).saturating_sub(1));ui.draw();}}else if ui.app==Some(App::Terminal)&&ui.term.result==24{if b==0x49{ui.term.scroll=ui.term.scroll.saturating_sub(5);ui.draw();}else if b==0x51{let n=crate::trial::output_bytes().iter().filter(|c|**c==10).count();ui.term.scroll=(ui.term.scroll+5).min(n.saturating_sub(1));ui.draw();}}ext=false;}}}
-        1=>{if ui.auth.stage==0&&ui.app==Some(App::WinLive){crate::trial::live_tick();if !crate::trial::live_active(){ui.close();}}else{core::hint::spin_loop();}},_=>p::wait_tick(),
+        1=>{for _ in 0..32{let Some(e)=crate::pointer::next()else{break;};ui.pointer_event(e);}
+            if ui.auth.stage==0&&ui.app==Some(App::WinLive){crate::trial::live_tick();if !crate::trial::live_active(){ui.close();}}else{core::hint::spin_loop();}},_=>p::wait_tick(),
     }}
 }

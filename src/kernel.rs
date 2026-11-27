@@ -45,6 +45,8 @@ pub fn on_stack(info:BootInfo)->! {
     serial::line("H5K: OFFICE_FORMATS_OK");
     if !crate::ui::self_test(){fail(&mut screen,"HI5UI_TEST");}
     serial::line("H5K: HI5UI_TOKENS_OK");
+    if !crate::pointer::self_test(){fail(&mut screen,"POINTER_MODEL_TEST");}
+    serial::line("H5K: POINTER_MODEL_OK");
     let mut tasks=services::Tasks::new();
     if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
     serial::line("H5K: COOPERATIVE_SCHEDULER_OK");
