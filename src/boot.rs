@@ -33,7 +33,9 @@ struct BootServices {
     header: Header,
     before_get_map: [usize; 4],
     get_memory_map: GetMap,
-    before_exit: [usize; 21],
+    allocate_pool: usize,
+    free_pool: unsafe extern "efiapi" fn(*mut c_void)->usize,
+    before_exit: [usize; 19],
     exit_boot_services: ExitBoot,
     before_locate: [usize; 10],
     locate_protocol: LocateProtocol,
@@ -42,7 +44,7 @@ struct BootServices {
 struct Guid { a: u32, b: u16, c: u16, d: [u8; 8] }
 const GOP_GUID: Guid = Guid { a: 0x9042a9de, b: 0x23dc, c: 0x4a38, d: [0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a] };
 #[repr(C)]
-struct Gop { query_mode: usize, set_mode: usize, blt: usize, mode: *const GopMode }
+struct Gop { query_mode: unsafe extern "efiapi" fn(*mut Gop,u32,*mut usize,*mut *mut GopInfo)->usize, set_mode: unsafe extern "efiapi" fn(*mut Gop,u32)->usize, blt: usize, mode: *const GopMode }
 #[repr(C)]
 struct GopMode {
     max_mode: u32, mode: u32, info: *const GopInfo, info_size: usize,
@@ -72,6 +74,7 @@ pub struct BootInfo {
 const _: () = {
     assert!(core::mem::offset_of!(SystemTable, boot_services) == 96);
     assert!(core::mem::offset_of!(BootServices, get_memory_map) == 56);
+    assert!(core::mem::offset_of!(BootServices, free_pool) == 72);
     assert!(core::mem::offset_of!(BootServices, exit_boot_services) == 232);
     assert!(core::mem::offset_of!(BootServices, locate_protocol) == 320);
     assert!(core::mem::offset_of!(GopMode, framebuffer_base) == 24);
@@ -81,13 +84,36 @@ const _: () = {
 unsafe fn graphics(bs: *const BootServices) -> Option<Framebuffer> {
     let mut interface = ptr::null_mut();
     if ((*bs).locate_protocol)(&GOP_GUID, ptr::null(), &mut interface) != 0 || interface.is_null() { return None; }
-    let mode = (*(interface.cast::<Gop>())).mode;
+    let gop=interface.cast::<Gop>();
+    if prefer_large_gop(){select_gop(bs,gop);}
+    framebuffer(gop)
+}
+unsafe fn framebuffer(gop:*mut Gop)->Option<Framebuffer>{
+    let mode = (*gop).mode;
     if mode.is_null() || (*mode).info.is_null() || (*mode).info_size < core::mem::size_of::<GopInfo>() { return None; }
     let info = &*(*mode).info;
     let fb = Framebuffer { base: (*mode).framebuffer_base as usize, size: (*mode).framebuffer_size, width: info.width as usize, height: info.height as usize, stride: info.stride as usize, format: info.pixel_format };
     let needed = fb.stride.checked_mul(fb.height)?.checked_mul(4)?;
     if fb.base == 0 || fb.base % 4 != 0 || fb.width == 0 || fb.height == 0 || fb.stride < fb.width || fb.format > 1 || needed > fb.size || fb.base.checked_add(needed).is_none() { return None; }
     Some(fb)
+}
+// VMware and explicit CI-only QEMU vendor opt into firmware mode negotiation.
+pub fn vmware()->bool{let b=unsafe{core::arch::x86_64::__cpuid(1)};if b.ecx&(1<<31)==0{return false;}let h=unsafe{core::arch::x86_64::__cpuid(0x40000000)};h.ebx.to_le_bytes()==*b"VMwa"&&h.ecx.to_le_bytes()==*b"reVM"&&h.edx.to_le_bytes()==*b"ware"}
+fn prefer_large_gop()->bool{let b=unsafe{core::arch::x86_64::__cpuid(0)};vmware()||(b.ebx.to_le_bytes()==*b"Hi5G"&&b.edx.to_le_bytes()==*b"opTe"&&b.ecx.to_le_bytes()==*b"stVM")}
+fn mode_rank(w:u32,h:u32,format:u32,stride:u32)->u64{if w<640||h<480||w>1920||h>1080||stride<w||format>1{return 0;}if w==1920&&h==1080{return u64::MAX;}w as u64*h as u64}
+pub fn display_model_test()->bool{mode_rank(1920,1080,1,1920)>mode_rank(1600,900,1,1600)&&mode_rank(2560,1440,1,2560)==0&&mode_rank(1024,768,2,1024)==0&&mode_rank(1024,768,1,1000)==0}
+unsafe fn select_gop(bs:*const BootServices,g:*mut Gop){
+    let m=(*g).mode;if m.is_null(){return;}
+    let old=(*m).mode;let max=(*m).max_mode.min(256);
+    let mut best=None;let mut rank=0;
+    for i in 0..max{let mut size=0;let mut info=ptr::null_mut();if ((*g).query_mode)(g,i,&mut size,&mut info)!=0||info.is_null(){continue;}
+        if size>=core::mem::size_of::<GopInfo>(){let v=&*info;let r=mode_rank(v.width,v.height,v.pixel_format,v.stride);if r>rank{rank=r;best=Some(i);}}
+        ((*bs).free_pool)(info.cast());
+    }
+    if let Some(i)=best{if i!=old&&((*g).set_mode)(g,i)!=0{serial::line("H5K: GOP_PREFERRED_MODE_REJECTED");let _=((*g).set_mode)(g,old);}
+        if framebuffer(g).is_none(){let _=((*g).set_mode)(g,old);}
+    }
+    if let Some(f)=framebuffer(g){serial::metric("H5K: GOP_WIDTH=",f.width as u64);serial::metric("H5K: GOP_HEIGHT=",f.height as u64);serial::line("H5K: GOP_PREFERRED_MODE_READY");}
 }
 // Only before ExitBootServices; no runtime pointer retained.
 type GetTime=unsafe extern "efiapi" fn(*mut crate::security::EfiTime,*mut c_void)->usize;

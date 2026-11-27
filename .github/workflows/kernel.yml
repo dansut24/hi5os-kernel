@@ -28,6 +28,8 @@ jobs:
         run: python3 scripts/smoke.py --memory 512 --display-test
       - name: Qualify 1024 MiB VM
         run: python3 scripts/smoke.py --memory 1024
+      - name: Firmware preferred-resolution selection (required)
+        run: python3 scripts/smoke.py --memory 768 --cpu max,vendor=Hi5GopTestVM --preferred-gop --timeout 90
       - name: Clock and fail-closed entropy on CPU without RNG
         run: python3 scripts/smoke.py --memory 512 --cpu qemu64,-rdrand,-rdseed --security-test unavailable
       - name: Clock, hardware entropy and interactive Hi5Sheet

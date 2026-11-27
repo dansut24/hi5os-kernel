@@ -9,13 +9,29 @@ pub const MIDNIGHT:Color=[8,20,35];
 pub fn palette(dark:bool)->Palette{if dark{Palette{wall:MIDNIGHT,wall2:[16,40,61],bar:[12,29,46],panel:[19,39,57],sub:[32,59,80],ink:[243,247,251],muted:[177,200,216],edge:[54,80,100],green:[111,226,180]}}else{Palette{wall:[229,239,248],wall2:[188,217,233],bar:[243,247,251],panel:[252,253,255],sub:[228,238,245],ink:[16,40,61],muted:[61,85,106],edge:[188,207,221],green:[17,115,77]}}}
 fn blend(a:Color,b:Color,n:usize,d:usize)->Color{let n=n.min(d);core::array::from_fn(|i|((a[i]as usize*(d-n)+b[i]as usize*n)/d.max(1))as u8)}
 fn aurora_color(x:usize,y:usize,dark:bool)->Color{
-    let p=palette(dark);let base=blend(p.wall,p.wall2,y,1024);
-    // Curved, feathered ribbons; normalised coordinates, integer-only.
-    let curve=500+(y.abs_diff(630)*y.abs_diff(630))/800;
-    let a=350usize.saturating_sub(x.abs_diff(curve));
-    let b=200usize.saturating_sub(x.abs_diff(870usize.saturating_sub(y/4)));
-    let c=blend(base,if dark{[10,124,143]}else{[148,211,219]},a*a/(350*5),100);
-    blend(c,if dark{[35,80,157]}else{[158,192,241]},b*b/(200*5),100)
+    // Landscape in a 1024x1024 normalised coordinate space. Smooth aurora arcs,
+    // layered ridgelines, a reflective lake and atmospheric perspective.
+    let triangle=|v:usize,period:usize|{let t=v%period;t.min(period-t)};
+    let horizon=708usize;
+    let yy=if y>horizon{horizon.saturating_sub((y-horizon)*2/3)}else{y};
+    let sky=blend([6,15,38],[19,69,107],yy.min(horizon),horizon);
+    let smooth=|v:usize,period:usize|{let t=triangle(v,period)*1024/(period/2);t*t*(3072-2*t)/1048576};
+    let wave=150+smooth(x+100,1024)*290/1024+smooth(x+31,510)*40/1024;
+    let ribbon=110usize.saturating_sub(yy.abs_diff(wave));
+    let wave2=90+smooth(x+450,1024)*230/1024;
+    let ribbon2=78usize.saturating_sub(yy.abs_diff(wave2));
+    let glow=blend(sky,[17,209,190],ribbon*ribbon/110,140);
+    let glow=blend(glow,[82,77,214],ribbon2*ribbon2/78,105);
+    let ridge1=570usize.saturating_sub(triangle(x+60,370)*2/5+triangle(x+20,127)/3);
+    let ridge2=650usize.saturating_sub(triangle(x+174,480)*3/5+triangle(x+17,91)/4);
+    let ridge3=708usize.saturating_sub(triangle(x+320,620)*2/3+triangle(x+19,75)/4);
+    let mut c=glow;
+    if yy>=ridge1{c=blend([37,79,119],[20,49,83],yy-ridge1,220);}
+    if yy>=ridge2{c=blend([29,60,92],[12,32,57],yy-ridge2,150);}
+    if yy>=ridge3{c=blend([21,42,68],[5,19,35],yy-ridge3,120);}
+    if y>horizon{c=blend(c,[4,25,47],(y-horizon)/2+20,190);let ripple=triangle(x*3+y*13,43);if ripple<2{c=blend(c,[61,129,152],12,100);}}
+    if dark{c}else{blend(c,[196,226,242],24,100)}
+
 }
 pub fn self_test()->bool{
     let contrast=|a:Color,b:Color|{let l=|c:Color|(299*c[0]as i32+587*c[1]as i32+114*c[2]as i32)/1000;(l(a)-l(b)).abs()>105};
@@ -60,18 +76,24 @@ impl Canvas{
             self.rect(x+off,y+h-1-i,w-2*off,1,c);
         }
     }
-    /// One fill per 8-pixel span: no GPU dependency, extra framebuffer or image asset.
+    /// Cached scenic wallpaper; bounded 512x288 RGB pixels, expanded to the desktop.
     pub fn aurora(&self,height:usize,dark:bool){
         let w=self.fb.width.max(1);let h=height.min(self.fb.height).max(1);
-        for y in 0..h{let yy=y*1024/h;for x in (0..w).step_by(8){let c=aurora_color(x*1024/w,yy,dark);self.rect(x,y,8.min(w-x),1,c);}}
+        const WW:usize=512;const HH:usize=288;
+        static mut WALL:[u32;WW*HH]=[0;WW*HH];
+        static mut KEY:u8=0;
+        let key=1+dark as u8+2*(self.fb.format as u8);
+        unsafe{let cache=ptr::addr_of_mut!(WALL).cast::<u32>();if KEY!=key{for y in 0..HH{for x in 0..WW{ptr::write(cache.add(y*WW+x),self.pack(aurora_color(x*1024/WW,y*1024/HH,dark)));}}KEY=key;}
+        for y in 0..h{let row=cache.add(y*HH/h*WW);for x in 0..w{self.set(x,y,ptr::read(row.add(x*WW/w)));}}}
     }
     pub fn panel(&self,x:usize,y:usize,w:usize,h:usize,r:usize,p:Palette){
-        self.round(x+3,y+5,w,h,r,blend(p.wall,p.bar,1,2));
+        for i in (1..=5).rev(){self.round(x+i,y+i*2,w,h,r+i,blend(p.wall,p.bar,i,6));}
         self.round(x,y,w,h,r,p.edge);
         if w>2&&h>2{self.round(x+1,y+1,w-2,h-2,r.saturating_sub(1),p.panel);}
     }
     pub fn control(&self,x:usize,y:usize,w:usize,h:usize,label:&str,fill:Color,ink:Color){
         self.round(x,y,w,h,8,fill);
+        if w>10&&h>8{self.round(x+4,y+2,w-8,2,1,blend(fill,[255;3],1,10));}
         let tw=self.text_width(label);let px=x+w.saturating_sub(tw)/2;
         self.text_limit(px.max(x+3),y+h.saturating_sub(22)/2,label,ink,false,x+w.saturating_sub(3));
     }

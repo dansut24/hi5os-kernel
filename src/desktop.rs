@@ -7,6 +7,8 @@ const WHITE:Color=[255,255,255];const GOLD:Color=[234,178,66];
 #[derive(Clone,Copy,PartialEq)]enum App{System,Files,Network,Terminal,Notepad,Browser,Sheet,Store,WinDemo,WinLive,Word}
 impl App{fn title(self)->&'static str{match self{Self::System=>"Settings",Self::Files=>"File Explorer",Self::Network=>"Network",Self::Terminal=>"Terminal",Self::Notepad=>"Notepad",Self::Browser=>"Hi5Browser",Self::Sheet=>"Hi5Sheet",Self::Store=>"Hi5Store",Self::WinDemo=>"Windows GUI test",Self::WinLive=>"7-Zip File Manager",Self::Word=>"Hi5Word - Hi5Office"}}}
 const APPS:[App;7]=[App::System,App::Files,App::Network,App::Terminal,App::Notepad,App::Browser,App::Word];
+const LAUNCH:[App;9]=[App::Word,App::Sheet,App::Browser,App::Files,App::Notepad,App::Store,App::System,App::Network,App::Terminal];
+const LABELS:[&str;9]=["Hi5Word","Hi5Sheet","Browser","Files","Notepad","Hi5Store","Settings","Network","Terminal"];
 #[derive(Clone,Copy)]struct Rect{x:usize,y:usize,w:usize,h:usize}
 impl Rect{fn hit(self,x:usize,y:usize)->bool{x>=self.x&&x<self.x+self.w&&y>=self.y&&y<self.y+self.h}}
 struct Terminal{buf:[u8;112],len:usize,last:[u8;112],last_len:usize,result:u8,shift:bool,scroll:usize,workspace:bool}
@@ -77,13 +79,14 @@ impl Ui{
     fn bar_y(&self)->usize{self.c.fb.height.saturating_sub(52)}
     fn full_window(&self)->Rect{Rect{x:6,y:6,w:self.c.fb.width.saturating_sub(12),h:self.bar_y().saturating_sub(12)}}
     fn save_display(&mut self){if let Some(i)=crate::display::MODES.iter().position(|m|m.0==self.c.physical.width&&m.1==self.c.physical.height){if self.store.save_display(i,self.c.scale){serial::line("H5K: DISPLAY_SETTINGS_SAVED");}}}
-    fn reflow(&mut self){let fb=self.c.fb;self.mx=self.mx.min(fb.width-1);self.my=self.my.min(fb.height-1);self.saved_valid=false;self.drag=None;let w=560.min(fb.width.saturating_sub(108));let h=365.min(fb.height.saturating_sub(66));self.restore=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};self.win=if self.maximized{self.full_window()}else{self.restore};let full=self.full_window();let restore=self.restore;for slot in self.background.iter_mut().flatten(){slot.restore=restore;slot.win=if slot.maximized{full}else{restore};}}
-    fn apply_display(&mut self,i:usize){self.cursor_hide();if let Some(fb)=crate::display::set_mode(self.c.physical,i){self.c=Canvas::scaled(fb,self.c.scale);self.reflow();self.save_display();self.display_msg="Resolution applied";self.draw();serial::metric("H5K: GRAPHICS_WIDTH=",fb.width as u64);serial::metric("H5K: GRAPHICS_HEIGHT=",fb.height as u64);serial::line("H5K: GRAPHICS_MODE_OK");}else{self.display_msg="Mode unavailable - previous resolution retained";self.draw();serial::line("H5K: GRAPHICS_MODE_UNAVAILABLE");}}
+    fn reflow(&mut self){let fb=self.c.fb;self.mx=self.mx.min(fb.width-1);self.my=self.my.min(fb.height-1);self.saved_valid=false;self.drag=None;let w=if crate::boot::vmware(){900}else{560}.min(fb.width.saturating_sub(108));let h=if crate::boot::vmware(){640}else{365}.min(fb.height.saturating_sub(66));self.restore=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};self.win=if self.maximized{self.full_window()}else{self.restore};let full=self.full_window();let restore=self.restore;for slot in self.background.iter_mut().flatten(){slot.restore=restore;slot.win=if slot.maximized{full}else{restore};}}
+    fn apply_display(&mut self,i:usize){self.cursor_hide();if let Some(fb)=crate::display::set_mode(self.c.physical,i){self.c=Canvas::scaled(fb,self.c.scale);self.reflow();self.save_display();self.display_msg="Resolution applied";self.draw();serial::metric("H5K: GRAPHICS_WIDTH=",fb.width as u64);serial::metric("H5K: GRAPHICS_HEIGHT=",fb.height as u64);serial::line("H5K: GRAPHICS_MODE_OK");}else{self.display_msg=if crate::boot::vmware(){"Firmware mode retained - runtime SVGA not yet supported"}else{"Mode unavailable - previous resolution retained"};self.draw();serial::line("H5K: GRAPHICS_MODE_UNAVAILABLE");}}
     fn apply_scale(&mut self,scale:usize){if !Canvas::supported(self.c.physical,scale){self.display_msg="Scale needs a larger resolution";self.draw();return;}self.cursor_hide();self.c=Canvas::scaled(self.c.physical,scale);self.reflow();self.save_display();self.display_msg="Interface scale applied";self.draw();serial::metric("H5K: DISPLAY_SCALE=",scale as u64);}
     fn park_window(&mut self){if let Some(a)=self.app{if a==App::WinLive{return;}let slot=WindowSlot{app:a,win:self.win,restore:self.restore,maximized:self.maximized,minimized:self.minimized};if let Some(i)=self.background.iter().position(|s|s.is_none()){self.background[i]=Some(slot);}}}
     fn take_window(&mut self,a:App)->Option<WindowSlot>{let i=self.background.iter().position(|s|s.is_some_and(|v|v.app==a))?;let out=self.background[i];for j in i..9{self.background[j]=self.background[j+1];}self.background[9]=None;out}
     fn dock_x(&self)->usize{self.c.fb.width.saturating_sub(350)/2}
-    fn menu_rect(&self)->Rect{Rect{x:8,y:self.bar_y().saturating_sub(398),w:270,h:392}}
+    fn menu_rect(&self)->Rect{Rect{x:8,y:self.bar_y().saturating_sub(398),w:456,h:392}}
+    fn menu_tile(r:Rect,i:usize)->Rect{Rect{x:r.x+20+(i%3)*139,y:r.y+88+(i/3)*75,w:132,h:68}}
     fn button(&self,r:Rect,t:&str,fill:Color,ink:Color){self.c.control(r.x,r.y,r.w,r.h,t,fill,ink);}
     fn icon(&self,a:App,x:usize,y:usize){let c=&self.c;
         let tile=match a{App::System=>[38,103,169],App::Files=>[176,117,34],App::Network=>[17,119,133],App::Terminal=>[19,38,56],App::Notepad=>[90,112,146],App::Browser=>[16,128,142],App::Word=>[28,88,180],App::Sheet=>[24,123,83],_=>[61,88,143]};
@@ -104,27 +107,31 @@ impl Ui{
         self.saved_valid=false;
         let c=&self.c;let w=c.fb.width;let h=c.fb.height;let q=palette(self.dark);let by=self.bar_y();
         c.aurora(by,self.dark);
-        let bx=w.saturating_sub(220);c.brand(bx,18,TEAL);c.title(bx+42,17,"Hi5OS",q.ink);
-        c.text(w.saturating_sub(220),58,"Business desktop preview",q.muted);
-        if w>=900&&self.app.is_none()&&self.background.iter().all(|s|s.is_none()||s.is_some_and(|v|v.minimized)){
-            let cx=w-258;c.panel(cx,102,238,128,14,q);c.text(cx+14,114,"Device overview",q.ink);
+        let bx=w.saturating_sub(246);let chrome=palette(true);c.panel(bx,16,230,65,13,chrome);c.brand(bx+12,30,TEAL);c.title(bx+56,22,"Hi5OS",WHITE);c.text(bx+56,49,"Your workspace",chrome.muted);
+        if w>=900&&(self.app.is_none()||self.minimized)&&self.background.iter().all(|s|s.is_none()||s.is_some_and(|v|v.minimized)){
+            let cx=w-258;c.panel(cx,102,238,144,14,q);c.title(cx+14,112,"Device overview",q.ink);c.rect(cx+14,141,210,1,q.edge);
             let connected=self.nic.as_ref().is_some_and(|n|n.config().0!=[0;4]);
             c.round(cx+14,148,8,8,4,if connected{q.green}else{q.muted});
             c.text(cx+30,140,if connected{"IPv4 connected"}else{"Network offline"},q.muted);
             c.text(cx+14,166,if self.store.attached(){"Data disk attached"}else{"RAM workspace"},q.muted);
-            c.text(cx+14,191,"Hi5Central: not enrolled",q.muted);
+            c.text(cx+14,195,"Hi5Central: not enrolled",q.muted);
+            c.panel(cx,260,238,94,14,q);c.title(cx+14,270,"Workspace",q.ink);c.text(cx+14,302,"Local documents and apps",q.muted);c.text(cx+14,325,"Company services not linked",q.muted);
         }
-        for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser",App::Sheet=>"Sheet",App::Store=>"Store",App::WinDemo=>"WinDemo",App::WinLive=>"Windows",App::Word=>"Hi5Word"};c.text(18,y+35,label,q.ink);}
-        if by>438{self.icon(App::Sheet,111,374);c.text(105,409,"Sheet",q.ink);}
+        for(i,a)in APPS.iter().enumerate(){let y=8+i*61;self.icon(*a,31,y);let label=match a{App::System=>"This PC",App::Files=>"Files",App::Network=>"Network",App::Terminal=>"Terminal",App::Notepad=>"Notepad",App::Browser=>"Browser",App::Sheet=>"Sheet",App::Store=>"Store",App::WinDemo=>"WinDemo",App::WinLive=>"Windows",App::Word=>"Hi5Word"};c.round(8,y+36,84,22,6,[10,29,48]);c.text_limit(8+84usize.saturating_sub(c.text_width(label))/2,y+36,label,WHITE,false,92);}
+        if by>438{self.icon(App::Sheet,111,374);c.round(100,410,56,22,6,[10,29,48]);c.text(107,410,"Sheet",WHITE);}
         let saved=self.win;for i in 0..10{if let Some(s)=self.background[i]{if !s.minimized{self.win=s.win;self.draw_window(s.app,q);}}}self.win=saved;if let Some(a)=self.app{if !self.minimized{self.draw_window(a,q);}}
         c.rect(0,by,w,h-by,q.bar);c.rect(0,by,w,1,q.edge);c.round(self.dock_x().saturating_sub(4),by+3,358,46,12,q.panel);
         c.round(8,by+8,78,36,10,BLUE);c.brand(12,by+10,TEAL);c.text_limit(47,by+13,"Start",WHITE,false,84);
         let dock=self.dock_x();
         for(i,a)in APPS.iter().enumerate(){let x=dock+i*50;if self.app==Some(*a)||self.background.iter().any(|s|s.is_some_and(|v|v.app==*a)){c.round(x,by+5,46,42,7,q.sub);c.round(x+14,by+47,18,3,1,TEAL);}self.icon(*a,x+6,by+10);}
         c.text(w.saturating_sub(100),by+6,if self.nic.as_ref().map_or(false,|n|n.config().0!=[0;4]){"IPv4 ready"}else{"Offline"},q.muted);c.text(w.saturating_sub(100),by+25,"Hi5OS",q.ink);
-        if self.menu{let r=self.menu_rect();c.panel(r.x,r.y,r.w,r.h,16,q);c.brand(r.x+14,r.y+9,TEAL);c.title(r.x+58,r.y+8,"Apps",q.ink);c.rect(r.x+14,r.y+43,r.w-28,1,q.edge);
-            for(i,a)in APPS.iter().enumerate(){let y=r.y+49+i*40;if self.app==Some(*a){c.round(r.x+8,y,r.w-16,36,8,q.sub);}self.icon(*a,r.x+14,y);c.text_limit(r.x+60,y+6,a.title(),q.ink,false,r.x+r.w-12);}
-            self.button(Rect{x:r.x+12,y:r.y+338,w:r.w-24,h:38},if self.dark{"Light appearance (T)"}else{"Dark appearance (T)"},q.sub,q.ink);
+        if self.menu{let r=self.menu_rect();c.panel(r.x,r.y,r.w,r.h,18,q);c.brand(r.x+18,r.y+14,TEAL);c.title(r.x+60,r.y+11,"Hi5OS",q.ink);
+            c.text_limit(r.x+60,r.y+40,self.auth.account.as_ref().map_or("Local workspace",|a|a.username()),q.muted,false,r.x+r.w-14);
+            c.rect(r.x+18,r.y+65,r.w-36,1,q.edge);c.text(r.x+20,r.y+66,"Applications",q.ink);
+            for(i,a)in LAUNCH.iter().enumerate(){let t=Self::menu_tile(r,i);c.round(t.x,t.y,t.w,t.h,10,q.sub);self.icon(*a,t.x+(t.w-34)/2,t.y+5);let label=LABELS[i];c.text_limit(t.x+(t.w.saturating_sub(c.text_width(label)))/2,t.y+40,label,q.ink,false,t.x+t.w-3);}
+            c.rect(r.x+18,r.y+325,r.w-36,1,q.edge);
+            self.button(Rect{x:r.x+20,y:r.y+338,w:208,h:38},if self.dark{"Light appearance (T)"}else{"Dark appearance (T)"},q.sub,q.ink);
+            self.button(Rect{x:r.x+238,y:r.y+338,w:198,h:38},if self.auth.account.is_some(){"Lock workspace"}else{"Settings"},BLUE,WHITE);
         }
         c.present();self.cursor_show();
     }
@@ -182,7 +189,7 @@ impl Ui{
                 c.title(x,y,"Display & appearance",q.ink);c.rect(x,y+32,r.w-44,1,q.edge);
                 c.text(x,y+38,"Current resolution:",q.muted);c.num(x+170,y+38,c.physical.width as u64,q.ink);c.text(x+224,y+38,"x",q.muted);c.num(x+242,y+38,c.physical.height as u64,q.ink);
                 let native=crate::display::runtime_available(c.physical);
-                c.text_limit(x,y+67,if native{"Standard VGA / Bochs - 32-bit native modes"}else{"UEFI framebuffer - fixed mode on this adapter"},q.muted,false,right);
+                c.text_limit(x,y+67,if native{"Standard VGA / Bochs - 32-bit native modes"}else if crate::boot::vmware(){"VMware SVGA - firmware-selected resolution"}else{"UEFI framebuffer - firmware-selected mode"},q.muted,false,right);
                 for (i,&(w,h,label)) in crate::display::MODES.iter().enumerate(){
                     let active=w==c.physical.width&&h==c.physical.height;let enabled=crate::display::mode_available(c.physical,i);
                     self.button(Rect{x:x+(i%3)*142,y:y+96+(i/3)*38,w:134,h:34},label,if active{BLUE}else{q.sub},if active{WHITE}else if enabled{q.ink}else{q.muted});
@@ -362,7 +369,7 @@ impl Ui{
     fn word_follow(&mut self){let rows=self.word_rows();let row=self.word_row_index(&rows);let visible=(self.word_paper().h.saturating_sub(20)/34).max(1);if row<self.word_scroll{self.word_scroll=row;}else if row>=self.word_scroll+visible{self.word_scroll=row+1-visible;}self.word_scroll=self.word_scroll.min(rows.len()-1);}
     fn word_row_x(&self,p:Rect,width:usize)->usize{let usable=p.w.saturating_sub(32);p.x+16+match self.word.align{1=>usable.saturating_sub(width)/2,2=>usable.saturating_sub(width),_=>0}}
     fn word_draw(&self,q:Palette){let c=&self.c;let r=self.win;let x=r.x+22;let y=r.y+58;let right=r.x+r.w-14;
-        c.text_limit(x,y,crate::office::NAMES[self.word_slot],q.ink,false,right);if self.word.dirty{c.text_limit(x+180,y,"Unsaved",q.muted,false,right);}c.round(x-6,y+18,r.w-32,68,9,q.bar);
+        c.text_limit(x,y,crate::office::NAMES[self.word_slot],q.ink,false,right);if self.word.dirty{c.text_limit(x+180,y,"Unsaved",q.muted,false,right);}c.round(x-6,y+18,r.w-32,68,9,q.bar);if r.w>=850{c.rect(x+445,y+26,1,52,q.edge);c.text_limit(x+462,y+27,"DOCUMENT",q.muted,false,right);c.text_limit(x+462,y+54,"Local editing and DOCX export",q.ink,false,right);}
         for(i,label)in ["New","Save","DOCX","Open 1","2","3","4"].iter().enumerate(){let bx=x+i*62;if bx+59<=right{self.button(Rect{x:bx,y:y+22,w:59,h:27},label,if i==1{BLUE}else{q.sub},if i==1{WHITE}else{q.ink});}}
         for(i,label)in ["B","I","U","18pt","Left","Center","Right","Undo","Redo"].iter().enumerate(){let bx=x+i*48;if bx+46<=right{let on=if i<4{self.word.style&(1<<i)!=0}else if i<7{self.word.align as usize==i-4}else{false};self.button(Rect{x:bx,y:y+53,w:46,h:28},label,if on{BLUE}else{q.sub},if on{WHITE}else{q.ink});}}
         let paper=self.word_paper();c.round(x-7,paper.y-7,r.w-30,paper.h+14,8,q.sub);c.rect(paper.x+3,paper.y+4,paper.w,paper.h,q.edge);c.rect(paper.x,paper.y,paper.w,paper.h,WHITE);
@@ -520,7 +527,7 @@ impl Ui{
     fn click(&mut self){
         let x=self.mx;let y=self.my;if self.auth.stage!=0{let ox=(self.c.fb.width-520)/2;let oy=(self.c.fb.height-400)/2;if x>=ox+29&&x<ox+491&&y>=oy+157&&y<oy+199&&matches!(self.auth.stage,1|6){let second=x>=ox+263;if self.auth.stage==1{self.auth.region=second as u8;serial::metric("H5K: SETUP_REGION_SELECTED=",second as u64);}else{self.auth.dark=second;serial::metric("H5K: SETUP_THEME_SELECTED=",second as u64);}self.draw();}else if x>=ox+24&&x<ox+496&&y>=oy+308&&y<oy+356{self.auth_enter();}return;}let by=self.bar_y();let dock=self.dock_x();
         if y>=by{if x<92{self.menu=!self.menu;serial::line("H5K: GUI_MENU_TOGGLED");self.draw();return;}if x>=dock&&x<dock+350{let a=APPS[(x-dock)/50];if self.app==Some(a)&&!self.minimized{self.minimized=true;self.draw();}else{self.select(a);}return;}}
-        if self.menu{let m=self.menu_rect();if m.hit(x,y){if y>=m.y+49&&y<m.y+329{self.select(APPS[(y-m.y-49)/40]);}else if y>=m.y+338{self.menu=false;self.theme();}return;}self.menu=false;self.draw();}
+        if self.menu{let m=self.menu_rect();if m.hit(x,y){for(i,a)in LAUNCH.iter().enumerate(){if Self::menu_tile(m,i).hit(x,y){self.select(*a);return;}}if y>=m.y+338&&y<m.y+376{if x>=m.x+20&&x<m.x+228{self.menu=false;self.theme();}else if x>=m.x+238&&x<m.x+436{self.menu=false;if self.auth.account.is_some(){self.lock_account();}else{self.select(App::System);}}}return;}self.menu=false;self.draw();}
         if let Some(a)=self.app{let r=self.win;if !self.minimized&&r.hit(x,y){
             if y<r.y+42{if x>=r.x+r.w-38{self.close();}else if x>=r.x+r.w-73{self.maximize();}else if x>=r.x+r.w-108{self.minimized=true;self.draw();}else if !self.maximized{self.drag=Some((x-r.x,y-r.y));}return;}
             let bx=r.x+22;let yy=r.y+58;
@@ -580,9 +587,9 @@ fn init_input()->bool{
 }
 
 pub fn run(fb:Framebuffer,ram:u64,nics:u32,files:Files,tasks:Tasks,mut store:Store)->!{
-    let mut canvas=Canvas::new(fb);if let Some((mode,scale))=store.display_settings(){if let Some(actual)=crate::display::set_mode(fb,mode){canvas=Canvas::scaled(actual,scale);serial::line("H5K: DISPLAY_SETTINGS_RESTORED");serial::metric("H5K: DISPLAY_SCALE=",canvas.scale as u64);}}let fb=canvas.fb;
+    let mut canvas=Canvas::new(fb);if let Some((mode,scale))=store.display_settings(){if let Some(actual)=crate::display::set_mode(fb,mode).or_else(||if Canvas::supported(fb,scale){Some(fb)}else{None}){canvas=Canvas::scaled(actual,scale);serial::line("H5K: DISPLAY_SETTINGS_RESTORED");serial::metric("H5K: DISPLAY_SCALE=",canvas.scale as u64);}}else if crate::boot::vmware()&&fb.width>=1600&&Canvas::supported(fb,125){canvas=Canvas::scaled(fb,125);}let fb=canvas.fb;
     if fb.width<640||fb.height<480{serial::line("H5K: FAIL DESKTOP_RESOLUTION");crate::kernel::halt();}
-    let w=560.min(fb.width.saturating_sub(108));let h=365.min(fb.height.saturating_sub(66));let win=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};
+    let w=if crate::boot::vmware(){900}else{560}.min(fb.width.saturating_sub(108));let h=if crate::boot::vmware(){640}else{365}.min(fb.height.saturating_sub(66));let win=Rect{x:(fb.width-w)/2+20,y:(fb.height-52-h)/2,w,h};
     let mut cache=[EMPTY_FILE;FILE_COUNT];cache[0]=FileSlot{data:files.data,len:files.len,present:files.present};
     for i in 1..FILE_COUNT{if let Some((present,data,len))=store.load(i){cache[i]=FileSlot{data,len,present};}}
     let _=store.load(0);
