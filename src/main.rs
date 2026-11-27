@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 mod boot;
 mod kernel;
 mod serial;
@@ -28,6 +30,7 @@ mod net;
 mod http;
 mod webpage;
 mod hi5webcore;
+mod webjs;
 mod heap;
 mod security;
 mod account;

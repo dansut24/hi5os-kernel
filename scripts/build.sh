@@ -21,8 +21,12 @@ lld-link /lib /def:fixtures/gdi32-gui.def /machine:x64 /out:target/hi5-fixture/g
 lld-link /entry:hi5_entry /subsystem:windows /nodefaultlib /dynamicbase /base:0x140000000 /timestamp:0 /out:target/hi5-fixture/h5gui.exe target/hi5-fixture/h5gui.obj target/hi5-fixture/h5dll.lib target/hi5-fixture/user32-gui.lib target/hi5-fixture/gdi32-gui.lib
 /usr/bin/python3 scripts/prepare_tls.py
 /usr/bin/python3 scripts/prepare_image.py
+/usr/bin/python3 scripts/prepare_js.py
 RUSTFLAGS="-Lnative=$PWD/target/hi5-tls -Lnative=$PWD/target/hi5-image" cargo build --release --locked --target x86_64-unknown-uefi
 mkdir -p dist
+/usr/bin/python3 scripts/prepare_js.py --notices
+rm -rf dist/hi5-js-notices
+cp -r target/hi5-js/notices dist/hi5-js-notices
 cp target/hi5-fixture/gui-package.json dist/7zip-gui-package.json
 cp target/hi5-fixture/h5gui.exe dist/hi5-wingui.exe
 cp target/hi5-fixture/h5dll.dll dist/hi5-test.dll
@@ -41,6 +45,7 @@ mkfs.vfat -F 32 -n HI5OS dist/hi5os-v0.3.4.img
 mmd -i dist/hi5os-v0.3.4.img ::/EFI ::/EFI/BOOT
 mcopy -i dist/hi5os-v0.3.4.img dist/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 mcopy -s -i dist/hi5os-v0.3.4.img dist/7zip-notices ::/7ZIP-NOTICES
+mcopy -s -i dist/hi5os-v0.3.4.img dist/hi5-js-notices ::/HI5-JS-NOTICES
 rm -f dist/hi5os-data-v1.img
 python3 scripts/data_image.py dist/hi5os-data-v1.img
 rm -f dist/hi5os-setup-data.img

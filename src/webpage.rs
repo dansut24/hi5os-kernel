@@ -3,8 +3,8 @@ use crate::ui::{Canvas,Color};
 use crate::http::{Link,EMPTY_LINK};
 use crate::hi5webcore::{self as coreweb,Form};
 const MAX:usize=2048;
-const IMAGE_LIMIT:usize=4;
-const CSS_LIMIT:usize=2;
+const IMAGE_LIMIT:usize=8;
+const CSS_LIMIT:usize=4;
 const PIX_W:usize=320;const PIX_H:usize=180;const PIX_CAP:usize=PIX_W*PIX_H*3;
 #[derive(Clone,Copy)]struct Photo{w:usize,h:usize,bytes:[u8;PIX_CAP]}
 const NO_PHOTO:Photo=Photo{w:0,h:0,bytes:[0;PIX_CAP]};
@@ -14,10 +14,12 @@ static mut PHOTOS:[Photo;IMAGE_LIMIT]=[NO_PHOTO;IMAGE_LIMIT];
 const EMPTY_RULE:Rule=Rule{selector:[0;96],len:0,style:EMPTY,spec:0};
 static mut RULES:[Rule;256]=[EMPTY_RULE;256];
 const TEXT:usize=192;
-#[derive(Clone,Copy)]struct Block{buf:[u8;TEXT],len:usize,kind:u8,color:Option<Color>,bg:Option<Color>,id:[u8;32],id_len:usize,link:Link,image:u8,align:u8,padding:u8,margin:u8,hidden:bool,display:Option<bool>,align_set:bool,layout:u8,columns:u8,gap:u8,group:u16,item:u16,group_cols:u8,group_gap:u8,node:u16}
-const EMPTY:Block=Block{buf:[0;TEXT],len:0,kind:0,color:None,bg:None,id:[0;32],id_len:0,link:EMPTY_LINK,image:0,align:0,padding:0,margin:0,hidden:false,display:None,align_set:false,layout:0,columns:0,gap:0,group:0,item:0,group_cols:0,group_gap:0,node:0};
+#[derive(Clone,Copy)]struct Block{buf:[u8;TEXT],len:usize,kind:u8,color:Option<Color>,bg:Option<Color>,id:[u8;32],id_len:usize,link:Link,image:u8,align:u8,padding:u8,margin:u8,hidden:bool,display:Option<bool>,align_set:bool,layout:u8,columns:u8,gap:u8,group:u16,item:u16,group_cols:u8,group_gap:u8,flow:u16,node:u16}
+const EMPTY:Block=Block{buf:[0;TEXT],len:0,kind:0,color:None,bg:None,id:[0;32],id_len:0,link:EMPTY_LINK,image:0,align:0,padding:0,margin:0,hidden:false,display:None,align_set:false,layout:0,columns:0,gap:0,group:0,item:0,group_cols:0,group_gap:0,flow:0,node:0};
 #[derive(Clone,Copy)]pub struct Page{blocks:[Block;MAX],pub count:usize,pub styled:usize,pub images:usize,pub scripts:usize,pub stylesheets:[Link;CSS_LIMIT],pub stylesheet_count:usize,pub image_urls:[Link;IMAGE_LIMIT],pub image_count:usize,pub loaded_images:usize,pub dom_nodes:usize,pub requires_js:bool,pub empty_document:bool,pub truncated:bool,pub form:Form,pub form_focus:bool,title:[u8;96],title_len:usize}
 pub static mut PAGE:Page=Page::new();
+static mut TAB_PAGES:[Page;4]=[Page::new();4];
+static mut TAB_PHOTOS:[[Photo;IMAGE_LIMIT];4]=[[NO_PHOTO;IMAGE_LIMIT];4];
 fn trim(b:&[u8])->&[u8]{let mut a=0;let mut z=b.len();while a<z&&b[a].is_ascii_whitespace(){a+=1;}while z>a&&b[z-1].is_ascii_whitespace(){z-=1;}&b[a..z]}
 fn attr<'a>(mut a:&'a[u8],want:&[u8])->Option<&'a[u8]>{
     while !a.is_empty(){a=trim(a);if a.is_empty(){break;}let n=a.iter().position(|b|b.is_ascii_whitespace()||*b==b'=').unwrap_or(a.len());if n==0{return None;}let k=&a[..n];a=trim(&a[n..]);if a.first()!=Some(&b'='){if k.eq_ignore_ascii_case(want){return Some(&[]);}continue;}a=trim(&a[1..]);let q=*a.first()?;let(v,rest)=if q==b'\''||q==b'"'{let e=a[1..].iter().position(|b|*b==q)?+1;(&a[1..e],&a[e+1..])}else{let e=a.iter().position(|b|b.is_ascii_whitespace()).unwrap_or(a.len());(&a[..e],&a[e..])};if k.eq_ignore_ascii_case(want){return Some(v);}a=rest;
@@ -31,6 +33,9 @@ struct LayoutRow{cells:[Cell;4],len:usize,h:usize}
 impl Page{
     pub const fn new()->Self{Self{blocks:[EMPTY;MAX],count:0,styled:0,images:0,scripts:0,stylesheets:[EMPTY_LINK;CSS_LIMIT],stylesheet_count:0,image_urls:[EMPTY_LINK;IMAGE_LIMIT],image_count:0,loaded_images:0,dom_nodes:0,requires_js:false,empty_document:false,truncated:false,form:Form::new(),form_focus:false,title:[0;96],title_len:0}}
     pub fn clear(&mut self){self.count=0;self.styled=0;self.images=0;self.scripts=0;self.title_len=0;self.stylesheet_count=0;self.image_count=0;self.loaded_images=0;self.dom_nodes=0;self.requires_js=false;self.empty_document=false;self.truncated=false;self.form=Form::new();self.form_focus=false;unsafe{for p in (&mut *core::ptr::addr_of_mut!(PHOTOS)).iter_mut(){p.w=0;p.h=0;}}}
+    pub fn cache_save(&self,slot:usize){if slot>=4{return;}unsafe{core::ptr::copy_nonoverlapping(self,core::ptr::addr_of_mut!(TAB_PAGES).cast::<Page>().add(slot),1);core::ptr::copy_nonoverlapping(core::ptr::addr_of!(PHOTOS),core::ptr::addr_of_mut!(TAB_PHOTOS).cast::<[Photo;IMAGE_LIMIT]>().add(slot),1);}}
+    pub fn cache_load(&mut self,slot:usize){if slot>=4{return;}unsafe{core::ptr::copy_nonoverlapping(core::ptr::addr_of!(TAB_PAGES).cast::<Page>().add(slot),self,1);core::ptr::copy_nonoverlapping(core::ptr::addr_of!(TAB_PHOTOS).cast::<[Photo;IMAGE_LIMIT]>().add(slot),core::ptr::addr_of_mut!(PHOTOS),1);}}
+    pub fn cache_move(from:usize,to:usize){if from>=4||to>=4||from==to{return;}unsafe{core::ptr::copy_nonoverlapping(core::ptr::addr_of!(TAB_PAGES).cast::<Page>().add(from),core::ptr::addr_of_mut!(TAB_PAGES).cast::<Page>().add(to),1);core::ptr::copy_nonoverlapping(core::ptr::addr_of!(TAB_PHOTOS).cast::<[Photo;IMAGE_LIMIT]>().add(from),core::ptr::addr_of_mut!(TAB_PHOTOS).cast::<[Photo;IMAGE_LIMIT]>().add(to),1);}}
     pub fn title(&self)->&str{core::str::from_utf8(&self.title[..self.title_len]).unwrap_or("")}
     fn push(&mut self,b:&mut Block){if b.len>0&&!b.hidden&&self.count<MAX{if b.color.is_some()||b.bg.is_some(){self.styled+=1;}self.blocks[self.count]=*b;self.count+=1;}*b=EMPTY;}
     fn text(&mut self,b:&mut Block,t:&[u8]){
@@ -41,8 +46,9 @@ impl Page{
         }
     }
     pub fn parse(&mut self,src:&[u8]){self.parse_at(src,b"http://example.test/",&[]);}
-    pub fn parse_at(&mut self,src:&[u8],base:&[u8],css:&[u8]){
-        self.clear();self.requires_js=src.windows(b"/httpservice/retry/enablejs".len()).any(|v|v.eq_ignore_ascii_case(b"/httpservice/retry/enablejs"));let rules=unsafe{&mut *core::ptr::addr_of_mut!(RULES)};let mut nr=0;css_rules(css,rules,&mut nr);
+    pub fn parse_at(&mut self,src:&[u8],base:&[u8],css:&[u8]){self.parse_at_width(src,base,css,1024);}
+    pub fn parse_at_width(&mut self,src:&[u8],base:&[u8],css:&[u8],viewport:usize){
+        self.clear();self.requires_js=src.windows(b"/httpservice/retry/enablejs".len()).any(|v|v.eq_ignore_ascii_case(b"/httpservice/retry/enablejs"));let rules=unsafe{&mut *core::ptr::addr_of_mut!(RULES)};let mut nr=0;css_rules(css,rules,&mut nr,viewport,0);
         // Collect embedded stylesheet blocks and external stylesheet references.
         let mut scan=0;while scan<src.len(){
             let Some(e)=src[scan..].iter().position(|v|*v==b'<')else{break;};scan+=e;
@@ -52,7 +58,7 @@ impl Page{
             if t.eq_ignore_ascii_case(b"script")||t.eq_ignore_ascii_case(b"style"){
                 let stop=if t.eq_ignore_ascii_case(b"style"){b"</style".as_slice()}else{b"</script".as_slice()};
                 let Some(end)=src[scan..].windows(stop.len()).position(|v|v.eq_ignore_ascii_case(stop))else{break;};
-                if t.eq_ignore_ascii_case(b"style"){css_rules(&src[scan..scan+end],rules,&mut nr);}scan+=end;continue;
+                if t.eq_ignore_ascii_case(b"style"){css_rules(&src[scan..scan+end],rules,&mut nr,viewport,0);}scan+=end;continue;
             }
             if t.eq_ignore_ascii_case(b"link")&&self.stylesheet_count<CSS_LIMIT&&attr(a,b"rel").is_some_and(|v|v.eq_ignore_ascii_case(b"stylesheet")){
                 if let Some(h)=attr(a,b"href"){if let Some(l)=url(base,h){self.stylesheets[self.stylesheet_count]=l;self.stylesheet_count+=1;}}
@@ -61,7 +67,7 @@ impl Page{
         // Stable insertion sort: later equal-specificity rules retain source order.
         for i in 1..nr{let rule=rules[i];let mut j=i;while j>0&&rules[j-1].spec>rule.spec{rules[j]=rules[j-1];j-=1;}rules[j]=rule;}
         let mut p=0;let mut b=EMPTY;let mut skip=0u8;let mut active=EMPTY_LINK;
-        let dom=unsafe{&mut *core::ptr::addr_of_mut!(coreweb::DOM)};dom.clear();let mut parents=[0usize;coreweb::DEPTH];let mut computed=[EMPTY;coreweb::DEPTH];let mut tags=[(0usize,0usize);coreweb::DEPTH];let mut depth=1usize;let mut overflow=0usize;let mut in_form=false;let mut submit=false;
+        let dom=unsafe{&mut *core::ptr::addr_of_mut!(coreweb::DOM)};dom.clear();let mut parents=[0usize;coreweb::DEPTH];let mut computed=[EMPTY;coreweb::DEPTH];let mut tags=[(0usize,0usize);coreweb::DEPTH];let mut depth=1usize;let mut overflow=0usize;let mut in_form=false;let mut submit=false;let mut placeholders=0usize;
         while p<src.len()&&self.count<MAX{
             if src[p]!=b'<'{let e=src[p..].iter().position(|v|*v==b'<').unwrap_or(src.len()-p);if skip==0&&overflow==0{if e>0&&src[p..p+e].iter().any(|v|!v.is_ascii_whitespace()){let _=dom.append(parents[depth-1],p,e,true);}b.link=active;if !b.hidden{self.text(&mut b,&src[p..p+e]);}}else if skip==4{let t=trim(&src[p..p+e]);let n=t.len().min(96);self.title[..n].copy_from_slice(&t[..n]);self.title_len=n;}p+=e;continue;}
             if src[p..].starts_with(b"<!--"){if let Some(e)=src[p+4..].windows(3).position(|v|v==b"-->"){p+=e+7;continue;}break;}
@@ -78,12 +84,12 @@ impl Page{
             if closing{
                 if tag.eq_ignore_ascii_case(b"form")&&in_form{self.push(&mut b);if self.form.ready&&!submit{let mut btn=EMPTY;btn.kind=4;btn.align=computed[depth-1].align;self.text(&mut btn,b"Search / Submit");self.push(&mut btn);}in_form=false;}
                 let found=(1..depth).rev().find(|&i|{let(s,n)=tags[i];src[s..s+n].eq_ignore_ascii_case(tag)});
-                if let Some(i)=found{self.push(&mut b);depth=i;b=computed[depth-1];active=b.link;}continue;
+                if let Some(i)=found{self.push(&mut b);let node=computed[i];if placeholders<48&&node.id_len>0&&!node.hidden&&self.count<MAX&&!self.blocks[..self.count].iter().any(|v|v.id_len>0&&v.node==node.node){self.blocks[self.count]=node;self.count+=1;placeholders+=1;}depth=i;b=computed[depth-1];active=b.link;}continue;
             }
             if depth>=coreweb::DEPTH&&!void{self.push(&mut b);overflow=1;continue;}
             // Keep each source element with explicit parent/child/sibling relationships.
             let node=dom.append(parents[depth-1],start,p-start,false).unwrap_or(parents[depth-1]);
-            let mut next=computed[depth-1];next.len=0;next.id_len=0;next.image=0;next.node=node as u16;next.padding=0;next.margin=0;next.display=None;next.align_set=false;next.layout=0;next.columns=0;next.gap=0;let parent=computed[depth-1];if parent.layout==1||parent.layout==2{next.group=parent.node;next.item=node as u16;next.group_cols=if parent.layout==2{parent.columns.max(2).min(4)}else{4};next.group_gap=parent.gap.max(4);}
+            let mut next=computed[depth-1];next.len=0;next.id_len=0;next.image=0;next.node=node as u16;next.padding=0;next.margin=0;next.display=None;next.align_set=false;next.layout=0;next.columns=0;next.gap=0;if !void&&!inline_tag(tag){next.flow=node as u16;}let parent=computed[depth-1];if parent.layout==1||parent.layout==2{next.group=parent.node;next.item=node as u16;next.group_cols=if parent.layout==2{parent.columns.max(2).min(4)}else{4};next.group_gap=parent.gap.max(4);}
             self.push(&mut b);
             if heading||tag.eq_ignore_ascii_case(b"strong"){next.kind=1;}
             if tag.eq_ignore_ascii_case(b"center")||attr(a,b"align").is_some_and(|v|v.eq_ignore_ascii_case(b"center")){next.align=1;}
@@ -132,6 +138,45 @@ impl Page{
             if let Some(b)=self.blocks[..self.count].iter_mut().find(|b|b.id_len==id.len()&&&b.id[..b.id_len]==id){b.buf[..n].copy_from_slice(&value[..n]);b.len=n;changed+=1;}
         }changed
     }
+
+    pub fn run_js(&mut self,src:&[u8])->Result<(usize,usize),&'static str>{
+        use alloc::vec::Vec;
+        let mut snippets=[(0usize,0usize);16];let mut script_count=0usize;let mut total=0usize;let mut pos=0usize;
+        while pos<src.len()&&script_count<snippets.len(){
+            let Some(i)=src[pos..].iter().position(|b|*b==b'<')else{break;};pos+=i;
+            if src[pos..].starts_with(b"<!--"){if let Some(end)=src[pos+4..].windows(3).position(|v|v==b"-->"){pos+=end+7;continue;}break;}
+            let Some(e)=tag_end(&src[pos..])else{break;};let raw=trim(&src[pos+1..pos+e]);pos+=e+1;
+            let k=raw.iter().position(|b|b.is_ascii_whitespace()||*b==b'/').unwrap_or(raw.len());let tag=&raw[..k];
+            if tag.eq_ignore_ascii_case(b"style"){if let Some(end)=src[pos..].windows(7).position(|v|v.eq_ignore_ascii_case(b"</style")){pos+=end;continue;}break;}
+            if !tag.eq_ignore_ascii_case(b"script"){continue;}
+            let Some(end)=src[pos..].windows(8).position(|v|v.eq_ignore_ascii_case(b"</script"))else{break;};
+            let a=&raw[k..];let classic=attr(a,b"type").map_or(true,|v|matches!(v,b""|b"text/javascript"|b"application/javascript"));
+            if classic&&attr(a,b"src").is_none()&&end>0{if end>32*1024||total+end>48*1024{return Err("Inline JavaScript exceeds current page budget");}snippets[script_count]=(pos,end);script_count+=1;total+=end;}
+            pos+=end;
+        }
+        if script_count==0{return Err("No supported inline JavaScript");}
+        let mut session=crate::webjs::Session::new()?;
+        let mut bootstrap=Vec::with_capacity(8192);
+        bootstrap.extend_from_slice(b"globalThis.window=globalThis; const __h5nodes=Object.create(null),__h5added=[],__h5events=[]; const __h5on=(t,f)=>{if((t==='DOMContentLoaded'||t==='load')&&typeof f==='function'&&__h5events.length<16)__h5events.push(f)}; globalThis.document={getElementById:id=>__h5nodes[String(id)]||null,querySelector:s=>typeof s==='string'&&s[0]==='#'?__h5nodes[s.slice(1)]||null:null,createElement:t=>({tagName:String(t).toUpperCase(),textContent:''}),body:{appendChild(n){if(n&&__h5added.length<8)__h5added.push(n);return n}},addEventListener:__h5on};globalThis.addEventListener=__h5on;globalThis.console={log(){},warn(){},error(){}};");
+        let mut targets=[0usize;48];let mut target_count=0;
+        for i in 0..self.count{let b=&self.blocks[i];if b.id_len==0||b.hidden||b.kind>=2||target_count==targets.len(){continue;}
+            let id=&b.id[..b.id_len];if !id.iter().all(|v|v.is_ascii_alphanumeric()||matches!(*v,b'-'|b'_'|b'.'|b':'))||targets[..target_count].iter().any(|&j|&self.blocks[j].id[..self.blocks[j].id_len]==id){continue;}
+            targets[target_count]=i;target_count+=1;bootstrap.extend_from_slice(b"__h5nodes[");js_quote(&mut bootstrap,id);bootstrap.extend_from_slice(b"]={id:");js_quote(&mut bootstrap,id);bootstrap.extend_from_slice(b",textContent:");js_quote(&mut bootstrap,&b.buf[..b.len]);bootstrap.extend_from_slice(b"};");
+        }
+        if bootstrap.len()>48*1024{return Err("DOM bootstrap exceeds budget");}
+        session.exec(&bootstrap)?;
+        for &(start,len) in &snippets[..script_count]{session.exec(&src[start..start+len])?;}
+        session.exec(b"for(const f of __h5events){f.call(window)};")?;
+        let mut edits=Vec::with_capacity(target_count);let mut output=[0u8;768];let mut query=Vec::with_capacity(128);
+        for &i in &targets[..target_count]{let b=&self.blocks[i];query.clear();query.extend_from_slice(b"String(__h5nodes[");js_quote(&mut query,&b.id[..b.id_len]);query.extend_from_slice(b"].textContent).slice(0,192)");
+            let n=session.eval(&query,&mut output)?;let mut buf=[0u8;TEXT];let len=js_text(&output[..n],&mut buf);if &b.buf[..b.len]!=&buf[..len]{edits.push((i,buf,len));}
+        }
+        let mut added=Vec::new();for i in 0..8{query.clear();query.extend_from_slice(b"String(__h5added[");query.push(b'0'+i);query.extend_from_slice(b"]?.textContent??'').slice(0,192)");let n=session.eval(&query,&mut output)?;if n>0{let mut buf=[0u8;TEXT];let len=js_text(&output[..n],&mut buf);added.push((buf,len));}}
+        let mut changed=edits.len();for (i,buf,len) in edits{self.blocks[i].buf=buf;self.blocks[i].len=len;}
+        for (buf,len) in added{if len==0||self.count>=MAX{continue;}let mut block=EMPTY;block.buf=buf;block.len=len;self.push(&mut block);changed+=1;}
+        Ok((script_count,changed))
+    }
+
     pub fn load_image(&mut self,i:usize,bytes:&[u8])->bool{
         if i>=self.image_count{return false;}let photo=unsafe{&mut (*core::ptr::addr_of_mut!(PHOTOS))[i]};let mut w=0u32;let mut h=0u32;
         if unsafe{hi5_image_decode(bytes.as_ptr(),bytes.len(),photo.bytes.as_mut_ptr(),PIX_CAP,&mut w,&mut h)}!=1||w==0||h==0||w as usize>PIX_W||h as usize>PIX_H{return false;}
@@ -145,13 +190,19 @@ impl Page{
     // A single row iterator is used by rendering, scrolling and hit-testing.
     // Horizontal layout is deliberately limited to simple consecutive one-block siblings.
     fn next_row(&self,width:usize,index:&mut usize,offset:&mut usize)->Option<LayoutRow>{
-        if *index>=self.count{return None;}let b=&self.blocks[*index];let mut row=LayoutRow{cells:[Cell{index:*index,start:*offset,end:b.len,x:0,w:width};4],len:1,h:Self::cell_height(b,width)};
+        while *index<self.count&&self.blocks[*index].len==0{*index+=1;*offset=0;}if *index>=self.count{return None;}let b=&self.blocks[*index];let mut row=LayoutRow{cells:[Cell{index:*index,start:*offset,end:b.len,x:0,w:width};4],len:1,h:Self::cell_height(b,width)};
         if *offset==0&&b.group!=0&&b.group_cols>=2&&width>=220{
             let limit=b.group_cols.min(4)as usize;let mut count=1;while count<limit&&*index+count<self.count{let v=&self.blocks[*index+count];if v.group!=b.group||v.item==self.blocks[*index+count-1].item||v.item==0{break;}count+=1;}
             let gap=b.group_gap as usize;let cw=width.saturating_sub(gap*(count-1))/count;
             if count>1&&cw>=80&&(0..count).all(|i|{let v=&self.blocks[*index+i];(Self::photo(v).is_some()||v.len<=Self::cols(v,cw))&&(*index+i+1>=self.count||self.blocks[*index+i+1].item!=v.item)}){
                 row.len=count;row.h=0;for i in 0..count{let v=&self.blocks[*index+i];row.cells[i]=Cell{index:*index+i,start:0,end:v.len,x:i*(cw+gap),w:cw};row.h=row.h.max(Self::cell_height(v,cw));}*index+=count;return Some(row);
             }
+        }
+        if *offset==0&&b.flow!=0&&b.group==0&&b.kind==0&&b.align==0&&b.bg.is_none()&&b.padding==0&&b.margin==0{
+            let mut count=0;let mut used=0usize;
+            while count<4&&*index+count<self.count{let v=&self.blocks[*index+count];if v.flow!=b.flow||v.group!=0||v.kind!=0||v.align!=0||v.bg.is_some()||v.padding!=0||v.margin!=0||v.len==0{break;}
+                let cw=Canvas::measure_text(&v.buf[..v.len],false)+8;if used+cw>width{break;}row.cells[count]=Cell{index:*index+count,start:0,end:v.len,x:used,w:cw};used+=cw;count+=1;
+            }if count>1{row.len=count;row.h=22;*index+=count;return Some(row);}row.cells[0]=Cell{index:*index,start:*offset,end:b.len,x:0,w:width};
         }
         let end=if Self::photo(b).is_some(){b.len}else{let limit=(*offset+Self::cols(b,width)).min(b.len);if limit<b.len{b.buf[*offset..limit].iter().rposition(|v|*v==b' ').filter(|i|*i>0).map_or(limit,|i|*offset+i+1)}else{limit}};
         row.cells[0].end=end;if end>=b.len{*index+=1;*offset=0;}else{*offset=end;}Some(row)
@@ -166,14 +217,16 @@ impl Page{
         while let Some(r)=self.next_row(width,&mut i,&mut off){if row>=scroll{if y>=floor{return;}for cell in &r.cells[..r.len]{let b=&self.blocks[cell.index];let x=x+cell.x;let width=cell.w;let right=x+width;let height=Self::cell_height(b,width);
             if let Some(p)=Self::photo(b){let(w,h)=Self::image_size(p,width);let ox=if b.align==1{x+(width-w)/2}else if b.align==2{x+width-w}else{x+3};for j in 0..h.min(floor.saturating_sub(y)){for k in 0..w{let at=((j*p.h/h)*p.w+k*p.w/w)*3;c.pixel(ox+k,y+j,[p.bytes[at],p.bytes[at+1],p.bytes[at+2]]);}}continue;}
             if y+height>floor{continue;}if let Some(bg)=b.bg{c.rect(x,y,width,height,bg);}else if b.kind==2{c.rect(x,y,width,height,sub);}
-            if let Ok(t)=core::str::from_utf8(trim(&b.buf[cell.start..cell.end])){let big=b.kind==1;let color=b.color.unwrap_or(if b.link.len>0{[31,97,185]}else{ink});let inset=b.padding as usize+b.margin as usize+3;let tw=c.text_width(t)*if big{2}else{1};let tx=if b.align==1{x+width.saturating_sub(tw)/2}else if b.align==2{right.saturating_sub(tw+inset).max(x)}else{x+inset};
+            if let Ok(t)=core::str::from_utf8(trim(&b.buf[cell.start..cell.end])){let big=b.kind==1;let color=b.color.unwrap_or(if b.link.len>0{[31,97,185]}else{ink});let inset=b.padding as usize+b.margin as usize+3;let tw=Canvas::measure_text(t.as_bytes(),big);let tx=if b.align==1{x+width.saturating_sub(tw)/2}else if b.align==2{right.saturating_sub(tw+inset).max(x)}else{x+inset};
                 if matches!(b.kind,3|4){let cw=if b.kind==3{width.min(420)}else{width.min(180)};let ox=if b.align==1{x+(width-cw)/2}else{x};c.round(ox+2,y+2,cw.saturating_sub(4),height-4,5,if b.kind==3&&self.form_focus{[207,224,247]}else{[227,231,237]});let val=if b.kind==3&&self.form.len>0{core::str::from_utf8(&self.form.value[..self.form.len]).unwrap_or("")}else{t};c.text_limit(ox+10,y+10,val,[30,34,40],false,ox+cw.saturating_sub(5));}
-                else{c.text_limit(tx,y+inset,t,color,big,right);if b.link.len>0{c.rect(tx,y+height-3,c.text_width(t).min(right.saturating_sub(tx)),1,color);}}
+                else{c.text_limit(tx,y+inset,t,color,big,right);if b.link.len>0{c.rect(tx,y+height-3,tw.min(right.saturating_sub(tx)),1,color);}}
             }
         }y+=r.h;}row+=1;}
     }
 
 }
+fn js_quote(out:&mut alloc::vec::Vec<u8>,s:&[u8]){out.push(b'"');const H:&[u8;16]=b"0123456789abcdef";for &b in s{match b{b'"'|b'\\'=>{out.push(b'\\');out.push(b);},32..=126=>out.push(b),_=>{out.extend_from_slice(b"\\u00");out.push(H[(b>>4)as usize]);out.push(H[(b&15)as usize]);}}}out.push(b'"');}
+fn js_text(s:&[u8],out:&mut[u8;TEXT])->usize{let mut n=0;for &b in s{if n==TEXT{break;}if b&0xc0==0x80{continue;}out[n]=if b.is_ascii_whitespace(){b' '}else if (32..127).contains(&b){b}else{b'?'};n+=1;}n}
 fn url(base:&[u8],href:&[u8])->Option<Link>{let mut decoded=[0u8;128];let(mut i,mut n)=(0,0);while i<href.len(){if n==decoded.len(){return None;}let mut consumed=1;let mut b=href[i];for ent in [b"&amp;".as_slice(),b"&#38;",b"&#x26;"]{if href[i..].starts_with(ent){b=b'&';consumed=ent.len();break;}}decoded[n]=b;n+=1;i+=consumed;}let mut l=EMPTY_LINK;l.len=crate::http::resolve_url(base,&decoded[..n],&mut l.url)?;if base.starts_with(b"https://")&&!l.url[..l.len].starts_with(b"https://"){return None;}Some(l)}
 fn tag_end(s:&[u8])->Option<usize>{let mut q=0;for(i,b)in s.iter().enumerate().skip(1){if q!=0{if *b==q{q=0;}}else if *b==b'\''||*b==b'"'{q=*b;}else if *b==b'>'{return Some(i);}}None}
 // Bounded compound and descendant selectors; unsupported syntax is rejected rather than partially matched.
@@ -199,14 +252,20 @@ fn selector_match(s:&[u8],tag:&[u8],attrs:&[u8],src:&[u8],dom:&coreweb::Tree,mut
         if !found{return false;}
     }true
 }
-fn css_rules(mut css:&[u8],out:&mut[Rule;256],count:&mut usize){
+fn inline_tag(t:&[u8])->bool{[b"a".as_slice(),b"span",b"em",b"strong",b"b",b"i",b"small",b"label",b"abbr",b"code",b"u",b"time"].iter().any(|v|t.eq_ignore_ascii_case(v))}
+fn media_applies(s:&[u8],width:usize)->bool{
+    let mut q=trim(s);if q.starts_with(b"screen"){q=trim(&q[6..]);if q.is_empty(){return true;}let Some(v)=q.strip_prefix(b"and")else{return false;};q=trim(v);}
+    if q==b"all"{return true;}let Some(q)=q.strip_prefix(b"(").and_then(|v|v.strip_suffix(b")"))else{return false;};
+    let Some(i)=q.iter().position(|b|*b==b':')else{return false;};let key=trim(&q[..i]);let Some(v)=trim(&q[i+1..]).strip_suffix(b"px")else{return false;};if v.is_empty()||v.len()>5||!v.iter().all(u8::is_ascii_digit){return false;}let mut n=0usize;for b in v{n=n*10+(b-b'0')as usize;}match key{b"min-width"=>width>=n,b"max-width"=>width<=n,_=>false}
+}
+fn css_rules(mut css:&[u8],out:&mut[Rule;256],count:&mut usize,viewport:usize,level:usize){
     while !css.is_empty()&&*count<out.len(){
         css=trim(css);if css.starts_with(b"/*"){let Some(e)=css[2..].windows(2).position(|v|v==b"*/")else{break;};css=&css[e+4..];continue;}
         let Some(i)=css.iter().position(|v|*v==b'{')else{break;};
         // Skip balanced nested rules (@media/@supports etc.) rather than treating inner selectors as global.
         let mut depth=1usize;let mut end=None;let mut quote=0u8;let mut escaped=false;
         for (j,&v) in css[i+1..].iter().enumerate(){if quote!=0{if escaped{escaped=false;}else if v==b'\\'{escaped=true;}else if v==quote{quote=0;}continue;}if matches!(v,b'\''|b'"'){quote=v;continue;}if v==b'{'{depth+=1;}else if v==b'}'{depth-=1;if depth==0{end=Some(i+1+j);break;}}}
-        let Some(j)=end else{break;};let sel=trim(&css[..i]);let body=&css[i+1..j];css=&css[j+1..];if sel.starts_with(b"@"){continue;}
+        let Some(j)=end else{break;};let sel=trim(&css[..i]);let body=&css[i+1..j];css=&css[j+1..];if sel.starts_with(b"@"){if level<4{if let Some(q)=sel.strip_prefix(b"@media"){if media_applies(q,viewport){css_rules(body,out,count,viewport,level+1);}}}continue;}
         let mut b=EMPTY;style(&mut b,body);if b.color.is_none()&&b.bg.is_none()&&b.kind==0&&!b.align_set&&b.padding==0&&b.margin==0&&b.display.is_none()&&b.columns==0&&b.gap==0&&b.layout==0{continue;}
         for s in sel.split(|v|*v==b','){let s=trim(s);if s.len()>96||*count>=out.len(){continue;}let Some(spec)=selector_spec(s)else{continue;};let mut r=EMPTY_RULE;r.selector[..s.len()].copy_from_slice(s);r.len=s.len();r.spec=spec;r.style=b;out[*count]=r;*count+=1;}
     }
@@ -229,5 +288,7 @@ pub fn self_test()->bool{
     p.parse(b"<html><body><div hidden>Not visible</div><script>void(0)</script></body></html>");let empty_ok=p.empty_document&&p.count==2;
     p.parse_at(b"<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px'><a href='/one'>One</a><a href='/two'>Two</a></div>",b"https://example.test/",&[]);let layout_ok=p.count==2&&p.rows(400)==1&&p.hit_xy(400,0,200,0,10,5).is_some_and(|l|&l.url[..l.len]==b"https://example.test/one")&&p.hit_xy(400,0,200,0,300,5).is_some_and(|l|&l.url[..l.len]==b"https://example.test/two");
     p.parse(b"<p id='demo'>Before</p>");let script_ok=p.literal_update(b"<script>document.getElementById('demo').textContent = 'Hi5' + 'Browser';</script>")==1&&&p.blocks[0].buf[..p.blocks[0].len]==b"Hi5Browser"&&p.literal_update(b"<script>document.getElementById('demo').textContent = 'a' + evil();</script>")==0;
-    p.clear();ok&&css_ok&&form_ok&&result_ok&&interstitial_ok&&empty_ok&&layout_ok&&script_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
+    p.parse_at_width(b"<p>Hello <a href='/next'>world</a> again</p><style>@media (max-width: 500px){p{color:#123456}}</style>",b"https://example.test/",&[],400);let responsive_ok=p.count==3&&p.rows(400)==1&&p.blocks[0].color==Some([18,52,86]);
+    p.parse_at_width(b"<p>Hello</p><style>@media (max-width: 500px){p{color:#123456}}</style>",b"https://example.test/",&[],900);let wide_ok=p.blocks[0].color.is_none();
+    p.clear();ok&&css_ok&&form_ok&&result_ok&&interstitial_ok&&empty_ok&&layout_ok&&script_ok&&responsive_ok&&wide_ok&&coreweb::self_test()&&Bitmap::parse(b"BM").is_none()
 }

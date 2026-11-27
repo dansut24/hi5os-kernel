@@ -89,6 +89,7 @@ jobs:
             dist/hi5os-setup-data.img
             dist/BEARSSL-LICENSE.txt
             dist/STB-LICENSE.txt
+            dist/hi5-js-notices/
           compression-level: 6
           if-no-files-found: error
           retention-days: 14
