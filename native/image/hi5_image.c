@@ -3,12 +3,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-static union{uint64_t align;unsigned char bytes[16*1024*1024];} arena;
+_Alignas(16) static union{uint64_t align;unsigned char bytes[16*1024*1024];} arena;
 static size_t used;
 static void *alloc_image(size_t n){size_t at=(used+15)&~(size_t)15;if(n>sizeof arena.bytes-at)return 0;used=at+n;return arena.bytes+at;}
 static void *resize_image(void *p,size_t old,size_t n){void *q=alloc_image(n);if(q&&p)memcpy(q,p,old<n?old:n);return q;}
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
+/* Hi5Browser decodes synchronously; no Windows TLS runtime is available. */
+#define STBI_NO_THREAD_LOCALS
 #define STBI_NO_SIMD
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR

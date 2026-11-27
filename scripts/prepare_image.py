@@ -9,6 +9,11 @@ b=H.read_bytes();assert hashlib.sha1(b"blob "+str(len(b)).encode()+b"\0"+b).hexd
 obj=OUT/"hi5image.obj"
 subprocess.run(["clang","--target=x86_64-pc-windows-msvc","-ffreestanding","-fno-builtin","-fno-stack-protector","-mno-stack-arg-probe","-O2","-I"+str(ROOT/"native/tls/include"),"-I"+str(ROOT/"native/image/include"),"-I"+str(OUT),"-c",str(ROOT/"native/image/hi5_image.c"),"-o",str(obj)],check=True)
 subprocess.run(["lld-link","/lib","/machine:x64","/out:"+str(OUT/"hi5image.lib"),str(obj)],check=True)
+# Link the decoder independently before building the full kernel. This is a
+# link-only probe, not a bootable image or a runtime decoding test.
+probe=OUT/"image-link-probe.efi"
+subprocess.run(["lld-link","/entry:hi5_image_decode","/subsystem:efi_application","/nodefaultlib","/machine:x64","/out:"+str(probe),str(OUT/"hi5image.lib")],check=True)
+probe.unlink()
 # The upstream header contains the complete dual-license notice.
 license_text=H.read_text();start=license_text.rfind("ALTERNATIVE A - MIT License");assert start>=0,"Upstream license marker missing";(OUT/"STB-LICENSE.txt").write_text(license_text[start:])
 print("Pinned PNG/JPEG decoder built")
