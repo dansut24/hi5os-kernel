@@ -35,6 +35,7 @@ pub fn on_stack(info:BootInfo)->! {
     serial::metric("H5K: CPUID_MAX=",leaf.eax as u64);
     let ram=allocator.total/256;
     if let Err(e)=platform::init(&info){fail(&mut screen,e);}
+    if !crate::heap::init(allocator){fail(&mut screen,"HEAP_RESERVE");}
     if !crate::heap::self_test(){fail(&mut screen,"HEAP_TEST");}
     serial::line("H5K: HEAP_ALLOC_FREE_OK");
     if !crate::security::init(info.clock){fail(&mut screen,"SECURITY_FOUNDATIONS_TEST");}

@@ -33,6 +33,30 @@ impl Allocator {
         }
         Ok(())
     }
+    /// Permanently reserve a contiguous region for the kernel heap, never
+    /// return its frames from allocate() or accept them in release().
+    pub fn reserve_contiguous(&mut self, pages: usize) -> Option<u64> {
+        if pages==0 || pages as u64>self.available || pages>WORDS*64{return None;}
+        let mut run=0usize;
+        for (w,bits) in self.free.iter().copied().enumerate(){
+            if bits==0{run=0;continue;}
+            for bit in 0..64{if bits&(1u64<<bit)==0{run=0;continue;}run+=1;
+                if run==pages{
+                    let first=w*64+bit+1-pages;
+                    let base=first as u64*PAGE;
+                    if !(0..pages).all(|i|cpu::writable_identity(base+i as u64*PAGE)){return None;}
+                    for frame in first..first+pages{
+                        let mask=1u64<<(frame%64);
+                        self.free[frame/64]&=!mask;
+                        self.managed[frame/64]&=!mask;
+                    }
+                    self.available-=pages as u64;self.total-=pages as u64;
+                    return Some(base);
+                }
+            }
+        }
+        None
+    }
     pub fn allocate(&mut self) -> Option<u64> {
         for i in self.cursor..WORDS {
             let bits = self.free[i];
