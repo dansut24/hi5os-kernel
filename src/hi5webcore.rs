@@ -29,8 +29,10 @@ impl Form{
 }
 fn append(l:&mut Link,b:u8)->Option<()>{if l.len>=l.url.len(){return None;}l.url[l.len]=b;l.len+=1;Some(())}
 fn encode(l:&mut Link,s:&[u8])->Option<()>{const HEX:&[u8;16]=b"0123456789ABCDEF";for b in s{if b.is_ascii_alphanumeric()||matches!(*b,b'-'|b'_'|b'.'|b'*'){append(l,*b)?;}else if *b==b' '{append(l,b'+')?;}else{append(l,b'%')?;append(l,HEX[(b>>4)as usize])?;append(l,HEX[(b&15)as usize])?;}}Some(())}
-fn origin(s:&[u8])->Option<&[u8]>{let n=if s.starts_with(b"https://"){8}else if s.starts_with(b"http://"){7}else{return None;};let e=s[n..].iter().position(|b|matches!(*b,b'/'|b'?'|b'#')).map_or(s.len(),|i|i+n);Some(&s[..e])}
+pub fn origin(s:&[u8])->Option<&[u8]>{let n=if s.starts_with(b"https://"){8}else if s.starts_with(b"http://"){7}else{return None;};let e=s[n..].iter().position(|b|matches!(*b,b'/'|b'?'|b'#')).map_or(s.len(),|i|i+n);Some(&s[..e])}
 pub fn same_origin(a:&[u8],b:&[u8])->bool{matches!((origin(a),origin(b)),(Some(x),Some(y)) if x.eq_ignore_ascii_case(y))}
+pub fn script_allowed(base:&[u8],url:&[u8])->bool{same_origin(base,url)||(base.starts_with(b"https://")&&url.starts_with(b"https://")&&origin(url).is_some_and(|o|!o[8..].contains(&b':')))}
+
 pub fn void_tag(t:&[u8])->bool{[b"area".as_slice(),b"base",b"br",b"col",b"embed",b"hr",b"img",b"input",b"link",b"meta",b"param",b"source",b"track",b"wbr"].iter().any(|v|t.eq_ignore_ascii_case(v))}
 pub fn self_test()->bool{let d=unsafe{&mut *core::ptr::addr_of_mut!(DOM)};d.clear();let a=d.append(0,1,2,false).unwrap_or(0);let b=d.append(a,3,4,true).unwrap_or(0);let c=d.append(a,7,2,false).unwrap_or(0);let tree=a==1&&b==2&&c==3&&d.nodes[a].first==2&&d.nodes[a].last==3&&d.nodes[b].parent==1&&d.nodes[b].next==3;d.clear();
     let mut f=Form::new();let u=b"https://example.test/search";f.action.url[..u.len()].copy_from_slice(u);f.action.len=u.len();f.name[0]=b'q';f.name_len=1;f.ready=true;for b in b"a b&c"{f.input(*b);}tree&&f.target().is_some_and(|l|&l.url[..l.len]==b"https://example.test/search?q=a+b%26c")&&same_origin(b"https://example.test/a",u)&&!same_origin(b"https://example.test",b"http://example.test/") }

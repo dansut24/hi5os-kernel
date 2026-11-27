@@ -55,7 +55,23 @@ def main():
                     assert b"WEB_CORE_JS_REQUIRED" not in tail,"Google returned a JavaScript interstitial, not search results"
                     assert b"WEB_CORE_EMPTY_DOCUMENT" not in tail,"Google search response had no visible content"
                     print("Google search document produced visible content; actual results require visual verification")
-                else:print("PASS: BBC HTTPS HTTP 200 and HTML rendered by Hi5Browser")
+                else:
+                    key("ctrl-i")
+                    deadline=time.monotonic()+180
+                    while time.monotonic()<deadline:
+                        b=log.read_bytes()
+                        if b"BROWSER_IMAGES_LOADED=" in b or p.poll() is not None:break
+                        time.sleep(.2)
+                    assert b"BROWSER_IMAGES_LOADED=" in b,"BBC graphics pass did not complete"
+                    call("screendump",{"filename":str(ROOT/"dist"/"bbc-graphics-public.ppm")})
+                    key("ctrl-j");deadline=time.monotonic()+180
+                    while time.monotonic()<deadline:
+                        b=log.read_bytes()
+                        if b"WEB_CORE_JS_MODULE_ERRORS=" in b or b"WEB_CORE_JS_FAILED" in b or p.poll() is not None:break
+                        time.sleep(.2)
+                    call("screendump",{"filename":str(ROOT/"dist"/"bbc-script-public.ppm")})
+                    assert b"WEB_CORE_JS_MODULE_ERRORS=" in b,"BBC script execution did not complete"
+                    print("BBC HTML, graphics and script diagnostic completed; inspect evidence for actual compatibility")
                 call("quit")
         finally:
             if p.poll() is None:p.terminate();p.wait(timeout=10)

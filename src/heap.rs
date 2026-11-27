@@ -1,7 +1,7 @@
-//! Fixed 32 MiB image-owned heap, single CPU. No interrupt-context allocation.
+//! Fixed 40 MiB image-owned heap, single CPU. No interrupt-context allocation.
 //! GlobalAlloc interface; sized for the bounded WASM interpreter and its linear memory.
 use core::{alloc::{GlobalAlloc,Layout},cell::UnsafeCell,ptr,sync::atomic::{AtomicBool,Ordering}};
-pub const CAP:usize=32*1024*1024;
+pub const CAP:usize=40*1024*1024;
 const UNIT:usize=64;
 const COUNT:usize=CAP/UNIT;
 #[repr(align(4096))]struct Arena([u8;CAP]);

@@ -17,7 +17,7 @@ const EMPTY_FILE:FileSlot=FileSlot{data:[0;CAP],len:0,present:false};
 // The large response buffer is image-owned static memory, not the 64 KiB kernel stack.
 static mut WEB_BUFFER:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
 static mut WEB_ASSET:[u8;MAX_RESPONSE]=[0;MAX_RESPONSE];
-static mut WEB_CSS:[u8;512*1024]=[0;512*1024];
+static mut WEB_CSS:[u8;1024*1024]=[0;1024*1024];
 static mut WORK_BUFFER:[u8;crate::trialfs::SNAP_CAP]=[0;crate::trialfs::SNAP_CAP];
 static mut APP_BUFFER:[u8;crate::trial::PACKAGE_SIZE]=[0;crate::trial::PACKAGE_SIZE];
 #[derive(Clone,Copy)]struct WindowSlot{app:App,win:Rect,restore:Rect,maximized:bool,minimized:bool}
@@ -26,7 +26,7 @@ impl Auth{fn new(store:&Store)->Self{let (stage,account,msg)=match store.account
 #[derive(Clone,Copy)]struct BrowserHistory{links:[crate::http::Link;16],len:usize,pos:usize}
 const EMPTY_HISTORY:BrowserHistory=BrowserHistory{links:[crate::http::EMPTY_LINK;16],len:0,pos:0};
 static mut TAB_HISTORIES:[BrowserHistory;4]=[EMPTY_HISTORY;4];
-const CACHE_CAP:usize=768*1024;
+const CACHE_CAP:usize=1536*1024;
 #[derive(Clone,Copy)]struct CachedWeb{valid:bool,len:usize,source:crate::http::Link,status:u16,links:[crate::http::Link;8],link_count:usize,scroll:usize,msg:&'static str}
 const EMPTY_WEB:CachedWeb=CachedWeb{valid:false,len:0,source:crate::http::EMPTY_LINK,status:0,links:[crate::http::EMPTY_LINK;8],link_count:0,scroll:0,msg:""};
 static mut WEB_CACHE:[CachedWeb;4]=[EMPTY_WEB;4];
@@ -178,7 +178,7 @@ impl Ui{
                 if self.browser_settings{
                     c.rect(x,top,right.saturating_sub(x),floor.saturating_sub(top),q.sub);c.text_limit(x+10,top+3,"Browser settings",q.ink,false,right);
                     for (i,label,on) in [(0,"Automatic images and CSS",self.auto_graphics),(1,"Experimental JavaScript",self.auto_script),(2,"Show technical diagnostics",self.browser_diagnostics)]{let ty=top+27+i*32;if ty+29<=floor{c.text_limit(x+10,ty+5,label,q.ink,false,right-88);self.button(Rect{x:right-78,y:ty,w:68,h:27},if on{"On"}else{"Off"},if on{BLUE}else{q.panel},if on{WHITE}else{q.ink});}}
-                    if top+151<=floor{c.text_limit(x+10,top+127,"JavaScript: bounded inline/same-origin scripts; session opt-in.",q.muted,false,right);}
+                    if top+151<=floor{c.text_limit(x+10,top+127,"JavaScript: bounded scripts and modules; session opt-in.",q.muted,false,right);}
                 }else if self.web_ok{
                     let mut top=top;if self.browser_diagnostics{c.text(x,top,"HTTP",q.muted);c.num(x+48,top,self.web_status as u64,q.ink);c.text(x+100,top,"Bytes",q.muted);c.num(x+155,top,self.web_len as u64,q.ink);c.text(x+252,top,"DOM",q.muted);c.num(x+298,top,self.page.dom_nodes as u64,q.ink);top+=24;}
                     let kind=match crate::compat::classify(&self.web[..self.web_len]){crate::compat::Kind::Pe64=>"PE64 executable candidate",crate::compat::Kind::Pe32=>"PE32 executable candidate",crate::compat::Kind::Compound=>"OLE compound-file candidate",_=>"Text or unknown binary"};
@@ -340,7 +340,7 @@ impl Ui{
         });
         match result{Ok(r)=>{
             self.web_msg=if self.page.requires_js{"JavaScript pass - website browser APIs still incomplete"}else if r.errors>0||r.skipped>0{"JavaScript partial - unsupported or over-budget scripts skipped"}else if r.executed==0{"No supported JavaScript executed"}else{"QuickJS execution complete - limited DOM bindings"};
-            serial::metric("H5K: WEB_CORE_JS_EXECUTED=",r.executed as u64);serial::metric("H5K: WEB_CORE_JS_DOM_UPDATES=",r.changes as u64);serial::metric("H5K: WEB_CORE_JS_EXTERNAL=",r.external as u64);serial::metric("H5K: WEB_CORE_JS_SKIPPED=",r.skipped as u64);serial::metric("H5K: WEB_CORE_JS_ERRORS=",r.errors as u64);
+            serial::metric("H5K: WEB_CORE_JS_EXECUTED=",r.executed as u64);serial::metric("H5K: WEB_CORE_JS_DOM_UPDATES=",r.changes as u64);serial::metric("H5K: WEB_CORE_JS_EXTERNAL=",r.external as u64);serial::metric("H5K: WEB_CORE_JS_SKIPPED=",r.skipped as u64);serial::metric("H5K: WEB_CORE_JS_ERRORS=",r.errors as u64);serial::metric("H5K: WEB_CORE_JS_MODULES=",r.modules as u64);serial::metric("H5K: WEB_CORE_JS_MODULE_ERRORS=",r.module_errors as u64);
         },Err(e)=>{self.web_msg=e;serial::line("H5K: WEB_CORE_JS_FAILED");serial::line(e);}}self.draw();
     }
     fn load_graphics(&mut self){

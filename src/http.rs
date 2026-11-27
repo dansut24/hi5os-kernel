@@ -4,6 +4,15 @@ const HEADER_LIMIT:usize=16*1024;
 pub fn status_code(b:&[u8])->Option<u16>{let l=b.split(|v|*v==10).next()?;if !(l.starts_with(b"HTTP/1.0 ")||l.starts_with(b"HTTP/1.1 "))||l.get(12).is_some_and(|v|!matches!(*v,b' '|b'\r')){return None;}let n=l.get(9..12)?;if !n.iter().all(u8::is_ascii_digit){return None;}let code=(n[0]-48)as u16*100+(n[1]-48)as u16*10+(n[2]-48)as u16;(100..600).contains(&code).then_some(code)}
 #[derive(Clone,Copy)]enum Frame{Length(usize),Close,Chunked}
 fn trim(mut b:&[u8])->&[u8]{while b.first().is_some_and(|c|*c==b' '||*c==b'\t'){b=&b[1..];}while b.last().is_some_and(|c|*c==b' '||*c==b'\t'){b=&b[..b.len()-1];}b}
+pub fn script_headers(b:&[u8],origin:Option<&[u8]>)->bool{
+    let Some(end)=b.windows(4).position(|v|v==b"\r\n\r\n")else{return false;};if end>HEADER_LIMIT{return false;}
+    let mut mime=None;let mut cors=None;
+    for line in b[..end].split(|v|*v==b'\n').skip(1){let line=line.strip_suffix(b"\r").unwrap_or(line);let Some(i)=line.iter().position(|v|*v==b':')else{return false;};
+        let key=&line[..i];let value=trim(&line[i+1..]);if key.eq_ignore_ascii_case(b"content-type"){if mime.is_some(){return false;}mime=Some(trim(value.split(|b|*b==b';').next().unwrap_or(&[])));}
+        if key.eq_ignore_ascii_case(b"access-control-allow-origin"){if cors.is_some(){return false;}cors=Some(value);}
+    }
+    mime.is_some_and(|m|[b"application/javascript".as_slice(),b"text/javascript",b"application/ecmascript",b"text/ecmascript"].iter().any(|v|m.eq_ignore_ascii_case(v)))&&origin.map_or(true,|o|cors.is_some_and(|c|c==b"*"||c==o))
+}
 fn number(b:&[u8],base:usize)->Option<usize>{
     if b.is_empty(){return None;}let mut n=0usize;
     for x in b{let d=match x{b'0'..=b'9'=>(*x-b'0')as usize,b'a'..=b'f' if base==16=>(*x-b'a'+10)as usize,b'A'..=b'F' if base==16=>(*x-b'A'+10)as usize,_=>return None};

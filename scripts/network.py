@@ -22,12 +22,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body=(b"<html><body><center><form action='/search'><input name='q' type='text'><input type='submit' value='Search'></form></center></body></html>" if self.path=="/form.html" else b"<html><head><style>div{display:none}.result{display:block}.result a.link{color:#123456}</style></head><body><div class='result'><h1>Search received</h1><a class='link' href='/index.html'>Open real result</a></div></body></html>")
             if self.path.startswith("/search?"):self.server.form_received=True
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
+        if MODE=="browse" and self.path in ("/module.html","/lib.js","/main.js"):
+            body,ctype={
+                "/module.html":(b"<html><body><p id='module'>Before</p><p id='promise'>Before</p><script type='module' src='/main.js'></script><script type='module' src='/lib.js'></script></body></html>","text/html"),
+                "/lib.js":(b"export const value=42;","application/javascript"),
+                "/main.js":(b"import {value} from './lib.js'; document.getElementById('module').textContent='Module '+value; Promise.resolve(value+1).then(v=>document.getElementById('promise').textContent='Promise '+v);","text/javascript"),
+            }[self.path]
+            if self.path.endswith(".js"):self.server.module_received=getattr(self.server,"module_received",0)+1
+            self.send_response(200);self.send_header("Content-Type",ctype);self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/dynamic.js":
             body=b"let externalValue=7; document.getElementById('external').textContent='External script OK';"
             self.server.script_received=True
             self.send_response(200);self.send_header("Content-Type","application/javascript");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/dynamic.html":
-            body=(b"<html><body><p id='demo'>Before</p><div id='empty'></div><p id='external'>Before external</p><script>/*"+b"x"*(257*1024)+b"*/</script><script>throw new Error('fixture');</script><script src='/dynamic.js'></script><script src='https://example.invalid/no.js'></script><script>/*"+b"x"*(40*1024)+b"*/let n=[1,2,3,4].reduce((a,b)=>a+b,0)+externalValue;document.addEventListener('DOMContentLoaded',()=>{document.getElementById('demo').textContent='Calculated '+n;document.getElementById('empty').textContent='Empty node updated';let p=document.createElement('p');p.textContent='Generated content';document.body.appendChild(p);});</script></body></html>")
+            body=(b"<html><body><p id='demo'>Before</p><div id='empty'></div><p id='external'>Before external</p><script>/*"+b"x"*(513*1024)+b"*/</script><script>throw new Error('fixture');</script><script src='/dynamic.js'></script><script src='https://example.invalid/no.js'></script><script>/*"+b"x"*(40*1024)+b"*/let n=[1,2,3,4].reduce((a,b)=>a+b,0)+externalValue;document.addEventListener('DOMContentLoaded',()=>{document.getElementById('demo').textContent='Calculated '+n;document.getElementById('empty').textContent='Empty node updated';let p=document.createElement('p');p.textContent='Generated content';document.body.appendChild(p);});</script></body></html>")
             self.send_response(200);self.send_header("Content-Type","text/html");self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body);self.close_connection=True;return
         if MODE=="browse" and self.path=="/index.html":
             body=b"<html><head><title>Hi5 test</title><link rel='stylesheet' href='/style.css'></head><body><h1 style='color:#112233'>Hi5Browser qualification</h1><p id='demo' class='copy'>Before</p><img src='/photo.png' alt='PNG'><img src='/photo.jpg' alt='JPEG'><script>document.getElementById('demo').textContent = 'After';</script><a href='/get.exe'>Download EXE</a></body></html>"
@@ -206,6 +214,18 @@ def main():
                     wait(b"WEB_CORE_JS_EXTERNAL=0x0000000000000001",5);wait(b"WEB_CORE_JS_SKIPPED=0x0000000000000002",5);wait(b"WEB_CORE_JS_ERRORS=0x0000000000000001",5)
                     assert getattr(server,"script_received",False),"External script request missing"
                     call("screendump",{"filename":str(ROOT/"dist"/"browser-dynamic-512m.ppm")})
+                    key("ctrl-l")
+                    for ch in f"http://10.0.2.2:{server.server_port}/module.html":key({":":"shift-semicolon","/":"slash",".":"dot"}.get(ch,ch))
+                    prior=log.read_bytes().count(b"BROWSER_PAGE_RENDERED");key("ret")
+                    deadline=time.monotonic()+30
+                    while log.read_bytes().count(b"BROWSER_PAGE_RENDERED")<=prior and time.monotonic()<deadline:time.sleep(.1)
+                    assert log.read_bytes().count(b"BROWSER_PAGE_RENDERED")>prior,"Module fixture did not render"
+                    prior=len(log.read_bytes());key("ctrl-j");deadline=time.monotonic()+90
+                    while b"WEB_CORE_JS_MODULES=0x0000000000000002" not in log.read_bytes()[prior:] and time.monotonic()<deadline:time.sleep(.1)
+                    tail=log.read_bytes()[prior:]
+                    assert b"WEB_CORE_JS_MODULES=0x0000000000000002" in tail and b"WEB_CORE_JS_DOM_UPDATES=0x0000000000000002" in tail and b"WEB_CORE_JS_MODULE_ERRORS=0x0000000000000000" in tail,"Module import or Promise DOM update failed"
+                    assert getattr(server,"module_received",0)==2,"Module resources not downloaded"
+                    call("screendump",{"filename":str(ROOT/"dist"/"browser-module-512m.ppm")})
                     key("ctrl-w");wait(b"BROWSER_TAB_COUNT=0x0000000000000001",30)
                 call("quit")
             proc.wait(timeout=10)

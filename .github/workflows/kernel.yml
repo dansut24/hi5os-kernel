@@ -62,9 +62,9 @@ jobs:
         run: /usr/bin/python3 scripts/gui_inventory.py
       - name: DHCP DNS and routed HTTP on isolated alternate subnet
         run: python3 scripts/routed.py
-      - name: Public BBC website diagnostic (non-blocking external network)
+      - name: Public BBC graphics and script diagnostic (non-blocking external network)
         continue-on-error: true
-        timeout-minutes: 3
+        timeout-minutes: 8
         run: python3 scripts/public_web.py
       - name: Public Google search diagnostic (non-blocking external network)
         continue-on-error: true

@@ -161,10 +161,11 @@ impl Nic{
             }
         }Err("DNS A lookup failed")
     }
-    pub fn connect(&mut self,host:&[u8],port:u16)->Result<Tcp<'_>,&'static str>{
+    pub fn connect(&mut self,host:&[u8],port:u16)->Result<Tcp<'_>,&'static str>{self.connect_policy(host,port,false)}
+    fn connect_policy(&mut self,host:&[u8],port:u16,public_only:bool)->Result<Tcp<'_>,&'static str>{
         self.configure()?;
         let ip=match numeric(host){Some(ip)=>ip,None=>self.resolve(host)?};
-        if !valid(ip)||ip==self.ip{return Err("Unsupported destination");}
+        if !valid(ip)||ip==self.ip||(public_only&&!public_resource_ip(ip)){return Err("Unsupported destination");}
         let hop=self.hop(ip).ok_or("No route to destination")?;
         self.port=if self.port==65535{49152}else{self.port+1};self.seq=self.seq.wrapping_add(0x10001);
         let mac=self.arp(hop).ok_or("ARP timeout")?;serial::line("H5K: NET_ARP_OK");
@@ -180,24 +181,30 @@ impl Nic{
     }
     pub fn get_follow(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<(usize,[u8;128],usize,u16),&'static str>{
         if url.len()>128{return Err("URL too long");}let mut current=[0;128];current[..url.len()].copy_from_slice(url);let mut n=url.len();
-        for _ in 0..5{match self.get_once(&current[..n],response)?{Ok((size,status))=>return Ok((size,current,n,status)),Err((next,len))=>{if current[..n].starts_with(b"https://")&&!next[..len].starts_with(b"https://"){return Err("HTTPS downgrade blocked");}if next[..len]==current[..n]{return Err("HTTP redirect loop");}current=next;n=len;serial::line("H5K: HTTP_REDIRECT_FOLLOWED");}}}Err("HTTP redirect limit")
+        for _ in 0..5{match self.get_once(&current[..n],response,None)?{Ok((size,status))=>return Ok((size,current,n,status)),Err((next,len))=>{if current[..n].starts_with(b"https://")&&!next[..len].starts_with(b"https://"){return Err("HTTPS downgrade blocked");}if next[..len]==current[..n]{return Err("HTTP redirect loop");}current=next;n=len;serial::line("H5K: HTTP_REDIRECT_FOLLOWED");}}}Err("HTTP redirect limit")
     }
-    // External classic scripts are restricted to the document origin, including redirects.
+    // Declared script resources only: cross-origin requires HTTPS, public IPv4,
+    // verified TLS, explicit CORS response, JS MIME and same-resource-origin redirects.
+    // No credentials or arbitrary requests from JS.
     pub fn get_script(&mut self,base:&[u8],url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{
-        if url.len()>128||!crate::hi5webcore::same_origin(base,url){return Err("Cross-origin script blocked");}
+        if url.len()>128||!crate::hi5webcore::script_allowed(base,url){return Err("Script origin policy");}
         let mut current=[0u8;128];let mut len=url.len();current[..len].copy_from_slice(url);
-        for _ in 0..3{match self.get_once(&current[..len],response)?{
+        let cross=!crate::hi5webcore::same_origin(base,url);
+        let origin=if cross{Some(crate::hi5webcore::origin(base).ok_or("Document origin")?)}else{None};
+        for _ in 0..3{match self.get_once(&current[..len],response,Some(origin))?{
             Ok((n,200))=>return Ok(n),Ok(_)=>return Err("Script HTTP status"),
-            Err((next,n))=>{if !crate::hi5webcore::same_origin(base,&next[..n])||next[..n]==current[..len]{return Err("Script redirect blocked");}current=next;len=n;}
+            Err((next,n))=>{if !crate::hi5webcore::same_origin(url,&next[..n])||next[..n]==current[..len]{return Err("Script redirect blocked");}current=next;len=n;}
         }}Err("Script redirect limit")
     }
     pub fn get(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<usize,&'static str>{self.get_follow(url,response).and_then(|v|if v.3==200{Ok(v.0)}else{Err("HTTP response not successful")})}
-    fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE])->Result<Result<(usize,u16),([u8;128],usize)>,&'static str>{
+    fn get_once(&mut self,url:&[u8],response:&mut[u8;MAX_RESPONSE],script:Option<Option<&[u8]>>)->Result<Result<(usize,u16),([u8;128],usize)>,&'static str>{
         let secure=url.starts_with(b"https://");let (host,port,path)=parse_url(url).ok_or("Use http:// or https://host/path")?;let scheme=if secure{8}else{7};
-        let mut req=[0u8;512];let mut k=0;
-        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[scheme..url.iter().enumerate().skip(scheme).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nUser-Agent: Hi5Browser/0.3.5\r\nAccept: text/html,application/xhtml+xml,application/octet-stream,*/*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
-        let mut stream=if secure{if numeric(host).is_some(){return Err("HTTPS requires a DNS hostname");}let mut seed=[0;48];if !crate::security::random(&mut seed){return Err("HTTPS requires hardware entropy");}let epoch=crate::security::now().ok_or("HTTPS requires a valid UTC clock")?;let mut name=[0u8;254];name[..host.len()].copy_from_slice(host);let tcp=self.connect(host,port)?;let mut tls=TlsSocket{tcp,stash:[0;B],pos:0,len:0,deadline:p::ticks()+24000};let code=unsafe{hi5_tls_request((&mut tls as *mut TlsSocket).cast(),name.as_ptr(),epoch,seed.as_ptr(),req.as_ptr(),k)};crate::account::wipe(&mut seed);if code!=0{serial::metric("H5K: TLS_ERROR=",code as u64);return Err("TLS handshake or certificate verification failed");}serial::line("H5K: TLS_VERIFIED");WebStream::Secure(tls)}else{let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;WebStream::Plain(tcp)};
-        let overall=p::ticks()+24000;let mut used=0;let mut next_log=65536;let mut status=0u16;
+        let mut req=[0u8;768];let mut k=0;let cors=script.flatten();
+        for part in [b"GET ".as_slice(),path,b" HTTP/1.1\r\nHost: ".as_slice(),&url[scheme..url.iter().enumerate().skip(scheme).find(|(_,b)|**b==b'/').map(|(i,_)|i).unwrap_or(url.len())],b"\r\nUser-Agent: Hi5Browser/0.3.5\r\nAccept: text/html,application/xhtml+xml,application/octet-stream,*/*\r\nAccept-Encoding: identity\r\nConnection: close\r\n".as_slice()]{if k+part.len()>req.len(){return Err("URL too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}
+        if let Some(origin)=cors{for part in [b"Origin: ".as_slice(),origin,b"\r\n"]{if k+part.len()+2>req.len(){return Err("Origin too long");}req[k..k+part.len()].copy_from_slice(part);k+=part.len();}}req[k..k+2].copy_from_slice(b"\r\n");k+=2;
+        let budget=if script.is_some(){3000}else{24000};
+        let mut stream=if secure{if numeric(host).is_some(){return Err("HTTPS requires a DNS hostname");}let mut seed=[0;48];if !crate::security::random(&mut seed){return Err("HTTPS requires hardware entropy");}let epoch=crate::security::now().ok_or("HTTPS requires a valid UTC clock")?;let mut name=[0u8;254];name[..host.len()].copy_from_slice(host);let tcp=self.connect_policy(host,port,cors.is_some())?;let mut tls=TlsSocket{tcp,stash:[0;B],pos:0,len:0,deadline:p::ticks()+budget};let code=unsafe{hi5_tls_request((&mut tls as *mut TlsSocket).cast(),name.as_ptr(),epoch,seed.as_ptr(),req.as_ptr(),k)};crate::account::wipe(&mut seed);if code!=0{serial::metric("H5K: TLS_ERROR=",code as u64);return Err("TLS handshake or certificate verification failed");}serial::line("H5K: TLS_VERIFIED");WebStream::Secure(tls)}else{let mut tcp=self.connect(host,port)?;tcp.write_request(&req[..k])?;WebStream::Plain(tcp)};
+        let overall=p::ticks()+budget;let mut headers_checked=false;let mut used=0;let mut next_log=65536;let mut status=0u16;
         let mut buf=[0u8;B];
         loop{
             let (n,fin)=stream.read(&mut buf,overall)?;
@@ -207,6 +214,7 @@ impl Nic{
             if fin{serial::metric("H5K: HTTP_FIN_BYTES=",used as u64);}
             if status==0&&response[..used].windows(2).any(|w|w==b"\r\n"){status=crate::http::status_code(&response[..used]).ok_or("Invalid HTTP status")?;serial::metric("H5K: HTTP_STATUS=",status as u64);}
             if let Some(location)=crate::http::redirect(&response[..used])?{let mut next=[0;128];let n=crate::http::resolve_url(url,location,&mut next).ok_or("Redirect invalid or too long")?;stream.finish();return Ok(Err((next,n)));}
+            if let Some(origin)=script{if !headers_checked&&status==200&&response[..used].windows(4).any(|v|v==b"\r\n\r\n"){if !crate::http::script_headers(&response[..used],origin){stream.finish();return Err("Script MIME/CORS policy");}headers_checked=true;}}
             if let Some((len,mode))=crate::http::complete(response,used,fin)?{
                 serial::line(match mode{0=>"H5K: HTTP_LENGTH_OK",1=>"H5K: HTTP_CLOSE_OK",_=>"H5K: HTTP_CHUNKED_OK"});
                 serial::metric("H5K: HTTP_DOWNLOAD_BYTES=",len as u64);stream.finish();if status==200{serial::line("H5K: HTTP_DOWNLOAD_OK");}else{serial::line("H5K: HTTP_ERROR_PAGE");}return Ok(Ok((len,status)));
@@ -270,6 +278,7 @@ impl Drop for Tcp<'_>{fn drop(&mut self){if !self.closed{let _=self.nic.packet(s
 #[derive(Clone,Copy)]struct Lease{ip:[u8;4],mask:[u8;4],gateway:[u8;4],dns:[u8;4],server:[u8;4],seconds:u32}
 fn valid(ip:[u8;4])->bool{ip[0]!=0&&ip[0]!=127&&ip[0]<224}
 fn numeric(s:&[u8])->Option<[u8;4]>{let mut it=s.split(|b|*b==b'.');let mut ip=[0;4];for x in &mut ip{*x=decimal(it.next()?,255)? as u8;}if it.next().is_some(){return None;}Some(ip)}
+fn public_resource_ip(ip:[u8;4])->bool{let[a,b,c,_]=ip;!matches!(a,0|10|127|224..=255)&&!(a==100&&(64..=127).contains(&b))&&!(a==169&&b==254)&&!(a==172&&(16..=31).contains(&b))&&!(a==192&&(b==168||b==0||(b==88&&c==99)))&&!(a==198&&(b==18||b==19||(b==51&&c==100)))&&!(a==203&&b==0&&c==113)}
 fn parse_url(url:&[u8])->Option<(&[u8],u16,&[u8])>{
     let (r,default_port)=if let Some(r)=url.strip_prefix(b"https://"){(r,443)}else{(url.strip_prefix(b"http://")?,80)};let i=r.iter().position(|b|*b==b'/').unwrap_or(r.len());let path=if i==r.len(){b"/".as_slice()}else{&r[i..]};
     if path.len()>120||!path.iter().all(|b|(33..127).contains(b)&&*b!=b'#'){return None;}
