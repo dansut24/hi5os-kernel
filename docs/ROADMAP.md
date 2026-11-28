@@ -24,3 +24,5 @@ Build numbers are milestones not promises; existing mandatory regression tests s
 105 window management: bounded resize, snap, task switching, context menus and local notifications. Remaining UI polish (animated opening/closing and larger app redesigns) deferred; next foundation Hi5FS.
 
 105 also implements outline transitions, Explorer grid/list and local slot search, and modest office/Settings visual polish. Full surface animations and vector typography remain outstanding.
+
+106: bounded Hi5FS v1 persistent native volume, copy-on-write catalogue/data, protected directory hierarchy, explicit legacy copy migration, Explorer and Word path integration. Large-disk and ACL isolation future.

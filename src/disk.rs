@@ -304,3 +304,15 @@ impl Store{
         self.generation=gen;self.slot=slot;serial::metric("H5K: DATA_SAVED_CRC=",crc(data)as u64);true
     }
 }
+
+// Hi5FS can address ONLY the proven unused gap 6466..8191. All legacy banks stay unchanged.
+pub struct Hi5Disk{p:Port}
+impl crate::hi5fs::Device for Hi5Disk{
+    fn read(&mut self,lba:u32,b:&mut[u8;512])->bool{(crate::hi5fs::FIRST..crate::hi5fs::END).contains(&lba)&&self.p.read(lba,b)}
+    fn write(&mut self,lba:u32,b:&[u8;512])->bool{if !(crate::hi5fs::FIRST..crate::hi5fs::END).contains(&lba){return false;}let mut q=*b;self.p.write(lba,&mut q)}
+    fn flush(&mut self)->bool{self.p.flush()}
+}
+impl Store{
+    pub fn hi5disk(&self)->Option<Hi5Disk>{let p=self.port?;let mut b=[0;512];if !p.read(0,&mut b)||!header_ok(&b){return None;}Some(Hi5Disk{p})}
+    pub fn legacy_note(&self,file:usize)->Option<alloc::vec::Vec<u8>>{if file>=FILE_COUNT{return None;}let p=self.port?;let mut a=[0;512];let mut b=[0;512];if !p.read(1+file as u32*2,&mut a)||!p.read(2+file as u32*2,&mut b){return None;}let r=[(&a,decode(&a)),(&b,decode(&b))].into_iter().filter_map(|(b,v)|v.map(|v|(b,v))).max_by_key(|v|v.1.0)?;if !r.1.1{return None;}Some(r.0[20..20+r.1.2].to_vec())}
+}

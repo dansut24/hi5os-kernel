@@ -16,6 +16,7 @@ mod ui;
 mod compositor;
 mod services;
 mod disk;
+mod hi5fs;
 mod compat;
 mod imports;
 mod relocate;
