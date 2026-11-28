@@ -16,3 +16,5 @@ Build numbers are milestones not promises; existing mandatory regression tests s
 
 ## GUI and platform milestones after CI #101
 102: responsive shell, persistent appearance, frost/damage presentation and navigation; 103: qualified VMware SVGA mode setting and FIFO; 104: independent window surfaces and compositor; 105: app shell refinement; 106–110: filesystem, runtime, multitasking, signed update and packaging/security. These are qualification goals, not completed features. Preserve existing data formats and VM upgrades; avoid unqualified device writes.
+
+103 implementation: guarded active SVGA II native mode preview with timed rollback and local network diagnostics; full FIFO/GPU support remains unqualified. Retain firmware fallback and VMware system-only package.

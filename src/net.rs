@@ -25,6 +25,10 @@ fn sum(b:&[u8])->u32{let mut s=0;let mut i=0;while i+1<b.len(){s+=be16(b,i)as u3
 fn fold(mut s:u32)->u16{while s>>16!=0{s=(s&65535)+(s>>16);}!(s as u16)}
 fn tcp_sum(src:[u8;4],dst:[u8;4],b:&[u8])->u16{fold(sum(&src)+sum(&dst)+6+b.len()as u32+sum(b))}
 fn before(deadline:u64)->bool{!crate::desktop::browser_poll()&&p::ticks()<deadline}
+pub fn adapter_id()->Option<u32>{let mut found=None;for d in 0..32u32{for f in 0..8u32{let b=0x80000000|(d<<11)|(f<<8);let id=pci(b,0);if id&0xffff==0xffff||pci(b,8)>>24!=2{continue;}if id==0x100e8086{return Some(id);}if found.is_none(){found=Some(id);}}}found}
+pub fn adapter_label()->&'static str{match adapter_id(){Some(0x100e8086)=>"Intel E1000 (supported)",Some(0x10d38086)=>"Intel E1000E (not supported yet)",Some(0x07b015ad)=>"VMXNET3 (not supported yet)",Some(_)=>"Other network adapter (unsupported)",None=>"No network adapter detected"}}
+pub fn log_adapters(){for d in 0..32u32{for f in 0..8u32{let b=0x80000000|(d<<11)|(f<<8);let id=pci(b,0);if id&0xffff!=0xffff&&pci(b,8)>>24==2{serial::metric("H5K: NETWORK_PCI_ID=",id as u64);}}}serial::line(adapter_label());}
+fn valid_mac(mac:[u8;6])->bool{mac!=[0;6]&&mac!=[255;6]&&mac[0]&1==0}
 pub struct Nic{base:usize,mac:[u8;6],rx:usize,tx:usize,seq:u32,port:u16,ip:[u8;4],mask:[u8;4],gateway:[u8;4],dns:[u8;4],until:u64}
 impl Nic{
     pub fn open()->Option<Self>{
@@ -37,11 +41,11 @@ impl Nic{
             wr(base+0xd8,u32::MAX);let _=rd(base+0xc0);
             wr(base,rd(base)|(1<<26));let mut reset=false;
             for _ in 0..2_000_000{if rd(base)&(1<<26)==0{reset=true;break;}}
-            if !reset{return None;}
+            if !reset{serial::line("H5K: E1000_RESET_TIMEOUT");return None;}
             wr(base+0xd8,u32::MAX);let _=rd(base+0xc0);
-            let mut mac=[0;6];
-            for i in 0..3{wr(base+0x14,1|((i as u32)<<8));let mut done=false;for _ in 0..100000{let v=rd(base+0x14);if v&16!=0{mac[i*2]=(v>>16)as u8;mac[i*2+1]=(v>>24)as u8;done=true;break;}}if !done{return None;}}
-            if mac==[0;6]||mac==[255;6]||mac[0]&1!=0{return None;}
+            let mut mac=[0;6];let mut eeprom=true;
+            for i in 0..3{wr(base+0x14,1|((i as u32)<<8));let mut done=false;for _ in 0..100000{let v=rd(base+0x14);if v&16!=0{mac[i*2]=(v>>16)as u8;mac[i*2+1]=(v>>24)as u8;done=true;break;}}if !done{eeprom=false;break;}}
+            if !eeprom||!valid_mac(mac){let a=rd(base+0x5400).to_le_bytes();let b=rd(base+0x5404);if b&(1<<31)==0{serial::line("H5K: E1000_MAC_UNAVAILABLE");return None;}mac=[a[0],a[1],a[2],a[3],b as u8,(b>>8)as u8];if !valid_mac(mac){serial::line("H5K: E1000_MAC_INVALID");return None;}serial::line("H5K: E1000_MAC_FROM_RAR");}
             wr(base+0x5400,u32::from_le_bytes([mac[0],mac[1],mac[2],mac[3]]));
             wr(base+0x5404,u16::from_le_bytes([mac[4],mac[5]])as u32|(1<<31));
             unsafe{
@@ -59,7 +63,7 @@ impl Nic{
             wr(base+0x410,0x0060200a);
             wr(base+0x400,2|8|(0x10<<4)|(0x40<<12)); // TCTL
             wr(base+0x100,2|(1<<15)|(1<<26)); // RCTL: 2048 buffers, broadcast, strip CRC
-            serial::line("H5K: E1000_READY");return Some(Self{base,mac,rx:0,tx:0,seq:0x48350000,port:49152,ip:ZERO,mask:ZERO,gateway:ZERO,dns:ZERO,until:0});
+            serial::line("H5K: E1000_READY");serial::line(if rd(base+8)&2!=0{"H5K: E1000_LINK_UP"}else{"H5K: E1000_LINK_DOWN"});return Some(Self{base,mac,rx:0,tx:0,seq:0x48350000,port:49152,ip:ZERO,mask:ZERO,gateway:ZERO,dns:ZERO,until:0});
         }}None
     }
     fn send(&mut self,b:&[u8])->bool{
@@ -112,6 +116,7 @@ impl Nic{
         if h<20||h>t.len()||be16(t,0)!=port||be16(t,2)!=self.port||tcp_sum(ip,self.ip,t)!=0{return None;}
         Some((be32(t,4),be32(t,8),t[13],&t[h..]))
     }
+    pub fn link_up(&self)->bool{rd(self.base+8)&2!=0}
     pub fn config(&self)->([u8;4],[u8;4],[u8;4]){(self.ip,self.gateway,self.dns)}
     fn udp_send(&mut self,mac:[u8;6],src:[u8;4],dst:[u8;4],sp:u16,dp:u16,data:&[u8])->bool{
         if data.len()>1200{return false;}let mut b=[0;1242];let n=42+data.len();
