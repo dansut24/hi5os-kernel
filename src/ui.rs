@@ -167,6 +167,32 @@ impl Canvas{
         let baseline=if big{29}else{19};if style&crate::office::UNDER!=0&&y+baseline<floor&&x<right{self.rect(x,y+baseline,(adv[idx]as usize).min(right-x),1,c);}
     }
     pub fn num(&self,x:usize,y:usize,mut n:u64,c:Color){let mut b=[b'0';20];let mut i=20;loop{i-=1;b[i]=b'0'+(n%10)as u8;n/=10;if n==0{break;}}if let Ok(t)=core::str::from_utf8(&b[i..]){self.text(x,y,t,c);}}
+    /// Capture only the requested visible logical rectangle, from the back buffer.
+    pub fn capture(&self,a:crate::compositor::Area)->Option<crate::compositor::Surface>{
+        if !self.buffered||a!=a.clipped(self.fb.width,self.fb.height){return None;}
+        let mut s=crate::compositor::Surface::new(a.w,a.h)?;
+        for y in 0..a.h{unsafe{ptr::copy_nonoverlapping(self.target(a.x,a.y+y),s.row_mut(y).as_mut_ptr(),a.w);}}
+        Some(s)
+    }
+    pub fn restore_area(&self,s:&crate::compositor::Surface,a:crate::compositor::Area){
+        if !self.buffered{return;}let a=a.clipped(s.w.min(self.fb.width),s.h.min(self.fb.height));
+        for y in a.y..a.y+a.h{unsafe{ptr::copy_nonoverlapping(s.row(y).as_ptr().add(a.x),self.target(a.x,y),a.w);}}
+    }
+    pub fn compose_window(&self,s:&crate::compositor::Surface,x:usize,y:usize,floor:usize,p:Palette){
+        if !self.buffered{return;}let h=floor.min(self.fb.height);let w=self.fb.width;
+        // Recreate the panel's layered shadow; clip below the dock.
+        for i in (1..=5).rev(){let sx=x+i;let sy=y+i*2;let v=self.pack(blend(p.wall,p.bar,i,6));let a=crate::compositor::Area{x:sx,y:sy,w:s.w,h:s.h}.clipped(w,h);
+            for yy in 0..a.h{
+                let (l,r)=crate::compositor::span(yy,s.w,s.h,14+i);let left=sx+l.min(a.w);let right=sx+r.min(a.w);if left>=right{continue;}
+                // Skip shadow pixels that the opaque window will cover.
+                let py=sy+yy;let (cl,cr)=if py>=y&&py<y+s.h{let(l,r)=crate::compositor::span(py-y,s.w,s.h,14);(x+l,x+r)}else{(0,0)};
+                let fill=|a:usize,b:usize|{if a<b{unsafe{let dst=self.target(a,py);for j in 0..b-a{ptr::write(dst.add(j),v);}}}};
+                if cl>=cr||right<=cl||left>=cr{fill(left,right);}else{fill(left,right.min(cl));fill(left.max(cr),right);}
+            }}
+        let a=crate::compositor::Area{x,y,w:s.w,h:s.h}.clipped(w,h);
+        for yy in 0..a.h{let row=s.row(yy);let (start,end)=crate::compositor::span(yy,s.w,s.h,14);let start=start.min(a.w);let end=end.min(a.w);
+            if end>start{unsafe{ptr::copy_nonoverlapping(row.as_ptr().add(start),self.target(x+start,y+yy),end-start);}}}
+    }
     pub fn present(&self){if !self.buffered{return;}unsafe{
         let src=ptr::addr_of!(BACK.0).cast::<u32>();let dst=self.fb.base as *mut u32;
         if self.scale==100{for y in 0..self.fb.height{for x in 0..self.fb.width{ptr::write_volatile(dst.add(y*self.fb.stride+x),ptr::read(src.add(y*self.fb.width+x)));}}}else{for y in 0..self.fb.height{for x in 0..self.fb.width{self.front_value(x,y,ptr::read(src.add(y*self.fb.width+x)));}}}

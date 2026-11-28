@@ -53,6 +53,8 @@ pub fn on_stack(info:BootInfo)->! {
     serial::line("H5K: SVGA_MODEL_OK");
     if !crate::desktop::shell_test(){fail(&mut screen,"SHELL_LAYOUT_TEST");}
     serial::line("H5K: SHELL_LAYOUT_OK");
+    if !crate::compositor::self_test(){fail(&mut screen,"COMPOSITOR_MODEL_TEST");}
+    serial::line("H5K: COMPOSITOR_MODEL_OK");
     let mut tasks=services::Tasks::new();
     if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
     serial::line("H5K: COOPERATIVE_SCHEDULER_OK");

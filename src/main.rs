@@ -13,6 +13,7 @@ mod platform;
 mod desktop;
 mod pointer;
 mod ui;
+mod compositor;
 mod services;
 mod disk;
 mod compat;

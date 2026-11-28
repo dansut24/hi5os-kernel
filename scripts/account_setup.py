@@ -78,7 +78,24 @@ def main():
                         width,height=dims();assert (width,height)==(640,480)
                         call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-compact.ppm")})
                         prior=len(log.read_bytes());tap(width-100,85,False);wait(b"SHELL_NOTICE_OPEN",10,prior);key("esc")
-                        key("f1");key("ctrl-3");key("esc")
+                        key("f1");key("ctrl-3")
+                        width,height=dims();assert (width,height)==(1024,768)
+                        # Reflow resets the standard QEMU Settings window to these bounds.
+                        by=height-54-60;wx=(width-560)//2+20;wy=(by-365)//2
+                        def point(x,y):return [{"type":"abs","data":{"axis":"x","value":round(x*32767/(width-1))}},{"type":"abs","data":{"axis":"y","value":round(y*32767/(height-1))}}]
+                        before=tmp/"before-drag.ppm";call("screendump",{"filename":str(before)})
+                        prior=len(log.read_bytes());call("input-send-event",{"events":point(wx+100,wy+18)+[{"type":"btn","data":{"down":True,"button":"left"}}]});wait(b"COMPOSITOR_SURFACE_READY",10,prior)
+                        for dx,dy in [(24,12),(48,24),(72,36)]:
+                            call("input-send-event",{"events":point(wx+100+dx,wy+18+dy)});time.sleep(.2)
+                        wait(b"COMPOSITOR_CACHED_FRAME",10,prior)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5compositor-drag.ppm")})
+                        call("input-send-event",{"events":[{"type":"btn","data":{"down":False,"button":"left"}}]});wait(b"GUI_WINDOW_MOVED",10,prior);wait(b"COMPOSITOR_DRAG_FRAMES=",10,prior)
+                        after=ROOT/"dist"/"hi5compositor-released.ppm";call("screendump",{"filename":str(after)})
+                        def patch(path,x,y):
+                            data=path.read_bytes().split(b"\n",3)[3];return b"".join(data[(j*width+x)*3:(j*width+x+24)*3] for j in range(y,y+20))
+                        assert any(patch(before,wx+8,wy+5)==patch(after,wx+80+dx,wy+41+dy) for dx in range(-2,3) for dy in range(-2,3)),"Moved window icon differs"
+                        assert patch(before,wx+8,wy+5)!=patch(after,wx+8,wy+5),"Old window left a visible ghost"
+                        key("esc")
                         key("t");wait(b"APPEARANCE_SAVED",10)
                         call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-responsive.ppm")})
                     key("f4");wait(b"GUI_TERMINAL_OPEN")
