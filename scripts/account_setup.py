@@ -95,7 +95,23 @@ def main():
                             data=path.read_bytes().split(b"\n",3)[3];return b"".join(data[(j*width+x)*3:(j*width+x+24)*3] for j in range(y,y+20))
                         assert any(patch(before,wx+8,wy+5)==patch(after,wx+80+dx,wy+41+dy) for dx in range(-2,3) for dy in range(-2,3)),"Moved window icon differs"
                         assert patch(before,wx+8,wy+5)!=patch(after,wx+8,wy+5),"Old window left a visible ghost"
-                        key("esc")
+                        # Resize from the moved lower-right corner, staying inside the desktop.
+                        prior=len(log.read_bytes());call("input-send-event",{"events":point(wx+72+557,wy+36+362)+[{"type":"btn","data":{"down":True,"button":"left"}}]});time.sleep(.25)
+                        call("input-send-event",{"events":point(wx+72+597,wy+36+392)});time.sleep(.25)
+                        call("input-send-event",{"events":[{"type":"btn","data":{"down":False,"button":"left"}}]});wait(b"GUI_WINDOW_RESIZED",10,prior)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5-window-resized.ppm")})
+                        key("ctrl-4");width,height=dims();assert (width,height)==(1280,720)
+                        wx=(width-560)//2+20;wy=(height-54-60-365)//2
+                        prior=len(log.read_bytes());call("input-send-event",{"events":point(wx+100,wy+45)+[{"type":"btn","data":{"down":True,"button":"right"}}]});wait(b"GUI_CONTEXT_MENU",10,prior)
+                        call("input-send-event",{"events":[{"type":"btn","data":{"down":False,"button":"right"}}]});tap(wx+120,wy+45+80,False);wait(b"GUI_WINDOW_SNAPPED",10,prior)
+                        call("screendump",{"filename":str(ROOT/"dist"/"hi5-window-snapped.ppm")})
+                        key("ctrl-3");width,height=dims();assert (width,height)==(1024,768)
+                        prior=len(log.read_bytes());key("f2");key("alt-tab");wait(b"GUI_ALT_TAB",10,prior)
+                        key("ctrl-alt-t");wait(b"GUI_TASK_SWITCHER",10,prior);key("esc")
+                        key("esc");key("esc")
+                        prior=len(log.read_bytes());call("input-send-event",{"events":point(420,90)+[{"type":"btn","data":{"down":True,"button":"right"}}]});wait(b"GUI_CONTEXT_MENU",10,prior)
+                        call("input-send-event",{"events":[{"type":"btn","data":{"down":False,"button":"right"}}]});key("esc")
+                        prior=len(log.read_bytes());tap(width-100,30,False);wait(b"GUI_NOTIFICATION_CENTER",10,prior);key("esc")
                         key("t");wait(b"APPEARANCE_SAVED",10)
                         call("screendump",{"filename":str(ROOT/"dist"/"hi5shell-responsive.ppm")})
                     key("f4");wait(b"GUI_TERMINAL_OPEN")

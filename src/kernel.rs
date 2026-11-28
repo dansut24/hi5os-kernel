@@ -55,6 +55,8 @@ pub fn on_stack(info:BootInfo)->! {
     serial::line("H5K: SHELL_LAYOUT_OK");
     if !crate::compositor::self_test(){fail(&mut screen,"COMPOSITOR_MODEL_TEST");}
     serial::line("H5K: COMPOSITOR_MODEL_OK");
+    if !crate::desktop::window_refinement_test(){fail(&mut screen,"WINDOW_REFINEMENT_TEST");}
+    serial::line("H5K: WINDOW_REFINEMENT_OK");
     let mut tasks=services::Tasks::new();
     if !tasks.self_test(){fail(&mut screen,"SCHEDULER_TEST");}
     serial::line("H5K: COOPERATIVE_SCHEDULER_OK");

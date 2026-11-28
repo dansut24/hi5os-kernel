@@ -20,3 +20,7 @@ Build numbers are milestones not promises; existing mandatory regression tests s
 103 implementation: guarded active SVGA II native mode preview with timed rollback and local network diagnostics; full FIFO/GPU support remains unqualified. Retain firmware fallback and VMware system-only package.
 
 104: retained interactive foreground surface, cached backdrop, damage-region composition and paced drag (up to 50 Hz); persistent app surfaces and full window resizing/animations remain future. 105 native application refinement, then Hi5FS/runtime/updates.
+
+105 window management: bounded resize, snap, task switching, context menus and local notifications. Remaining UI polish (animated opening/closing and larger app redesigns) deferred; next foundation Hi5FS.
+
+105 also implements outline transitions, Explorer grid/list and local slot search, and modest office/Settings visual polish. Full surface animations and vector typography remain outstanding.
